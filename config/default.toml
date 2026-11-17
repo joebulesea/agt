@@ -38,7 +38,10 @@ command = "copilot"
 status_source = "pattern"
 waiting_patterns = ['No, and tell Copilot', 'Do you trust the files']
 idle_timeout_secs = 20
-resume_args = ["--continue"]     # 接續最近一次的對話
+# --session-id 開新對話時指定 UUID、接續時找回同一個對話：每個分頁接續自己的對話
+# （--continue 接續的是「最近一次」的對話，同時開多個分頁時會接錯）
+new_args = ["--session-id", "{conversation}"]
+resume_args = ["--session-id", "{conversation}"]
 
 [agents.shell]
 command = ""                     # 空字串 = 使用者預設 shell
@@ -113,7 +116,8 @@ worktree = false
 #         "-v", "{cwd}:/work/{session}", "-v", "agt-copilot-home:/home/node", "-w", "/work/{session}",
 #         "-e", "GH_TOKEN", "-e", "GITHUB_TOKEN",
 #         "agt-copilot", "copilot", "--allow-all-tools"]
-# resume_args = ["--continue"]
+# new_args = ["--session-id", "{conversation}"]
+# resume_args = ["--session-id", "{conversation}"]
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]
 # auto_commit = true
 # update = ["docker", "run", "--rm", "-v", "agt-copilot-home:/home/node", "agt-copilot", "copilot", "--version"]

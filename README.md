@@ -81,6 +81,6 @@ TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` �
 - **Windows 結束行程樹**：用 `taskkill /T /F` 而不是 Job Object。
 - **IPC 存取限制**：Unix 靠 0700 的 socket 目錄；尚未檢查 peer uid，Windows 也沒有自訂 pipe ACL（使用系統預設）。
 - **Windows 路徑長度**：worktree 路徑超過 240 字元且未開啟 `core.longpaths` 時拒絕建立（保留檔案名稱的空間）。
-- **Antigravity CLI / GitHub Copilot CLI**：只有規則比對（規格 14.2 待確認是否有 hooks）。Copilot CLI 的 `--continue` 接續的是最近一次的對話，不是分頁自己的對話。
+- **Antigravity CLI / GitHub Copilot CLI**：只有規則比對（規格 14.2 待確認是否有 hooks）。Antigravity CLI 的 `--continue` 接續的是這個目錄最近一次的對話；Copilot CLI 用 `--session-id` 接續分頁自己的對話。
 - **未實作**：`cargo-dist` 打包、主題設定、`agt daemon stop` 之外的開機自動啟動（規格待決）。
 - **Windows 原生**：已在 Windows 11 以交叉編譯的執行檔實測 CLI 與 daemon 全流程；TUI 只在 Linux 容器內做過自動化測試，尚未在 Windows Terminal 中手動操作過。

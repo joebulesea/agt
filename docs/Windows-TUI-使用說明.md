@@ -133,7 +133,7 @@ agt new claude --repo . --task "登入功能" --attach
 | `R` | 在同一個 worktree 重新啟動已結束的 Agent，**接續上次的對話**（例如電腦重新開機後） |
 | `N` | 在同一個 worktree 重新啟動已結束的 Agent，開新對話 |
 
-> 接續對話靠 Agent 設定的 `new_args` / `resume_args`（`claude` 用 `--session-id` / `--resume` 指定這個分頁自己的對話，agy 與 copilot 用 `--continue`，接續最近一次的對話）。接續失敗（例如上次還沒開始對話就結束，找不到對話）時，agt 會自動改開新對話。舊版 agt 建立的分頁沒有記錄對話 ID，第一次按 `R` 會開新對話，之後就能接續。
+> 接續對話靠 Agent 設定的 `new_args` / `resume_args`（`claude` 用 `--session-id` / `--resume`、`copilot` 用 `--session-id` 指定這個分頁自己的對話；agy 用 `--continue`，接續最近一次的對話）。接續失敗（例如上次還沒開始對話就結束，找不到對話）時，agt 會自動改開新對話。舊版 agt 建立的分頁沒有記錄對話 ID，第一次按 `R` 會開新對話，之後就能接續。
 | `[` | 滾動模式（`↑↓`、`PgUp`/`PgDn`、`/` 搜尋、`n` 下一個、`q` 離開） |
 | `u` | 複製畫面上最新的網址（例如 Agent 印出的登入網址；折成多列的長網址會自動接回） |
 | `x` | 關閉分頁（Agent 執行中會先確認，worktree 會保留） |
@@ -330,7 +330,7 @@ agt gc                     # 檢查 worktree 與資料庫是否一致
 | git | 容器內無法使用 git。第一次啟動時會建立 `~/.copilot/copilot-instructions.md`（全域指示）告訴 Copilot 不要使用 git；已有內容時不會覆蓋。commit 由 `auto_commit` 處理 |
 | 版本 | 每次啟動前檢查 npm 上的 `@github/copilot` 並更新；設定 `update` 後 daemon 啟動時也會先更新一次。略過更新：`args` 加上 `"-e", "AGT_COPILOT_UPDATE=0"` |
 | 權限 | 加上 `--allow-all-tools` 自動核准所有工具，由 Docker 隔離取代逐一核准 |
-| 接續對話 | `R` 使用 `--continue`，接續的是 volume 中最近一次的對話；同時開多個 `copilot-docker` 分頁時可能接到別的分頁的對話，這時改用 `N` 開新對話 |
+| 接續對話 | 開新對話時以 `--session-id` 指定分頁自己的對話 ID，`R` 用同一個 ID 接續；同時開多個 `copilot-docker` 分頁也不會接到別的分頁的對話 |
 | 狀態燈號 | 使用畫面規則判斷（`adapter = "copilot"`）：出現工具核准選單（`No, and tell Copilot ...`）或資料夾信任詢問為等待輸入 |
 
 ## 11. 疑難排解
