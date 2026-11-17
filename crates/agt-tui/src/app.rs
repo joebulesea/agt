@@ -24,8 +24,14 @@ pub enum AppEvent {
 }
 
 pub enum Confirm {
-    Close { id: String },
-    Discard { id: String },
+    Close {
+        id: String,
+    },
+    /// 收尾動作需要確認（丟棄未 commit 的變更、合併會自動執行的設定檔）：確認後加上 force 重送。
+    Finish {
+        id: String,
+        action: FinishAction,
+    },
     TrustSetup(CreateSession),
 }
 
@@ -480,11 +486,14 @@ impl App {
                 }
             }
             AppEvent::Finished(action, Err(e)) => match (e.code(), &action) {
-                (Some(codes::NEEDS_CONFIRM), FinishAction::Discard) => {
+                (Some(codes::NEEDS_CONFIRM), _) => {
                     if let Some(id) = self.active.clone() {
                         self.popup = Some(Popup::Confirm {
                             text: format!("{e}\n\n(y/n)"),
-                            action: Confirm::Discard { id },
+                            action: Confirm::Finish {
+                                id,
+                                action: action.clone(),
+                            },
                         });
                     }
                 }
@@ -955,9 +964,7 @@ impl App {
                     if let Popup::Confirm { action, .. } = popup {
                         match action {
                             Confirm::Close { id } => self.close(id),
-                            Confirm::Discard { id } => {
-                                self.finish_id(id, FinishAction::Discard, true)
-                            }
+                            Confirm::Finish { id, action } => self.finish_id(id, action, true),
                             Confirm::TrustSetup(mut req) => {
                                 req.trust_setup = true;
                                 self.create(req);

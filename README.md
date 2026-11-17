@@ -63,7 +63,7 @@ TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` �
 `claude-sbx` 使用 [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/)（`sbx`，microVM，不需要 Docker Desktop）：沙箱保留到分頁關閉，沙箱內可唯讀使用 git。相關設定 `restart_args`（重新啟動時取代 `args`）、`on_close`（只在關閉分頁時執行）與 `{gitdir}` 變數，範例見 [`config/default.toml`](config/default.toml) 的 `[agents.claude-sbx]`。
 
 
-在容器中執行 Claude Code，容器只看得到該分頁的 worktree：`docker build -t agt-claude docker/claude/`，再把 [`config/default.toml`](config/default.toml) 裡的 `[agents.claude-docker]` 範例複製到設定檔。Antigravity CLI 同理：`docker build -t agt-agy docker/agy/`，範例是 `[agents.agy-docker]`；GitHub Copilot CLI 是 `docker build -t agt-copilot docker/copilot/`，範例是 `[agents.copilot-docker]`。Agent 設定可用 `adapter`（沿用內建 Agent 的狀態判斷）、`cleanup`（分頁結束時執行的收尾指令）、`update`（daemon 啟動時在背景執行的更新指令；容器每次啟動前也會自動更新 Claude Code）與 `{cwd}`、`{session}` 變數。容器內無法使用 git，commit 由收尾選單處理。詳見 [Windows 使用說明](docs/Windows-TUI-使用說明.md) 第 10 節。
+在容器中執行 Claude Code，容器只看得到該分頁的 worktree：`docker build -t agt-claude docker/claude/`，再把 [`config/default.toml`](config/default.toml) 裡的 `[agents.claude-docker]` 範例複製到設定檔。Antigravity CLI 同理：`docker build -t agt-agy docker/agy/`，範例是 `[agents.agy-docker]`；GitHub Copilot CLI 是 `docker build -t agt-copilot docker/copilot/`，範例是 `[agents.copilot-docker]`。Agent 設定可用 `adapter`（沿用內建 Agent 的狀態判斷）、`cleanup`（分頁結束時執行的收尾指令）、`update`（daemon 啟動時在背景執行的更新指令；Agent 的執行檔放在分頁中唯讀的 volume，只由這個指令更新）與 `{cwd}`、`{session}` 變數。容器內無法使用 git，commit 由收尾選單處理。詳見 [Windows 使用說明](docs/Windows-TUI-使用說明.md) 第 10 節。
 
 ## 環境變數
 

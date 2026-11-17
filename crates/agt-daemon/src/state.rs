@@ -88,6 +88,8 @@ pub struct Daemon {
     /// 讓「檢查舊 Agent 已結束 → 啟動新的 → 登記」成為一整步；
     /// 否則連按兩次重新啟動會在同一個 worktree 啟動兩個 Agent。
     restart_lock: Mutex<()>,
+    /// 已經警告過「worktree 的 .git 被改動」的分頁（每個分頁只警告一次）。
+    tamper_warned: Mutex<std::collections::HashSet<String>>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -164,6 +166,7 @@ impl Daemon {
             store: Mutex::new(store),
             entries: Mutex::new(entries),
             restart_lock: Mutex::new(()),
+            tamper_warned: Mutex::new(Default::default()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),
@@ -856,6 +859,7 @@ impl Daemon {
         self.store().end_session(id, finish_action)?;
         self.run_on_close(id);
         self.entries.lock().unwrap().remove(id);
+        self.tamper_warned.lock().unwrap().remove(id);
         // 分頁關閉後紀錄檔就沒有人會看了（每個最多約 100 MB，且可能含有機密）。
         // Windows 上 Agent 剛被結束時檔案可能還開著，刪不掉就留著，只記錄。
         let logs = self.paths.logs();
@@ -899,6 +903,13 @@ impl Daemon {
             return Ok(());
         };
         let (repo, wt) = (Path::new(repo), Path::new(wt));
+        // .git 被改動過：無法檢查內容，但仍要讓使用者能確認後丟棄
+        if let Err(e) = agt_git::trusted_gitdir(repo, wt) {
+            return Err(OpError::new(
+                codes::NEEDS_CONFIRM,
+                format!("{e}\n\n無法檢查是否有未 commit 的變更，確定要丟棄嗎？"),
+            ));
+        }
         let dirty = agt_git::is_dirty_wt(repo, wt, true)?;
         let unpushed = agt_git::has_unpushed(repo, wt, base)?;
         if dirty || unpushed {
@@ -1002,6 +1013,7 @@ impl Daemon {
                         ));
                     }
                 };
+                confirm_sensitive(&repo, &wt, &base, "merge", force)?;
                 let s = match strategy {
                     MergeStrategy::Merge => agt_git::Strategy::Merge,
                     MergeStrategy::Squash => agt_git::Strategy::Squash,
@@ -1023,6 +1035,7 @@ impl Daemon {
             FinishAction::Pr => {
                 let (wt, branch, base, repo) = need_worktree(&info)?;
                 self.auto_commit(&id, &info, &repo, &wt)?;
+                confirm_sensitive(&repo, &wt, &base, "建立 PR", force)?;
                 let out = agt_git::create_pr(
                     Path::new(&repo),
                     Path::new(&wt),
@@ -1160,8 +1173,21 @@ impl Daemon {
             if !Path::new(&wt).is_dir() {
                 continue;
             }
-            let Ok(st) = agt_git::status(Path::new(&repo), Path::new(&wt), &base) else {
-                continue;
+            let st = match agt_git::status(Path::new(&repo), Path::new(&wt), &base) {
+                Ok(st) => st,
+                Err(e) => {
+                    // 沙箱裡的 Agent 改了 .git：不執行 git，並提醒使用者一次
+                    if agt_git::trusted_gitdir(Path::new(&repo), Path::new(&wt)).is_err()
+                        && self.tamper_warned.lock().unwrap().insert(id.clone())
+                    {
+                        tracing::warn!("{id}：{e}");
+                        let _ = self.events.send(ServerMsg::Error {
+                            code: codes::GIT.into(),
+                            message: e.to_string(),
+                        });
+                    }
+                    continue;
+                }
             };
             let changed = {
                 let mut entries = self.entries.lock().unwrap();
@@ -1227,6 +1253,30 @@ impl Daemon {
             config_path: self.paths.config_file.to_string_lossy().into_owned(),
         }
     }
+}
+
+/// merge / pr 前：branch 改到會在主機或 CI 上自動執行的設定檔時，要求使用者確認（`force`）。
+/// Agent 在沙箱裡改不到主機，但這些檔案合併後就會在沙箱外生效。
+fn confirm_sensitive(repo: &str, wt: &str, base: &str, what: &str, force: bool) -> OpResult<()> {
+    if force {
+        return Ok(());
+    }
+    let files = agt_git::sensitive_changes(Path::new(repo), Path::new(wt), base)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    const MAX: usize = 12;
+    let mut list: Vec<String> = files.iter().take(MAX).map(|f| format!("  {f}")).collect();
+    if files.len() > MAX {
+        list.push(format!("  …（共 {} 個）", files.len()));
+    }
+    Err(OpError::new(
+        codes::NEEDS_CONFIRM,
+        format!(
+            "這個分頁修改了合併後會自動執行的設定檔（hooks、CI、setup 等）：\n{}\n\n請先用 diff 確認內容。確定要{what}嗎？",
+            list.join("\n")
+        ),
+    ))
 }
 
 fn need_worktree(info: &SessionInfo) -> OpResult<(String, String, String, String)> {

@@ -140,11 +140,22 @@ pub fn trusted_gitdir(repo: &Path, wt: &Path) -> Result<PathBuf> {
     Ok(gitdir)
 }
 
+/// 不進入 submodule / 巢狀 repo。
+const SUBMODULE_OFF: [&str; 4] = [
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "submodule.recurse=false",
+];
+
 /// 對 worktree 執行 git 用的指令：先驗證，再以 `GIT_DIR` / `GIT_WORK_TREE` 固定。
 fn wt_command(repo: &Path, wt: &Path) -> Result<Command> {
     let gitdir = trusted_gitdir(repo, wt)?;
     let mut c = command(wt);
     c.env("GIT_DIR", gitdir).env("GIT_WORK_TREE", wt);
+    // 巢狀 repo：Agent 可以在 worktree 裡放一個含惡意設定的 repo，被 `git add -A` 當成 gitlink 加入後，
+    // status / diff 會進到裡面執行 git（讀它的 config、執行其中的 fsmonitor）。一律不進 submodule。
+    c.args(SUBMODULE_OFF);
     Ok(c)
 }
 
@@ -423,6 +434,21 @@ pub fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<()> {
             tracing::debug!("worktree 已不存在：{e}");
             Ok(())
         }
+        // `.git` 被改動過時 git 會拒絕移除。使用者已確認要丟棄（force），而且主 repo 仍記錄著
+        // 這個 worktree：直接刪除目錄（remove_dir_all 不會順著符號連結刪到外面）再 prune。
+        Err(e)
+            if force
+                && trusted_gitdir(repo, path).is_err()
+                && list_worktrees(repo)
+                    .is_ok_and(|l| l.iter().any(|w| same_path(&w.path, path))) =>
+        {
+            tracing::warn!(
+                "worktree {} 的 .git 被改動過，改為直接刪除目錄：{e}",
+                path.display()
+            );
+            std::fs::remove_dir_all(path)?;
+            git(repo, &["worktree", "prune"]).map(|_| ())
+        }
         Err(e) => Err(e),
     }
 }
@@ -659,13 +685,86 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 把 pattern 加入 worktree 實際使用的 `info/exclude`（不會被 commit）。
-pub fn add_exclude(worktree: &Path, pattern: &str) -> Result<()> {
-    let p = git(worktree, &["rev-parse", "--git-path", "info/exclude"])?;
-    let mut path = PathBuf::from(p);
-    if path.is_relative() {
-        path = worktree.join(path);
+/// `child` 是否就是 `parent` 或在它底下（先解析符號連結；Windows 不分大小寫）。
+fn is_inside(child: &Path, parent: &Path) -> bool {
+    let key = |p: &Path| {
+        let s = normalize(p).to_string_lossy().replace('\\', "/");
+        let s = s.trim_end_matches('/').to_string();
+        if cfg!(windows) { s.to_lowercase() } else { s }
+    };
+    let (c, p) = (key(child), key(parent));
+    c == p || c.starts_with(&format!("{p}/"))
+}
+
+/// 不需要主 repo 路徑、也不執行 git 的 worktree 檢查，給只知道 worktree 目錄的呼叫端用
+/// （例如 [`add_exclude`]）。回傳 worktree 在主 repo 裡登記的 gitdir 與主 repo 的 `.git`。
+///
+/// 要求：`.git` 是一般檔案、指向 worktree 之外的目錄，而且該目錄的 `gitdir` 檔指回這個 worktree 的
+/// `.git`（確實是這個 worktree 的管理目錄，不是別的 repo 或 Agent 自己準備的目錄）。
+fn own_gitdir(wt: &Path) -> Result<(PathBuf, PathBuf)> {
+    let refuse = |why: &str| {
+        GitError::Refused(format!(
+            "worktree {} 的 .git 不可信（{why}），不對它執行 git；請檢查 Agent 是否改動過 .git",
+            wt.display()
+        ))
+    };
+    let gitfile = wt.join(".git");
+    let meta = std::fs::symlink_metadata(&gitfile).map_err(|_| refuse("找不到 .git"))?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return Err(refuse(".git 不是一般檔案"));
     }
+    let text = std::fs::read_to_string(&gitfile).map_err(|_| refuse("無法讀取 .git"))?;
+    let target = text
+        .trim()
+        .strip_prefix("gitdir:")
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| refuse(".git 格式不符"))?;
+    let target = PathBuf::from(target);
+    let gitdir = if target.is_absolute() {
+        target
+    } else {
+        wt.join(target)
+    };
+    if !gitdir.is_dir() {
+        return Err(refuse("指向的 git 目錄不存在"));
+    }
+    let gitdir = normalize(&gitdir);
+    if is_inside(&gitdir, wt) {
+        return Err(refuse("指向 worktree 內的目錄"));
+    }
+    let back = std::fs::read_to_string(gitdir.join("gitdir"))
+        .map_err(|_| refuse("指向的不是 worktree 的 git 目錄"))?;
+    let back = PathBuf::from(back.trim());
+    let back = if back.is_absolute() {
+        back
+    } else {
+        gitdir.join(back)
+    };
+    if !same_path(&back, &gitfile) {
+        return Err(refuse("指向別的 worktree 的 git 目錄"));
+    }
+    let common = std::fs::read_to_string(gitdir.join("commondir"))
+        .ok()
+        .map(|c| normalize(&gitdir.join(c.trim())))
+        .unwrap_or_else(|| gitdir.clone());
+    Ok((gitdir, common))
+}
+
+/// 把 pattern 加入 `dir` 實際使用的 `info/exclude`（不會被 commit）。
+///
+/// 不執行 git：`dir` 是 Agent 寫得到的目錄，每次啟動 / 重新啟動分頁都會呼叫，
+/// 這時 `.git` 可能已被上一次的 Agent 換掉。一般 repo 用 `.git/info/exclude`；
+/// worktree 用主 repo 的 `.git/info/exclude`（先通過 [`own_gitdir`] 的檢查）。
+pub fn add_exclude(worktree: &Path, pattern: &str) -> Result<()> {
+    let dotgit = worktree.join(".git");
+    let meta = std::fs::symlink_metadata(&dotgit)
+        .map_err(|_| GitError::NotRepo(worktree.display().to_string()))?;
+    let path = if meta.is_dir() {
+        dotgit.join("info").join("exclude")
+    } else {
+        own_gitdir(worktree)?.1.join("info").join("exclude")
+    };
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing.lines().any(|l| l.trim() == pattern) {
         return Ok(());
@@ -713,8 +812,91 @@ pub fn commit_all(repo: &Path, worktree: &Path, message: &str) -> Result<bool> {
         return Ok(false);
     }
     git_wt(repo, worktree, &["add", "-A"])?;
+    let nested = new_gitlinks(repo, worktree)?;
+    if !nested.is_empty() {
+        // 巢狀 repo 的內容由 Agent 控制，主機的 git 之後會進到裡面執行（讀它的 config）：不加入
+        for p in &nested {
+            // --cached：只從 index 移除，不動工作目錄；-f：index 裡的內容與 HEAD、檔案都不同時 git 才肯移除
+            git_wt(repo, worktree, &["rm", "--cached", "-f", "-q", "--", p])?;
+        }
+        return Err(GitError::Refused(format!(
+            "worktree 裡有巢狀的 git repo：{}。agt 不支援把它 commit 進來；\
+             請刪除其中的 .git（或把該目錄移走）後再收尾。",
+            nested.join("、")
+        )));
+    }
     git_wt(repo, worktree, &["commit", "-m", message])?;
     Ok(true)
+}
+
+/// index 裡有、HEAD 沒有的 gitlink（`git add -A` 把含有 `.git` 的子目錄當成 submodule 加入）。
+fn new_gitlinks(repo: &Path, worktree: &Path) -> Result<Vec<String>> {
+    const GITLINK: &str = "160000 ";
+    let paths = |out: String| -> Vec<String> {
+        out.split('\0')
+            .filter(|l| l.starts_with(GITLINK))
+            .filter_map(|l| l.split_once('\t').map(|(_, p)| p.to_string()))
+            .collect()
+    };
+    let staged = paths(git_wt(repo, worktree, &["ls-files", "-s", "-z"])?);
+    if staged.is_empty() {
+        return Ok(staged);
+    }
+    // 還沒有任何 commit 時 HEAD 不存在：視為沒有既有的 gitlink
+    let existing =
+        paths(git_wt(repo, worktree, &["ls-tree", "-r", "-z", "HEAD"]).unwrap_or_default());
+    Ok(staged
+        .into_iter()
+        .filter(|p| !existing.contains(p))
+        .collect())
+}
+
+/// branch 相對 base 變更過的檔案中，合併後會在主機或 CI 上**自動執行**的設定檔
+/// （hooks、CI workflow、編輯器 task、agt 的 setup 等）。收尾前要讓使用者再確認一次：
+/// 沙箱裡的 Agent 改不到主機，但這些檔案一旦合併就等於在沙箱外執行它寫的內容。
+pub fn sensitive_changes(repo: &Path, worktree: &Path, base: &str) -> Result<Vec<String>> {
+    let out = git_wt(
+        repo,
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-ext-diff",
+            &format!("{base}...HEAD"),
+        ],
+    )?;
+    Ok(out
+        .split('\0')
+        .filter(|p| is_sensitive_path(p))
+        .map(str::to_string)
+        .collect())
+}
+
+/// 見 [`sensitive_changes`]。路徑以 repo 根目錄為準、用 `/` 分隔。
+pub fn is_sensitive_path(path: &str) -> bool {
+    /// 整個目錄都算。
+    const DIRS: &[&str] = &[
+        ".claude/",
+        ".gemini/",
+        ".cursor/",
+        ".github/workflows/",
+        ".github/actions/",
+        ".circleci/",
+        ".githooks/",
+        ".husky/",
+        ".vscode/",
+        ".devcontainer/",
+    ];
+    /// repo 根目錄的檔案。
+    const ROOT_FILES: &[&str] = &[".agt.toml", ".mcp.json", ".gitlab-ci.yml", ".gitmodules"];
+    /// 任何目錄下的檔案名稱。
+    const NAMES: &[&str] = &[".gitattributes", ".envrc"];
+    let p = path.to_ascii_lowercase();
+    let name = p.rsplit('/').next().unwrap_or(&p);
+    DIRS.iter().any(|d| p.starts_with(d))
+        || ROOT_FILES.contains(&p.as_str())
+        || NAMES.contains(&name)
 }
 
 /// 回到主工作目錄將 branch 合併進 base（規格 7.3、7.4）。
@@ -842,6 +1024,14 @@ pub fn create_pr(
     gh.current_dir(worktree)
         .env("GIT_DIR", &gitdir)
         .env("GIT_WORK_TREE", worktree)
+        // gh 自己呼叫的 git 也不能進巢狀 repo、不能啟動 fsmonitor（-c 只管我們直接執行的 git）
+        .env("GIT_CONFIG_COUNT", "3")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env("GIT_CONFIG_KEY_1", "diff.ignoreSubmodules")
+        .env("GIT_CONFIG_VALUE_1", "all")
+        .env("GIT_CONFIG_KEY_2", "submodule.recurse")
+        .env("GIT_CONFIG_VALUE_2", "false")
         .args([
             "pr", "create", "--base", base, "--head", branch, "--title", title, "--fill",
         ])
@@ -1151,6 +1341,132 @@ mod tests {
         // 還原後恢復正常
         std::fs::write(wt.join(".git"), backup).unwrap();
         assert!(status(root, &wt, "main").is_ok());
+    }
+
+    /// Agent 能寫的 git config：`git status` 時執行指令、留下 marker 檔。
+    fn evil_config(dir: &Path, marker: &Path) {
+        let m = marker.to_string_lossy().replace('\\', "/");
+        let cmd = format!("echo x > \"{m}\"; false");
+        git(dir, &["config", "core.fsmonitor", &cmd]).unwrap();
+    }
+
+    /// 重新啟動分頁時 `install_hooks` 會呼叫 add_exclude：此時 `.git` 可能已被上一次的 Agent 換掉，
+    /// 不能因此執行 worktree 裡的設定；而且丟棄分頁仍要能成功。
+    #[test]
+    fn replaced_dotgit_runs_nothing_in_add_exclude_and_can_be_discarded() {
+        let repo = init_repo();
+        let root = repo.path();
+        let wts = tempfile::tempdir().unwrap();
+        let marker = wts.path().join("pwned");
+        let wt = wts.path().join("w");
+        add_worktree(root, &wt, "agt/t/h-000006", "main").unwrap();
+        add_exclude(&wt, ".claude/x").unwrap();
+        std::fs::remove_file(wt.join(".git")).unwrap();
+        git(&wt, &["init", "-q"]).unwrap();
+        evil_config(&wt, &marker);
+        // 確認這個設定真的會被未防護的 git 執行（測試本身有效），再清掉 marker
+        // （用原生 git：agt 自己的 `git()` 已經帶了 -c core.fsmonitor=false）
+        Command::new("git")
+            .current_dir(&wt)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(marker.exists(), "fsmonitor 應該會被未防護的 git 執行");
+        std::fs::remove_file(&marker).unwrap();
+
+        // .git 是目錄：當成一般 repo，只寫入那個目錄裡的 info/exclude（Agent 自己的檔案），不執行 git
+        let _ = add_exclude(&wt, ".claude/y");
+        assert!(status(root, &wt, "main").is_err());
+        assert!(!marker.exists(), "不可以執行 worktree 裡的設定");
+
+        // 指向 worktree 內的目錄、或別的 repo 的 .git：同樣拒絕
+        git(&wt, &["init", "-q", "inner"]).unwrap();
+        std::fs::remove_dir_all(wt.join(".git")).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: inner/.git\n").unwrap();
+        assert!(add_exclude(&wt, ".claude/y").is_err());
+        let other = init_repo();
+        let other_git = other.path().join(".git");
+        let other_git = other_git.to_string_lossy().replace('\\', "/");
+        std::fs::write(wt.join(".git"), format!("gitdir: {other_git}\n")).unwrap();
+        assert!(add_exclude(&wt, ".claude/y").is_err());
+
+        // 沒有確認（force = false）時不刪；使用者確認丟棄後仍然移除得掉
+        assert!(remove_worktree(root, &wt, false).is_err());
+        assert!(wt.exists());
+        remove_worktree(root, &wt, true).unwrap();
+        assert!(!wt.exists());
+        delete_branch(root, "agt/t/h-000006").unwrap();
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn nested_repo_config_is_not_executed() {
+        let repo = init_repo();
+        let root = repo.path();
+        let wts = tempfile::tempdir().unwrap();
+        let marker = wts.path().join("pwned");
+        let wt = wts.path().join("w");
+        add_worktree(root, &wt, "agt/t/k-000009", "main").unwrap();
+        // Agent 在 worktree 裡放一個巢狀 repo；auto_commit 會把它當成 gitlink 加入
+        let sub = wt.join("sub");
+        git(&wt, &["init", "-q", "sub"]).unwrap();
+        git(&sub, &["config", "user.email", "t@t"]).unwrap();
+        git(&sub, &["config", "user.name", "t"]).unwrap();
+        git(&sub, &["commit", "-q", "--allow-empty", "-m", "s"]).unwrap();
+        evil_config(&sub, &marker);
+        std::fs::write(sub.join("f"), "x").unwrap();
+        std::fs::write(wt.join("ok.txt"), "ok").unwrap();
+        // auto_commit 拒絕把巢狀 repo 加進來，也不會留在 index 裡
+        let r = commit_all(root, &wt, "auto");
+        assert!(matches!(r, Err(GitError::Refused(_))), "{r:?}");
+        assert!(!git(&wt, &["ls-files", "-s"]).unwrap().contains("160000"));
+        // 就算 gitlink 已經進了 index（例如 Agent 自己 commit），status / diff 也不會進到裡面執行
+        git(&wt, &["add", "-A"]).unwrap();
+        git(&wt, &["commit", "-q", "-m", "gitlink"]).unwrap();
+        std::fs::write(sub.join("g"), "y").unwrap();
+        assert!(!commit_all(root, &wt, "auto").unwrap());
+        status(root, &wt, "main").unwrap();
+        diff(root, &wt, "main").unwrap();
+        assert!(!is_dirty_wt(root, &wt, false).unwrap());
+        assert!(!marker.exists(), "不可以執行巢狀 repo 的設定");
+    }
+
+    #[test]
+    fn sensitive_files_are_reported() {
+        for p in [
+            ".agt.toml",
+            ".claude/settings.json",
+            ".github/workflows/ci.yml",
+            ".vscode/tasks.json",
+            "sub/.gitattributes",
+            ".MCP.json",
+        ] {
+            assert!(is_sensitive_path(p), "{p}");
+        }
+        for p in [
+            "src/main.rs",
+            "docs/.agt.toml",
+            "README.md",
+            ".github/ISSUE.md",
+        ] {
+            assert!(!is_sensitive_path(p), "{p}");
+        }
+        let repo = init_repo();
+        let root = repo.path();
+        let wts = tempfile::tempdir().unwrap();
+        let wt = wts.path().join("w");
+        add_worktree(root, &wt, "agt/t/s-000010", "main").unwrap();
+        std::fs::write(wt.join("ok.txt"), "x").unwrap();
+        assert!(commit_all(root, &wt, "ok").unwrap());
+        assert!(sensitive_changes(root, &wt, "main").unwrap().is_empty());
+        std::fs::write(wt.join(".agt.toml"), "setup = \"curl x | sh\"\n").unwrap();
+        std::fs::create_dir_all(wt.join(".claude")).unwrap();
+        std::fs::write(wt.join(".claude/settings.json"), "{}").unwrap();
+        assert!(commit_all(root, &wt, "evil").unwrap());
+        assert_eq!(
+            sensitive_changes(root, &wt, "main").unwrap(),
+            [".agt.toml", ".claude/settings.json"]
+        );
     }
 
     #[test]

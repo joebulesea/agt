@@ -6,9 +6,11 @@
 
 | 階段 | 內容 | 狀態 |
 | --- | --- | --- |
-| 1 | worktree 的 `.git` 驗證與 `GIT_DIR` 固定、關閉 `core.fsmonitor`、巢狀 repo（gitlink）處理 | 已 commit（`38d6d35`） |
-| 2 | Agent 執行檔移到唯讀 volume、容器加固參數、收尾時對自動執行的設定檔示警、`copy_files` 拒絕符號連結 | 已 commit（`38d6d35`） |
-| 3 | IPC 只接受同一位使用者（Unix peer uid / socket 目錄；Windows pipe ACL / 擁有者檢查）、`Resize` 上限、Hello 逾時 | 已 commit（`1573504`） |
+| 1 | worktree 的 `.git` 驗證與 `GIT_DIR` 固定、關閉 `core.fsmonitor` | PR #8 |
+| 1 | `add_exclude` 不再執行 git、巢狀 repo（gitlink）處理、`.git` 被改動時提示並可丟棄 | `fix/sandbox-hardening` |
+| 2 | `copy_files` 拒絕符號連結 | PR #7 |
+| 2 | Agent 執行檔移到唯讀 volume、容器加固參數、收尾時對自動執行的設定檔示警 | `fix/sandbox-hardening` |
+| 3 | IPC 只接受同一位使用者（Unix peer uid / socket 目錄；Windows pipe ACL / 擁有者檢查）、`Resize` 上限、Hello 逾時 | `fix/sandbox-hardening` |
 
 ---
 

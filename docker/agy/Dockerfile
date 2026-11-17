@@ -3,6 +3,7 @@
 #
 # 容器只看得到 agt 掛載進來的 worktree（/work/<分頁 id>），看不到主機上的其他檔案。
 # 登入資料與設定保存在 volume `agt-agy-home`（掛在 /home/agent），只需要登入一次。
+# agy 的更新版保存在 volume `agt-agy-tools`（掛在 /opt/agt-tools，分頁中唯讀）。
 # 專案需要的工具（Rust、Node 等）請自行加在下方。
 FROM debian:bookworm-slim
 
@@ -11,10 +12,13 @@ RUN apt-get update \
       ca-certificates curl git ripgrep jq less procps python3 python3-pip build-essential util-linux \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m -u 1000 -s /bin/bash agent
+# agy 的更新版放在 volume agt-agy-tools（掛在 /opt/agt-tools）。目錄先建好並交給執行身分，
+# 新的 volume 第一次掛載時會沿用這個擁有者；分頁的容器把它掛成唯讀（見 entrypoint.sh）。
+RUN useradd -m -u 1000 -s /bin/bash agent \
+ && mkdir -p /opt/agt-tools && chown agent:agent /opt/agt-tools
 
-# 先安裝一份到 /opt/agy 當作種子；第一次啟動時由 entrypoint 複製到 volume 內的 ~/.local/bin，
-# 之後 agy 在那裡自我更新（使用者可寫入）。
+# 先安裝一份到 /opt/agy 當作種子；更新用的容器會把它複製到 volume 內的 /opt/agt-tools/bin，
+# 之後 agy 在那裡自我更新。
 RUN curl -fsSL https://antigravity.google/cli/install.sh | HOME=/opt/agy-home bash -s -- --dir /opt/agy \
  && /opt/agy/agy --version \
  && rm -rf /opt/agy-home
@@ -24,7 +28,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/agt-entrypoint && chmod 755 /usr/local/bin/a
 
 USER agent
 ENV HOME=/home/agent \
-    PATH=/home/agent/.local/bin:$PATH \
+    PATH=/opt/agt-tools/bin:/opt/agy:$PATH \
     LANG=C.UTF-8 \
     TERM=xterm-256color \
     COLORTERM=truecolor
