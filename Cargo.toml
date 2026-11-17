@@ -50,6 +50,7 @@ thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 libc = "0.2"
+widestring = "1"
 tempfile = "3"
 
 [profile.release]

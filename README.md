@@ -79,7 +79,7 @@ TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` �
 
 - **端對端測試位置**：放在 `crates/agt-daemon/tests/`（才能取得 `agtd` 執行檔路徑），不是根目錄的 `tests/`；根目錄的 `tests/` 放 TUI 冒煙測試。
 - **Windows 結束行程樹**：用 `taskkill /T /F` 而不是 Job Object。
-- **IPC 存取限制**：Unix 靠 0700 的 socket 目錄；尚未檢查 peer uid，Windows 也沒有自訂 pipe ACL（使用系統預設）。
+- **IPC 存取限制**：只接受同一位使用者。Unix：socket 目錄 0700 且必須是自己的（不接受符號連結）、socket 0600，兩端都檢查對方的 uid；Windows：pipe 的 ACL 只允許目前的使用者與 SYSTEM，client 連線後確認 pipe 的擁有者。連線後 10 秒內沒有送出 Hello 會被中斷。同一位使用者的行程之間沒有再細分權限（分頁裡的 Agent 若在主機上執行，可以透過 `AGT_SOCKET` 操作其他分頁）。
 - **Windows 路徑長度**：worktree 路徑超過 240 字元且未開啟 `core.longpaths` 時拒絕建立（保留檔案名稱的空間）。
 - **Antigravity CLI / GitHub Copilot CLI**：只有規則比對（規格 14.2 待確認是否有 hooks）。Antigravity CLI 的 `--continue` 接續的是這個目錄最近一次的對話；Copilot CLI 用 `--session-id` 接續分頁自己的對話。
 - **未實作**：`cargo-dist` 打包、主題設定、`agt daemon stop` 之外的開機自動啟動（規格待決）。

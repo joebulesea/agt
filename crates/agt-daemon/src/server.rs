@@ -6,7 +6,7 @@ use agt_proto::transport::Conn;
 use agt_proto::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
@@ -44,6 +44,9 @@ fn reply(out: &Out, req_id: u64, result: OpResult<ReplyBody>) {
     let _ = out.send(frame);
 }
 
+/// 連線後必須在這段時間內送出 Hello，否則中斷連線。
+const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// 每條連線最多排隊的畫面封包數；超過時畫面轉送 task 會等待、落後，之後改送完整快照。
 const SCREEN_QUEUE: usize = 32;
 
@@ -67,81 +70,97 @@ pub async fn serve_conn(d: Arc<Daemon>, stream: Conn) {
         is_ui: false,
         events_task: None,
     };
-    let mut hello_done = false;
-    codec::drive(&stream, out_rx, screens_rx, |kind, payload| {
-            match (kind, payload) {
-                (KIND_JSON, payload) => {
-                    let req: Request = match serde_json::from_slice(&payload) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let _ = out.send(json_frame(&ServerMsg::Error {
-                                code: codes::BAD_REQUEST.into(),
-                                message: format!("無法解析請求：{e}"),
-                            }));
-                            return true;
-                        }
-                    };
-                    if !hello_done {
-                        match req.msg {
-                            ClientMsg::Hello {
-                                proto_version,
-                                ref client_kind,
-                            } => {
-                                if proto_version != PROTO_VERSION {
-                                    reply(
-                                        &out,
-                                        req.req_id,
-                                        Err(OpError::new(
-                                            codes::PROTO_MISMATCH,
-                                            format!(
-                                                "協定版本不同（client {proto_version}、daemon {PROTO_VERSION}），請執行 `agt daemon restart`"
-                                            ),
-                                        )),
-                                    );
-                                    return false;
-                                }
-                                hello_done = true;
-                                if client_kind != "notify" && client_kind != "cli" {
-                                    st.is_ui = true;
-                                    d.ui_clients.fetch_add(1, Ordering::Relaxed);
-                                    st.events_task = Some(forward_events(d.events.subscribe(), out.clone()));
-                                }
-                                d.touch();
-                                let cfg = d.cfg();
+    // 是否已完成 Hello；逾時檢查（另一個 future）也要讀，所以用 atomic
+    let hello = AtomicBool::new(false);
+    let serve = codec::drive(&stream, out_rx, screens_rx, |kind, payload| {
+        let hello_done = hello.load(Ordering::Relaxed);
+        match (kind, payload) {
+            (KIND_JSON, payload) => {
+                let req: Request = match serde_json::from_slice(&payload) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = out.send(json_frame(&ServerMsg::Error {
+                            code: codes::BAD_REQUEST.into(),
+                            message: format!("無法解析請求：{e}"),
+                        }));
+                        return true;
+                    }
+                };
+                if !hello_done {
+                    match req.msg {
+                        ClientMsg::Hello {
+                            proto_version,
+                            ref client_kind,
+                        } => {
+                            if proto_version != PROTO_VERSION {
                                 reply(
                                     &out,
                                     req.req_id,
-                                    Ok(ReplyBody::Hello {
-                                        daemon_version: env!("CARGO_PKG_VERSION").into(),
-                                        ui: cfg.ui(),
-                                        config_error: d.cfg_error(),
-                                    }),
-                                );
-                            }
-                            _ => {
-                                reply(
-                                    &out,
-                                    req.req_id,
-                                    Err(OpError::new(codes::BAD_REQUEST, "連線後的第一個訊息必須是 Hello")),
+                                    Err(OpError::new(
+                                        codes::PROTO_MISMATCH,
+                                        format!(
+                                            "協定版本不同（client {proto_version}、daemon {PROTO_VERSION}），請執行 `agt daemon restart`"
+                                        ),
+                                    )),
                                 );
                                 return false;
                             }
+                            hello.store(true, Ordering::Relaxed);
+                            if client_kind != "notify" && client_kind != "cli" {
+                                st.is_ui = true;
+                                d.ui_clients.fetch_add(1, Ordering::Relaxed);
+                                st.events_task =
+                                    Some(forward_events(d.events.subscribe(), out.clone()));
+                            }
+                            d.touch();
+                            let cfg = d.cfg();
+                            reply(
+                                &out,
+                                req.req_id,
+                                Ok(ReplyBody::Hello {
+                                    daemon_version: env!("CARGO_PKG_VERSION").into(),
+                                    ui: cfg.ui(),
+                                    config_error: d.cfg_error(),
+                                }),
+                            );
                         }
-                        return true;
+                        _ => {
+                            reply(
+                                &out,
+                                req.req_id,
+                                Err(OpError::new(
+                                    codes::BAD_REQUEST,
+                                    "連線後的第一個訊息必須是 Hello",
+                                )),
+                            );
+                            return false;
+                        }
                     }
-                    tracing::debug!(req_id = req.req_id, msg = ?std::mem::discriminant(&req.msg), "請求");
-                    handle(&d, &out, &mut st, req);
+                    return true;
                 }
-                (KIND_INPUT, payload) if hello_done => {
-                    if let Some((id, bytes)) = decode_input(&payload) {
-                        input(&d, &st, &id, bytes);
-                    }
-                }
-                _ => {}
+                tracing::debug!(req_id = req.req_id, msg = ?std::mem::discriminant(&req.msg), "請求");
+                handle(&d, &out, &mut st, req);
             }
+            (KIND_INPUT, payload) if hello_done => {
+                if let Some((id, bytes)) = decode_input(&payload) {
+                    input(&d, &st, &id, bytes);
+                }
+            }
+            _ => {}
+        }
         true
-    })
-    .await;
+    });
+    // 連線後遲遲不送 Hello 的 client 不讓它一直佔著連線
+    let no_hello = async {
+        tokio::time::sleep(HELLO_TIMEOUT).await;
+        if hello.load(Ordering::Relaxed) {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::select! {
+        _ = serve => {}
+        _ = no_hello => tracing::debug!("連線逾時未送出 Hello，中斷"),
+    }
 
     for (_, t) in st.attached.drain() {
         t.abort();
@@ -317,6 +336,8 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
             reply(out, req_id, Ok(ReplyBody::Ok));
         }
         ClientMsg::Resize { id, cols, rows } => {
+            // 已結束分頁的說明畫面也用這個大小配置，所以在這裡就限制
+            let (cols, rows) = (cols.clamp(2, MAX_COLS), rows.clamp(1, MAX_ROWS));
             let r = d.resolve(&id).map(|id| {
                 st.sizes.insert(id.clone(), (cols, rows));
                 if let Some(s) = d.session(&id) {
