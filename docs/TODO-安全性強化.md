@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 1 | worktree 的 `.git` 驗證與 `GIT_DIR` 固定、關閉 `core.fsmonitor`、巢狀 repo（gitlink）處理 | 已 commit（`38d6d35`） |
 | 2 | Agent 執行檔移到唯讀 volume、容器加固參數、收尾時對自動執行的設定檔示警、`copy_files` 拒絕符號連結 | 已 commit（`38d6d35`） |
-| 3 | IPC 只接受同一位使用者（Unix peer uid / socket 目錄；Windows pipe ACL / 擁有者檢查）、`Resize` 上限、Hello 逾時 | 已完成，**尚未 commit** |
+| 3 | IPC 只接受同一位使用者（Unix peer uid / socket 目錄；Windows pipe ACL / 擁有者檢查）、`Resize` 上限、Hello 逾時 | 已 commit（`1573504`） |
 
 ---
 
@@ -125,8 +125,7 @@
 
 ## 建議順序
 
-1. 先 commit 階段 3
-2. 階段 4.3（OSC 52）與 5.3（輸出過濾）：改動小、風險直接，一起做
-3. 階段 4.1 / 4.2（資料保留）：需要先決定紀錄檔位置
-4. 共用家目錄與網路限制：需要實測各 Agent 的登入流程，最花時間
-5. 階段 5.1 / 5.2（供應鏈與 CI）：可獨立進行
+1. 階段 4.3（OSC 52）與 5.3（輸出過濾）：改動小、風險直接，一起做
+2. 階段 4.1 / 4.2（資料保留）：需要先決定紀錄檔位置
+3. 共用家目錄與網路限制：需要實測各 Agent 的登入流程，最花時間
+4. 階段 5.1 / 5.2（供應鏈與 CI）：可獨立進行
