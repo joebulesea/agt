@@ -620,7 +620,13 @@ async fn full_flow() {
     assert!(!env.home.join("orphan").exists());
     assert!(!git(&env.repo, &["branch", "--list", "agt/x/orphan"]).is_empty());
     // 遺失的 worktree：資料庫有、磁碟上沒有
-    std::fs::remove_dir_all(&wa).unwrap();
+    // Windows：daemon 每 3 秒的背景 git 輪詢可能剛好正在這個資料夾裡執行，刪除會暫時失敗，重試即可
+    let mut tries = 0;
+    while let Err(e) = std::fs::remove_dir_all(&wa) {
+        tries += 1;
+        assert!(tries < 50, "無法刪除 worktree：{e}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let ReplyBody::Gc(items) = c2.request(ClientMsg::Gc { prune: true }).await.unwrap() else {
         panic!()
     };

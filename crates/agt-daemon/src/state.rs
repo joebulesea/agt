@@ -521,7 +521,18 @@ impl Daemon {
             .chain(&settings.new_args)
             .chain(&settings.resume_args)
             .any(|a| a.contains("{gitdir}"));
-        let gitdir = if wants_gitdir && info.worktree.is_some() {
+        // 重新啟動時 worktree 的 .git 可能被上一次的 Agent 改過：先確認它指向主 repo 登記的 gitdir，
+        // 否則 {gitdir} 會把 Agent 指定的任意目錄掛進新的沙箱。
+        let trusted = info.repo_path.as_deref().is_some_and(|repo| {
+            match agt_git::trusted_gitdir(Path::new(repo), Path::new(&info.cwd)) {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::warn!("不掛載 {{gitdir}}：{e}");
+                    false
+                }
+            }
+        });
+        let gitdir = if wants_gitdir && info.worktree.is_some() && trusted {
             agt_git::prepare_container_gitdir(Path::new(&info.cwd))
         } else {
             None
@@ -884,8 +895,12 @@ impl Daemon {
         if force || !Path::new(wt).exists() {
             return Ok(());
         }
-        let dirty = agt_git::is_dirty(Path::new(wt), true)?;
-        let unpushed = agt_git::has_unpushed(Path::new(wt), base)?;
+        let Some(repo) = &info.repo_path else {
+            return Ok(());
+        };
+        let (repo, wt) = (Path::new(repo), Path::new(wt));
+        let dirty = agt_git::is_dirty_wt(repo, wt, true)?;
+        let unpushed = agt_git::has_unpushed(repo, wt, base)?;
         if dirty || unpushed {
             let mut why = vec![];
             if dirty {
@@ -973,7 +988,7 @@ impl Daemon {
             }
             FinishAction::Merge { strategy } => {
                 let (wt, branch, base, repo) = need_worktree(&info)?;
-                self.auto_commit(&id, &info, &wt)?;
+                self.auto_commit(&id, &info, &repo, &wt)?;
                 let cfg_strategy = self.cfg().general.merge_strategy.clone();
                 let strategy = match strategy {
                     Some(s) => s,
@@ -1006,9 +1021,15 @@ impl Daemon {
                 Ok(msg)
             }
             FinishAction::Pr => {
-                let (wt, branch, base, _) = need_worktree(&info)?;
-                self.auto_commit(&id, &info, &wt)?;
-                let out = agt_git::create_pr(Path::new(&wt), &branch, &base, &info.task)?;
+                let (wt, branch, base, repo) = need_worktree(&info)?;
+                self.auto_commit(&id, &info, &repo, &wt)?;
+                let out = agt_git::create_pr(
+                    Path::new(&repo),
+                    Path::new(&wt),
+                    &branch,
+                    &base,
+                    &info.task,
+                )?;
                 self.record(&id, "git", json!({"action": "pr", "result": out}));
                 self.store().set_finish_action(&id, "pr")?;
                 Ok(out)
@@ -1017,13 +1038,13 @@ impl Daemon {
     }
 
     /// Agent 設定了 `auto_commit` 時，收尾前先 commit worktree 中的所有變更。
-    fn auto_commit(&self, id: &str, info: &SessionInfo, wt: &str) -> OpResult<()> {
+    fn auto_commit(&self, id: &str, info: &SessionInfo, repo: &str, wt: &str) -> OpResult<()> {
         let enabled = self
             .cfg()
             .agents
             .get(&info.agent)
             .is_some_and(|a| a.auto_commit);
-        if enabled && agt_git::commit_all(Path::new(wt), &info.task)? {
+        if enabled && agt_git::commit_all(Path::new(repo), Path::new(wt), &info.task)? {
             self.record(id, "git", json!({"action": "auto_commit"}));
         }
         Ok(())
@@ -1031,8 +1052,8 @@ impl Daemon {
 
     pub fn diff(&self, id: &str) -> OpResult<String> {
         let info = self.get(id)?;
-        let (wt, _, base, _) = need_worktree(&info)?;
-        Ok(agt_git::diff(Path::new(&wt), &base)?)
+        let (wt, _, base, repo) = need_worktree(&info)?;
+        Ok(agt_git::diff(Path::new(&repo), Path::new(&wt), &base)?)
     }
 
     /// 孤兒偵測（規格 7.5）：比對 `git worktree list` 與資料庫。
@@ -1121,7 +1142,7 @@ impl Daemon {
 
     /// 定期更新 git 資訊，有變化時推播 `WorktreeChanged`。
     pub fn poll_git(&self) {
-        let targets: Vec<(String, String, String)> = self
+        let targets: Vec<(String, String, String, String)> = self
             .entries
             .lock()
             .unwrap()
@@ -1129,16 +1150,17 @@ impl Daemon {
             .filter_map(|e| {
                 Some((
                     e.info.id.clone(),
+                    e.info.repo_path.clone()?,
                     e.info.worktree.clone()?,
                     e.info.base_branch.clone()?,
                 ))
             })
             .collect();
-        for (id, wt, base) in targets {
+        for (id, repo, wt, base) in targets {
             if !Path::new(&wt).is_dir() {
                 continue;
             }
-            let Ok(st) = agt_git::status(Path::new(&wt), &base) else {
+            let Ok(st) = agt_git::status(Path::new(&repo), Path::new(&wt), &base) else {
                 continue;
             };
             let changed = {
