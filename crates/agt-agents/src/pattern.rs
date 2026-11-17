@@ -14,10 +14,7 @@ pub const QUIET_FOR_WAITING: Duration = Duration::from_millis(500);
 const ANTIGRAVITY_PATTERNS: &[&str] = &[r"\(y/n\)", r"Allow\?"];
 /// GitHub Copilot CLI 的預設等待規則：工具核准選單（「Do you want to run this command?」
 /// 下方的「No, and tell Copilot what to do differently」）與資料夾信任詢問。
-const COPILOT_PATTERNS: &[&str] = &[
-    r"No, and tell Copilot",
-    r"Do you trust the files",
-];
+const COPILOT_PATTERNS: &[&str] = &[r"No, and tell Copilot", r"Do you trust the files"];
 
 pub struct PatternAdapter {
     id: &'static str,

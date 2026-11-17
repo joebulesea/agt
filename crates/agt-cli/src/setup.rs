@@ -196,10 +196,19 @@ pub fn example_block(name: &str) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+/// 設定檔中是否已有這個 Agent。用 TOML 解析，才能認得 `[agents."x"]`、行尾註解等寫法；
+/// 否則會再附加一個同名區段，重複的表格會讓整個設定檔無法載入。
+/// 設定檔本身不合法時退回逐行比對（daemon 會另外回報錯誤）。
 fn has_agent(config: &str, name: &str) -> bool {
-    config
-        .lines()
-        .any(|l| l.trim() == format!("[agents.{name}]"))
+    match toml::from_str::<toml::Table>(config) {
+        Ok(t) => t
+            .get("agents")
+            .and_then(|a| a.as_table())
+            .is_some_and(|a| a.contains_key(name)),
+        Err(_) => config
+            .lines()
+            .any(|l| l.trim() == format!("[agents.{name}]")),
+    }
 }
 
 /// 是否用互動式選單（`--yes` 或不是終端機時直接採用預設答案）。
@@ -701,7 +710,12 @@ mod tests {
 
     #[test]
     fn example_blocks_are_valid_toml() {
-        for name in ["claude-sbx", "claude-docker", "agy-docker", "copilot-docker"] {
+        for name in [
+            "claude-sbx",
+            "claude-docker",
+            "agy-docker",
+            "copilot-docker",
+        ] {
             let block = example_block(name).unwrap_or_else(|| panic!("找不到 {name}"));
             assert!(block.starts_with(&format!("[agents.{name}]\n")), "{block}");
             let v: toml::Value =
@@ -711,7 +725,11 @@ mod tests {
         // agy-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
         assert!(!example_block("agy-docker").unwrap().contains("copilot"));
         // copilot-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
-        assert!(!example_block("copilot-docker").unwrap().contains("任何 Agent"));
+        assert!(
+            !example_block("copilot-docker")
+                .unwrap()
+                .contains("任何 Agent")
+        );
         assert!(example_block("nope").is_none());
     }
 
@@ -721,6 +739,19 @@ mod tests {
         assert!(has_agent(cfg, "claude-sbx"));
         assert!(!has_agent(cfg, "claude-docker"));
         assert!(!has_agent("# [agents.claude-docker]", "claude-docker"));
+        // 引號、行尾註解、inline table 都要認得，否則會附加重複的區段
+        assert!(has_agent(
+            "[agents.\"claude-docker\"]\ncommand = \"docker\"\n",
+            "claude-docker"
+        ));
+        assert!(has_agent(
+            "[agents.claude-docker]  # 我的設定\ncommand = \"docker\"\n",
+            "claude-docker"
+        ));
+        assert!(has_agent(
+            "[agents]\nclaude-docker = { command = \"docker\" }\n",
+            "claude-docker"
+        ));
     }
 
     #[test]

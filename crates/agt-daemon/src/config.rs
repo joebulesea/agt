@@ -357,6 +357,25 @@ mod tests {
         assert_eq!(c.general.sidebar_width, 26);
         assert_eq!(c.agents["claude"].status_source, "hooks");
         assert!(!c.agents["shell"].worktree);
+        // copilot 用分頁自己的對話 ID 接續（不是 --continue 的「最近一次」）
+        let sid = ["--session-id", "{conversation}"];
+        assert_eq!(c.agents["copilot"].new_args, sid);
+        assert_eq!(c.agents["copilot"].resume_args, sid);
+    }
+
+    #[test]
+    fn copilot_docker_inherits_session_args() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        std::fs::write(
+            &f,
+            "[agents.copilot-docker]\ncommand = \"docker\"\nadapter = \"copilot\"\n",
+        )
+        .unwrap();
+        let c = Config::load(&f).unwrap();
+        let a = &c.agents["copilot-docker"];
+        assert_eq!(a.new_args, ["--session-id", "{conversation}"]);
+        assert_eq!(a.resume_args, ["--session-id", "{conversation}"]);
     }
 
     #[test]
