@@ -50,8 +50,9 @@ pub struct Config {
 struct PartialConfig {
     #[serde(default)]
     general: Option<PartialGeneral>,
+    // AgentSettings 每個欄位都有預設值，直接拿來檢查；新增欄位時不必再改這裡
     #[serde(default)]
-    agents: BTreeMap<String, PartialAgent>,
+    agents: BTreeMap<String, AgentSettings>,
     #[serde(default)]
     repos: BTreeMap<String, RepoConfig>,
 }
@@ -68,27 +69,6 @@ struct PartialGeneral {
     scrollback_lines: Option<usize>,
     merge_strategy: Option<String>,
     log_output: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(dead_code)]
-struct PartialAgent {
-    command: Option<String>,
-    args: Option<Vec<String>>,
-    status_source: Option<String>,
-    waiting_patterns: Option<Vec<String>>,
-    idle_timeout_secs: Option<u64>,
-    worktree: Option<bool>,
-    env: Option<BTreeMap<String, String>>,
-    adapter: Option<String>,
-    cleanup: Option<Vec<String>>,
-    on_close: Option<Vec<String>>,
-    auto_commit: Option<bool>,
-    update: Option<Vec<String>>,
-    new_args: Option<Vec<String>>,
-    resume_args: Option<Vec<String>>,
-    restart_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

@@ -40,6 +40,8 @@ fn command(dir: &Path) -> Command {
     c.current_dir(dir)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
+        // 背景輪詢的 git status 不搶 index.lock，避免 Agent 自己的 git add / commit 失敗
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -449,7 +451,6 @@ pub fn diff(worktree: &Path, base: &str) -> Result<String> {
 pub struct WorktreeEntry {
     pub path: PathBuf,
     pub branch: Option<String>,
-    pub bare: bool,
 }
 
 /// 解析 `git worktree list --porcelain`。
@@ -470,14 +471,10 @@ pub fn parse_worktree_list(out: &str) -> Vec<WorktreeEntry> {
                 path: PathBuf::from(p),
                 ..Default::default()
             });
-        } else if let Some(b) = line.strip_prefix("branch ") {
-            if let Some(c) = cur.as_mut() {
-                c.branch = Some(b.trim_start_matches("refs/heads/").to_string());
-            }
-        } else if line == "bare"
+        } else if let Some(b) = line.strip_prefix("branch ")
             && let Some(c) = cur.as_mut()
         {
-            c.bare = true;
+            c.branch = Some(b.trim_start_matches("refs/heads/").to_string());
         }
     }
     if let Some(c) = cur {
@@ -603,9 +600,20 @@ pub fn merge_into_base(
             "worktree 還有未 commit 的變更，請先讓 Agent commit 或手動 commit".into(),
         ));
     }
+    // base 不是本地 branch（例如 origin/main、tag）時 merge 會落在 detached HEAD 上
+    if !branch_exists(main, base) {
+        return Err(GitError::Refused(format!(
+            "base {base} 不是本地 branch，無法 merge；請改用 pr，或手動合併"
+        )));
+    }
+    // 不替使用者切換主工作目錄的 branch，避免之後的 commit 落在意料之外的 branch
     let current = git(main, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok();
     if current.as_deref() != Some(base) {
-        git(main, &["checkout", base])?;
+        return Err(GitError::Refused(format!(
+            "主工作目錄 {} 目前在 {}，不是 {base}；請先切換到 {base} 再 merge",
+            main.display(),
+            current.as_deref().unwrap_or("detached HEAD")
+        )));
     }
     match strategy {
         Strategy::Merge => {
@@ -655,13 +663,18 @@ pub fn merge_into_base(
 
 /// 結果：PR 網址或要使用者手動執行的指令。
 pub fn create_pr(worktree: &Path, branch: &str, base: &str, title: &str) -> Result<String> {
-    let has_gh = Command::new("gh")
+    let mut probe = Command::new("gh");
+    probe
         .arg("--version")
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        probe.creation_flags(0x0800_0000);
+    }
+    let has_gh = probe.status().map(|s| s.success()).unwrap_or(false);
     let remote = git(worktree, &["remote"])?;
     let remote = remote
         .lines()
@@ -745,6 +758,8 @@ mod tests {
         git(p, &["init", "-q", "-b", "main"]).unwrap();
         git(p, &["config", "user.email", "t@t"]).unwrap();
         git(p, &["config", "user.name", "t"]).unwrap();
+        // Windows 的 git 常預設 core.autocrlf=true，checkout 會把 \n 轉成 \r\n，讓內容比對失敗
+        git(p, &["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(p.join("a.txt"), "a\n").unwrap();
         git(p, &["add", "."]).unwrap();
         git(p, &["commit", "-q", "-m", "init"]).unwrap();
@@ -836,6 +851,34 @@ mod tests {
             merge_into_base(root, &wt, "agt/t/c-000002", "main", Strategy::Merge, "t"),
             Err(GitError::Conflict(_))
         ));
+    }
+
+    #[test]
+    fn merge_refuses_non_branch_base_and_other_checked_out_branch() {
+        let repo = init_repo();
+        let root = repo.path();
+        let wts = tempfile::tempdir().unwrap();
+        let wt = wts.path().join("w");
+        add_worktree(root, &wt, "agt/t/d-000005", "main").unwrap();
+        std::fs::write(wt.join("d.txt"), "d\n").unwrap();
+        git(&wt, &["add", "."]).unwrap();
+        git(&wt, &["commit", "-qm", "d"]).unwrap();
+        // base 是 tag：拒絕，不能 merge 到 detached HEAD
+        git(root, &["tag", "v1"]).unwrap();
+        assert!(matches!(
+            merge_into_base(root, &wt, "agt/t/d-000005", "v1", Strategy::Merge, "t"),
+            Err(GitError::Refused(_))
+        ));
+        // 主工作目錄在別的 branch：拒絕，且不切換
+        git(root, &["checkout", "-q", "-b", "feature"]).unwrap();
+        assert!(matches!(
+            merge_into_base(root, &wt, "agt/t/d-000005", "main", Strategy::Merge, "t"),
+            Err(GitError::Refused(_))
+        ));
+        assert_eq!(
+            git(root, &["symbolic-ref", "--short", "HEAD"]).unwrap(),
+            "feature"
+        );
     }
 
     #[test]

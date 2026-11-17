@@ -86,7 +86,4 @@ pub trait AgentAdapter: Send + Sync {
     fn on_output(&mut self, _current: AgentStatus) -> Option<AgentStatus> {
         None
     }
-    fn status_source(&self) -> StatusSourceKind {
-        StatusSourceKind::Pattern
-    }
 }

@@ -85,6 +85,9 @@ pub struct Daemon {
     cfg_error: Mutex<Option<String>>,
     store: Mutex<Store>,
     entries: Mutex<HashMap<String, Entry>>,
+    /// 讓「檢查舊 Agent 已結束 → 啟動新的 → 登記」成為一整步；
+    /// 否則連按兩次重新啟動會在同一個 worktree 啟動兩個 Agent。
+    restart_lock: Mutex<()>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -160,6 +163,7 @@ impl Daemon {
             cfg_error: Mutex::new(cfg_error),
             store: Mutex::new(store),
             entries: Mutex::new(entries),
+            restart_lock: Mutex::new(()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),
@@ -758,6 +762,7 @@ impl Daemon {
     /// 在同一個 worktree 重新啟動 Agent。Agent 設定了 `resume_args` 時接續上次的對話；
     /// `fresh` 或是沒有可接續的對話時開新對話。
     pub fn restart(self: &Arc<Self>, id: &str, fresh: bool) -> OpResult<SessionInfo> {
+        let _one_at_a_time = self.restart_lock.lock().unwrap_or_else(|e| e.into_inner());
         let id = self.resolve(id)?;
         let (info, old, conversation) = {
             let entries = self.entries.lock().unwrap();
@@ -825,6 +830,16 @@ impl Daemon {
         self.store().end_session(id, finish_action)?;
         self.run_on_close(id);
         self.entries.lock().unwrap().remove(id);
+        // 分頁關閉後紀錄檔就沒有人會看了（每個最多約 100 MB，且可能含有機密）。
+        // Windows 上 Agent 剛被結束時檔案可能還開著，刪不掉就留著，只記錄。
+        let logs = self.paths.logs();
+        for name in [format!("{id}.log"), format!("{id}.log.1")] {
+            match std::fs::remove_file(logs.join(&name)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::debug!("無法刪除紀錄檔 {name}：{e}"),
+            }
+        }
         let _ = self
             .events
             .send(ServerMsg::SessionRemoved { id: id.to_string() });
@@ -935,7 +950,11 @@ impl Daemon {
                 self.discard_worktree(&info)?;
                 self.record(&id, "git", json!({"action": "discard"}));
                 self.remove_entry(&id, Some("discard"))?;
-                Ok("已移除 worktree 並刪除 branch".into())
+                Ok(if info.shared {
+                    "已關閉分頁；worktree 屬於其他分頁，已保留".into()
+                } else {
+                    "已移除 worktree 並刪除 branch".into()
+                })
             }
             FinishAction::Merge { strategy } => {
                 let (wt, branch, base, repo) = need_worktree(&info)?;

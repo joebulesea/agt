@@ -102,9 +102,13 @@ fn take_frames(buf: &mut Vec<u8>, out: &mut Vec<(u8, Vec<u8>)>) -> io::Result<()
 /// 讀與寫在同一個 `select!` 中輪詢（`read` / `write` 都可以安全取消），
 /// 不會有兩個 task 同時輪詢同一個 handle——Windows named pipe 在那種情況下會遺失喚醒。
 /// `on_frame` 回傳 false 時，送出佇列中剩下的資料後結束。
+///
+/// `screens` 是有上限的畫面佇列：對方讀得慢時寫入端會被擋住、落後，再由寫入端改送完整快照，
+/// 而不是讓畫面無限堆在記憶體裡。沒有畫面要送的一方（client）傳入 sender 已關閉的 receiver。
 pub async fn drive<S, F>(
     stream: &S,
     mut out: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    mut screens: tokio::sync::mpsc::Receiver<Vec<u8>>,
     mut on_frame: F,
 ) where
     for<'a> &'a S: AsyncRead + AsyncWrite + Unpin,
@@ -117,11 +121,12 @@ pub async fn drive<S, F>(
     let mut pending: Vec<u8> = Vec::new();
     let mut off = 0usize;
     let mut out_open = true;
+    let mut screens_open = true;
     let mut frames = Vec::new();
     let trace = std::env::var_os("AGT_TRACE_IPC").is_some();
     let pid = std::process::id();
     'outer: loop {
-        if pending.len() == off && out_open {
+        if pending.len() == off {
             pending.clear();
             off = 0;
             // 合併已排隊的資料，減少系統呼叫
@@ -130,6 +135,11 @@ pub async fn drive<S, F>(
                 if pending.len() > 1 << 20 {
                     break;
                 }
+            }
+            while pending.len() <= 1 << 20
+                && let Ok(b) = screens.try_recv()
+            {
+                pending.extend_from_slice(&b);
             }
         }
         let has_pending = pending.len() > off;
@@ -169,6 +179,14 @@ pub async fn drive<S, F>(
                     pending.extend_from_slice(&b);
                 }
                 None => out_open = false,
+            },
+            s = screens.recv(), if !has_pending && screens_open => match s {
+                Some(b) => {
+                    pending.clear();
+                    off = 0;
+                    pending.extend_from_slice(&b);
+                }
+                None => screens_open = false,
             },
         }
     }

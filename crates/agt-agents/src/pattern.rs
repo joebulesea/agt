@@ -100,10 +100,6 @@ impl AgentAdapter for PatternAdapter {
             _ => None,
         }
     }
-
-    fn status_source(&self) -> StatusSourceKind {
-        self.settings.source()
-    }
 }
 
 #[cfg(test)]

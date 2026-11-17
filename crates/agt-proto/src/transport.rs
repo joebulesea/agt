@@ -67,13 +67,6 @@ fn name(ep: &str) -> io::Result<Name<'_>> {
     ep.to_fs_name::<GenericFilePath>()
 }
 
-/// 讓讀、寫兩個 task 共用同一條連線（`&Stream` 同時實作 AsyncRead 與 AsyncWrite）。
-pub fn shared(s: Stream) -> std::sync::Arc<Stream> {
-    std::sync::Arc::new(s)
-}
-
-pub use interprocess::local_socket::tokio::Listener as LocalListener;
-
 pub async fn accept(l: &Listener) -> io::Result<Stream> {
     l.accept().await
 }

@@ -143,16 +143,22 @@ impl AgentAdapter for ClaudeAdapter {
             return Ok(());
         }
         // 規格 14.1：安裝前檢查 `claude --version`；失敗時退回規則比對。
-        let ok = std::process::Command::new(
-            agt_core::platform::which(&self.settings.command)
-                .map(|p| p.into_os_string())
-                .unwrap_or_else(|| self.settings.command.clone().into()),
-        )
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        // `.cmd`（npm 安裝）要經由 cmd.exe 執行，和啟動 Agent 時一樣用 resolve_program。
+        let (program, pre_args) = agt_core::platform::resolve_program(&self.settings.command);
+        let mut probe = std::process::Command::new(program);
+        probe
+            .args(pre_args)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            // daemon 沒有 console，避免每次開分頁都跳出視窗
+            use std::os::windows::process::CommandExt;
+            probe.creation_flags(0x0800_0000);
+        }
+        let ok = probe.status().map(|s| s.success()).unwrap_or(false);
         if !ok {
             tracing::warn!(
                 "`{} --version` 失敗，改用規則比對判斷狀態",
@@ -217,14 +223,6 @@ impl AgentAdapter for ClaudeAdapter {
             None
         } else {
             self.fallback.on_output(current)
-        }
-    }
-
-    fn status_source(&self) -> StatusSourceKind {
-        if self.hooks_mode() {
-            StatusSourceKind::Hooks
-        } else {
-            StatusSourceKind::Pattern
         }
     }
 }

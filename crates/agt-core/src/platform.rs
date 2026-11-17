@@ -223,26 +223,6 @@ pub fn restrict_permissions(path: &Path) {
     let _ = path;
 }
 
-/// 判斷行程是否仍存在。
-pub fn pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: signal 0 只檢查行程是否存在。
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-            .unwrap_or(false)
-    }
-}
-
 /// Windows 路徑長度上限檢查（規格 7.2）。
 pub fn path_too_long(path: &Path) -> bool {
     cfg!(windows) && path.as_os_str().len() > 240
