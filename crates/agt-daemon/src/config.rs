@@ -22,6 +22,8 @@ pub struct General {
     pub log_output: bool,
     /// 分頁中的程式以 OSC 52 寫入剪貼簿時：off | ask | on
     pub osc52: String,
+    /// 收尾（merge / pr）前要求確認的額外路徑，加在內建清單之外。
+    pub sensitive_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
@@ -72,6 +74,7 @@ struct PartialGeneral {
     merge_strategy: Option<String>,
     log_output: Option<bool>,
     osc52: Option<String>,
+    sensitive_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]

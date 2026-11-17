@@ -1058,7 +1058,8 @@ impl Daemon {
                         ));
                     }
                 };
-                confirm_sensitive(&repo, &wt, &base, "merge", force)?;
+                let extra = self.cfg().general.sensitive_paths.clone();
+                confirm_sensitive(&repo, &wt, &base, &extra, "merge", force)?;
                 let s = match strategy {
                     MergeStrategy::Merge => agt_git::Strategy::Merge,
                     MergeStrategy::Squash => agt_git::Strategy::Squash,
@@ -1080,7 +1081,8 @@ impl Daemon {
             FinishAction::Pr => {
                 let (wt, branch, base, repo) = need_worktree(&info)?;
                 self.auto_commit(&id, &info, &repo, &wt)?;
-                confirm_sensitive(&repo, &wt, &base, "建立 PR", force)?;
+                let extra = self.cfg().general.sensitive_paths.clone();
+                confirm_sensitive(&repo, &wt, &base, &extra, "建立 PR", force)?;
                 let out = agt_git::create_pr(
                     Path::new(&repo),
                     Path::new(&wt),
@@ -1302,11 +1304,18 @@ impl Daemon {
 
 /// merge / pr 前：branch 改到會在主機或 CI 上自動執行的設定檔時，要求使用者確認（`force`）。
 /// Agent 在沙箱裡改不到主機，但這些檔案合併後就會在沙箱外生效。
-fn confirm_sensitive(repo: &str, wt: &str, base: &str, what: &str, force: bool) -> OpResult<()> {
+fn confirm_sensitive(
+    repo: &str,
+    wt: &str,
+    base: &str,
+    extra: &[String],
+    what: &str,
+    force: bool,
+) -> OpResult<()> {
     if force {
         return Ok(());
     }
-    let files = agt_git::sensitive_changes(Path::new(repo), Path::new(wt), base)?;
+    let files = agt_git::sensitive_changes(Path::new(repo), Path::new(wt), base, extra)?;
     if files.is_empty() {
         return Ok(());
     }
