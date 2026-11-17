@@ -3,6 +3,7 @@
 #
 # 容器只看得到 agt 掛載進來的 worktree（/work/<分頁 id>），看不到主機上的其他檔案。
 # 登入資料保存在 volume `agt-claude-home`（掛在 /home/node），只需要登入一次。
+# Claude Code 的更新版保存在 volume `agt-claude-tools`（掛在 /opt/agt-tools，分頁中唯讀）。
 # 專案需要的工具（Rust、Python 套件等）請自行加在下方。
 FROM node:22-bookworm-slim
 
@@ -13,19 +14,24 @@ RUN apt-get update \
 
 RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
 
-# 啟動前自動更新 Claude Code（見 entrypoint.sh；AGT_CLAUDE_UPDATE=0 可略過）
+# Claude Code 的更新版放在 volume agt-claude-tools（掛在 /opt/agt-tools）。目錄先建好並交給執行身分，
+# 新的 volume 第一次掛載時會沿用這個擁有者；分頁的容器把它掛成唯讀（見 entrypoint.sh）。
+RUN mkdir -p /opt/agt-tools && chown node:node /opt/agt-tools
+
+# 更新 Claude Code 的方式見 entrypoint.sh（AGT_CLAUDE_UPDATE=0 可略過）
 COPY entrypoint.sh /usr/local/bin/agt-entrypoint
 RUN sed -i 's/\r$//' /usr/local/bin/agt-entrypoint && chmod 755 /usr/local/bin/agt-entrypoint
 
 # 以非 root 身分執行（--dangerously-skip-permissions 不允許 root）
 USER node
 ENV HOME=/home/node \
+    PATH=/opt/agt-tools/bin:$PATH \
     LANG=C.UTF-8 \
     TERM=xterm-256color \
     COLORTERM=truecolor \
     # 告訴 Claude Code 這是隔離環境
     IS_SANDBOX=1 \
-    # 更新改由 entrypoint 在啟動前處理（內建更新器沒有權限寫入全域 npm 目錄）
+    # 更新改由 entrypoint 處理（內建更新器沒有權限寫入全域 npm 目錄）
     DISABLE_AUTOUPDATER=1 \
     NPM_CONFIG_UPDATE_NOTIFIER=false
 WORKDIR /work

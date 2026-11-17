@@ -63,7 +63,7 @@ TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` �
 `claude-sbx` 使用 [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/)（`sbx`，microVM，不需要 Docker Desktop）：沙箱保留到分頁關閉，沙箱內可唯讀使用 git。相關設定 `restart_args`（重新啟動時取代 `args`）、`on_close`（只在關閉分頁時執行）與 `{gitdir}` 變數，範例見 [`config/default.toml`](config/default.toml) 的 `[agents.claude-sbx]`。
 
 
-在容器中執行 Claude Code，容器只看得到該分頁的 worktree：`docker build -t agt-claude docker/claude/`，再把 [`config/default.toml`](config/default.toml) 裡的 `[agents.claude-docker]` 範例複製到設定檔。Antigravity CLI 同理：`docker build -t agt-agy docker/agy/`，範例是 `[agents.agy-docker]`；GitHub Copilot CLI 是 `docker build -t agt-copilot docker/copilot/`，範例是 `[agents.copilot-docker]`。Agent 設定可用 `adapter`（沿用內建 Agent 的狀態判斷）、`cleanup`（分頁結束時執行的收尾指令）、`update`（daemon 啟動時在背景執行的更新指令；容器每次啟動前也會自動更新 Claude Code）與 `{cwd}`、`{session}` 變數。容器內無法使用 git，commit 由收尾選單處理。詳見 [Windows 使用說明](docs/Windows-TUI-使用說明.md) 第 10 節。
+在容器中執行 Claude Code，容器只看得到該分頁的 worktree：`docker build -t agt-claude docker/claude/`，再把 [`config/default.toml`](config/default.toml) 裡的 `[agents.claude-docker]` 範例複製到設定檔。Antigravity CLI 同理：`docker build -t agt-agy docker/agy/`，範例是 `[agents.agy-docker]`；GitHub Copilot CLI 是 `docker build -t agt-copilot docker/copilot/`，範例是 `[agents.copilot-docker]`。Agent 設定可用 `adapter`（沿用內建 Agent 的狀態判斷）、`cleanup`（分頁結束時執行的收尾指令）、`update`（daemon 啟動時在背景執行的更新指令；Agent 的執行檔放在分頁中唯讀的 volume，只由這個指令更新）與 `{cwd}`、`{session}` 變數。容器內無法使用 git，commit 由收尾選單處理。詳見 [Windows 使用說明](docs/Windows-TUI-使用說明.md) 第 10 節。
 
 ## 環境變數
 
@@ -79,7 +79,7 @@ TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` �
 
 - **端對端測試位置**：放在 `crates/agt-daemon/tests/`（才能取得 `agtd` 執行檔路徑），不是根目錄的 `tests/`；根目錄的 `tests/` 放 TUI 冒煙測試。
 - **Windows 結束行程樹**：用 `taskkill /T /F` 而不是 Job Object。
-- **IPC 存取限制**：Unix 靠 0700 的 socket 目錄；尚未檢查 peer uid，Windows 也沒有自訂 pipe ACL（使用系統預設）。
+- **IPC 存取限制**：只接受同一位使用者。Unix：socket 目錄 0700 且必須是自己的（不接受符號連結）、socket 0600，兩端都檢查對方的 uid；Windows：pipe 的 ACL 只允許目前的使用者與 SYSTEM，client 連線後確認 pipe 的擁有者。連線後 10 秒內沒有送出 Hello 會被中斷。同一位使用者的行程之間沒有再細分權限（分頁裡的 Agent 若在主機上執行，可以透過 `AGT_SOCKET` 操作其他分頁）。
 - **Windows 路徑長度**：worktree 路徑超過 240 字元且未開啟 `core.longpaths` 時拒絕建立（保留檔案名稱的空間）。
 - **Antigravity CLI / GitHub Copilot CLI**：只有規則比對（規格 14.2 待確認是否有 hooks）。Antigravity CLI 的 `--continue` 接續的是這個目錄最近一次的對話；Copilot CLI 用 `--session-id` 接續分頁自己的對話。
 - **未實作**：`cargo-dist` 打包、主題設定、`agt daemon stop` 之外的開機自動啟動（規格待決）。

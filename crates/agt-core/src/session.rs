@@ -122,8 +122,8 @@ impl Session {
         opts: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<SessionEvent>)> {
         let size = PtySize {
-            rows: opts.rows.max(1),
-            cols: opts.cols.max(2),
+            rows: opts.rows.clamp(1, agt_proto::MAX_ROWS),
+            cols: opts.cols.clamp(2, agt_proto::MAX_COLS),
             pixel_width: 0,
             pixel_height: 0,
         };
@@ -513,8 +513,8 @@ impl Session {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
-        let cols = cols.max(2);
-        let rows = rows.max(1);
+        let cols = cols.clamp(2, agt_proto::MAX_COLS);
+        let rows = rows.clamp(1, agt_proto::MAX_ROWS);
         let mut inner = self.inner.lock().unwrap();
         if inner.term.cols() == cols && inner.term.rows() == rows {
             return;

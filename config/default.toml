@@ -53,12 +53,27 @@ worktree = false
 # 變數：{cwd} = worktree 路徑，{session} = 分頁 id。
 # 容器內無法使用 git（worktree 的 .git 指向主機路徑）；設定 auto_commit 後，收尾時由 agt 在主機上 commit。
 # worktree 掛在容器內的 /work/{session}：每個分頁的路徑不同，Agent 的對話記錄（依專案路徑分組）才不會混在一起。
+#
+# 安全性（三個 *-docker 範例相同）：
+#   - --cap-drop / no-new-privileges / --pids-limit：容器內拿不到額外權限，也不能無限產生行程。
+#     需要限制記憶體時自行加上 "--memory", "8g"。
+#   - agt-*-tools（/opt/agt-tools）放 Agent 執行檔的更新版，分頁中一律唯讀（:ro）；只有 update 指令
+#     （daemon 啟動時執行）把它掛成可寫來更新。分頁裡的 Agent 因此改不到之後所有分頁都會執行的程式。
+#   - agt-*-home 是所有分頁共用、可寫的家目錄（登入資料、對話記錄、Agent 的全域設定）。
+#     某個分頁的 Agent 若被惡意內容操控，可以改這裡的設定來影響之後的分頁。要完全隔離，把它換成
+#     每個分頁各自的 volume "agt-home-{session}:/home/node"，加上
+#     on_close = ["docker", "volume", "rm", "-f", "agt-home-{session}"]，並改用環境變數的 token 登入
+#     （每個分頁都是全新的家目錄，會重新出現初次設定畫面）。
+#   - "-e" 傳進容器的 token 容器內的 Agent 都讀得到，而容器可以連外網：請使用權限最小、
+#     可以隨時撤銷的 token（例如只限單一 repo 的 fine-grained PAT），不要傳主機上平常用的那一組。
 # [agents.claude-docker]
 # command = "docker"
 # adapter = "claude"               # 沿用 Claude Code 的狀態判斷規則
 # status_source = "pattern"        # 容器內無法回報 hooks
 # args = ["run", "-it", "--rm", "--init", "--name", "agt-{session}", "--label", "agt=1",
-#         "-v", "{cwd}:/work/{session}", "-v", "agt-claude-home:/home/node", "-w", "/work/{session}",
+#         "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=2048",
+#         "-v", "{cwd}:/work/{session}", "-v", "agt-claude-home:/home/node",
+#         "-v", "agt-claude-tools:/opt/agt-tools:ro", "-w", "/work/{session}",
 #         "-e", "ANTHROPIC_API_KEY", "-e", "CLAUDE_CODE_OAUTH_TOKEN",
 #         "agt-claude", "claude", "--dangerously-skip-permissions",
 #         "--append-system-prompt", "你在 Docker 沙箱中執行，目前所在的目錄就是專案目錄。容器內無法使用 git，不要執行或修復任何 git 指令；只修改檔案，commit 與合併由外部負責。"]
@@ -66,8 +81,8 @@ worktree = false
 # resume_args = ["--resume", "{conversation}"]
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]   # 關閉分頁時一併移除容器
 # auto_commit = true               # 收尾（merge / pr）前自動 commit 容器內做的修改
-# # agt（daemon）啟動時在背景先更新一次容器內的 Claude Code，開分頁時就不用等
-# update = ["docker", "run", "--rm", "-v", "agt-claude-home:/home/node", "agt-claude", "claude", "--version"]
+# # agt（daemon）啟動時在背景更新 Claude Code（裝進 agt-claude-tools；分頁本身不會更新）
+# update = ["docker", "run", "--rm", "-v", "agt-claude-tools:/opt/agt-tools", "agt-claude", "claude", "--version"]
 
 # 在 Docker Sandboxes（sbx，microVM 沙箱）中執行 Claude Code。需要先安裝 sbx 並執行 sbx login，
 # 不需要 Docker Desktop。每個分頁一個沙箱，沙箱會保留到分頁關閉（R 重新啟動時沿用，對話記錄與裝過的套件都還在）。
@@ -97,13 +112,15 @@ worktree = false
 # adapter = "antigravity"          # 沿用 Antigravity 的狀態判斷規則
 # status_source = "pattern"
 # args = ["run", "-it", "--rm", "--init", "--name", "agt-{session}", "--label", "agt=1",
-#         "-v", "{cwd}:/work/{session}", "-v", "agt-agy-home:/home/agent", "-w", "/work/{session}",
+#         "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=2048",
+#         "-v", "{cwd}:/work/{session}", "-v", "agt-agy-home:/home/agent",
+#         "-v", "agt-agy-tools:/opt/agt-tools:ro", "-w", "/work/{session}",
 #         "-e", "GEMINI_API_KEY",
 #         "agt-agy", "agy", "--dangerously-skip-permissions"]
 # resume_args = ["--continue"]
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]
 # auto_commit = true
-# update = ["docker", "run", "--rm", "-v", "agt-agy-home:/home/agent", "agt-agy", "agy", "--version"]
+# update = ["docker", "run", "--rm", "-v", "agt-agy-tools:/opt/agt-tools", "agt-agy", "agy", "--version"]
 
 # 在 Docker 容器中執行 GitHub Copilot CLI（沙箱）。先建置映像檔：docker build -t agt-copilot docker/copilot/
 # 第一次啟動時在分頁中輸入 /login，依畫面上的網址與代碼在主機的瀏覽器登入 GitHub。
@@ -113,14 +130,16 @@ worktree = false
 # adapter = "copilot"              # 沿用 Copilot CLI 的狀態判斷規則
 # status_source = "pattern"
 # args = ["run", "-it", "--rm", "--init", "--name", "agt-{session}", "--label", "agt=1",
-#         "-v", "{cwd}:/work/{session}", "-v", "agt-copilot-home:/home/node", "-w", "/work/{session}",
+#         "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=2048",
+#         "-v", "{cwd}:/work/{session}", "-v", "agt-copilot-home:/home/node",
+#         "-v", "agt-copilot-tools:/opt/agt-tools:ro", "-w", "/work/{session}",
 #         "-e", "GH_TOKEN", "-e", "GITHUB_TOKEN",
 #         "agt-copilot", "copilot", "--allow-all-tools"]
 # new_args = ["--session-id", "{conversation}"]
 # resume_args = ["--session-id", "{conversation}"]
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]
 # auto_commit = true
-# update = ["docker", "run", "--rm", "-v", "agt-copilot-home:/home/node", "agt-copilot", "copilot", "--version"]
+# update = ["docker", "run", "--rm", "-v", "agt-copilot-tools:/opt/agt-tools", "agt-copilot", "copilot", "--version"]
 #
 # 任何 Agent 都可以設定 update，例如主機上的 Claude Code：
 # [agents.claude]

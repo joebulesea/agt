@@ -67,30 +67,270 @@ fn name(ep: &str) -> io::Result<Name<'_>> {
     ep.to_fs_name::<GenericFilePath>()
 }
 
+fn denied(msg: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, msg.into())
+}
+
+/// 接受連線。只接受同一位使用者的 client：Unix 檢查對方的 uid；
+/// Windows 由 pipe 的 ACL 擋下其他使用者（見 [`listen`]）。
 pub async fn accept(l: &Listener) -> io::Result<Stream> {
-    l.accept().await
+    let s = l.accept().await?;
+    #[cfg(unix)]
+    check_peer_uid(&s, "client")?;
+    Ok(s)
 }
 
+/// 連線到 daemon，並確認對方真的是同一位使用者的 daemon：endpoint 的名稱可以預測，
+/// 其他本機使用者可能搶先建立同名的 socket / pipe 來冒充，藉此收到按鍵與畫面內容。
 pub async fn connect(ep: &str) -> io::Result<Stream> {
-    Stream::connect(name(ep)?).await
+    let s = Stream::connect(name(ep)?).await?;
+    #[cfg(unix)]
+    check_peer_uid(&s, "daemon")?;
+    #[cfg(windows)]
+    winsec::check_pipe_owner(&s)?;
+    Ok(s)
 }
 
-/// 建立 listener。Unix 會先建立權限 0700 的目錄並移除殘留的 socket 檔；
-/// 呼叫前必須先取得 daemon lock，確保不會刪掉別人正在用的 socket。
+/// Unix：連線另一端的有效 uid 必須和自己相同。
+#[cfg(unix)]
+fn check_peer_uid(s: &Stream, who: &str) -> io::Result<()> {
+    use interprocess::local_socket::traits::StreamCommon;
+    let me = unsafe { libc::geteuid() };
+    match s.peer_creds()?.euid() {
+        Some(uid) if uid == me => Ok(()),
+        Some(uid) => Err(denied(format!(
+            "拒絕連線：{who} 的使用者（uid {uid}）不是目前的使用者（uid {me}）"
+        ))),
+        None => Err(denied(format!("拒絕連線：無法確認 {who} 的使用者"))),
+    }
+}
+
+/// Unix：建立（或確認）只有自己能進入的 socket 目錄。
+/// 目錄已存在時必須是自己的真實目錄（不是符號連結），否則可能是別人預先放好的。
+#[cfg(unix)]
+fn ensure_private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.file_type().is_dir() {
+        return Err(denied(format!(
+            "socket 目錄 {} 不是一般目錄（可能是符號連結），拒絕使用",
+            dir.display()
+        )));
+    }
+    let me = unsafe { libc::geteuid() };
+    if meta.uid() != me {
+        return Err(denied(format!(
+            "socket 目錄 {} 的擁有者（uid {}）不是目前的使用者，拒絕使用",
+            dir.display(),
+            meta.uid()
+        )));
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// 建立 listener，只讓同一位使用者連線。
+///
+/// - Unix：socket 放在權限 0700、擁有者是自己的目錄裡，socket 本身 0600，並移除殘留的 socket 檔；
+///   呼叫前必須先取得 daemon lock，確保不會刪掉別人正在用的 socket。
+/// - Windows：pipe 的 ACL 只允許目前的使用者與 SYSTEM；同名的 pipe 已存在時建立會失敗。
 pub fn listen(ep: &str) -> io::Result<Listener> {
+    let opts = ListenerOptions::new().name(name(ep)?);
     #[cfg(unix)]
     {
+        use interprocess::os::unix::local_socket::ListenerOptionsExt;
         use std::os::unix::fs::PermissionsExt;
         let p = Path::new(ep);
         if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir)?;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            ensure_private_dir(dir)?;
         }
         let _ = std::fs::remove_file(p);
+        // 建立前就設定權限（fchmod）：Linux 支援；macOS 等平台回傳 Unsupported，
+        // 改成建立後再 chmod。中間的空檔無害：外層目錄已是只有自己能進入的 0700。
+        match opts.mode(0o600).create_tokio() {
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                let _ = std::fs::remove_file(p);
+                let l = ListenerOptions::new().name(name(ep)?).create_tokio()?;
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
+                Ok(l)
+            }
+            r => r,
+        }
     }
     #[cfg(windows)]
-    let _ = Path::new(ep);
-    ListenerOptions::new().name(name(ep)?).create_tokio()
+    {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt;
+        opts.security_descriptor(winsec::owner_only_descriptor()?)
+            .create_tokio()
+    }
+}
+
+/// Windows 的存取控制：pipe 的 ACL 與擁有者檢查。
+#[cfg(windows)]
+mod winsec {
+    use super::{Stream, denied};
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    use std::ffi::c_void;
+    use std::io;
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+
+    type Handle = *mut c_void;
+    type Psid = *mut c_void;
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
+        fn GetTokenInformation(
+            token: Handle,
+            class: u32,
+            info: *mut c_void,
+            len: u32,
+            ret_len: *mut u32,
+        ) -> i32;
+        fn ConvertSidToStringSidW(sid: Psid, out: *mut *mut u16) -> i32;
+        fn EqualSid(a: Psid, b: Psid) -> i32;
+        fn IsWellKnownSid(sid: Psid, kind: u32) -> i32;
+        fn GetSecurityInfo(
+            handle: Handle,
+            object_type: u32,
+            info: u32,
+            owner: *mut Psid,
+            group: *mut Psid,
+            dacl: *mut *mut c_void,
+            sacl: *mut *mut c_void,
+            descriptor: *mut *mut c_void,
+        ) -> u32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> Handle;
+        fn CloseHandle(h: Handle) -> i32;
+        fn LocalFree(p: *mut c_void) -> *mut c_void;
+    }
+
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_USER: u32 = 1;
+    const SE_KERNEL_OBJECT: u32 = 6;
+    const OWNER_SECURITY_INFORMATION: u32 = 1;
+    const WIN_LOCAL_SYSTEM_SID: u32 = 22;
+    const WIN_BUILTIN_ADMINISTRATORS_SID: u32 = 26;
+
+    /// 目前行程的使用者 SID（TOKEN_USER 結構連同 SID 本體，放在對齊的緩衝區裡）。
+    /// TOKEN_USER 裡的指標指向同一塊緩衝區內的 SID，所以緩衝區必須在堆積上、位址固定，
+    /// 不能跟著這個結構一起被搬動。
+    struct UserSid(Box<[u64; 32]>);
+
+    impl UserSid {
+        fn current() -> io::Result<UserSid> {
+            let mut buf = UserSid(Box::new([0; 32]));
+            // SAFETY: token 用完即關閉；緩衝區大小（256 bytes）足以容納 TOKEN_USER 與最長的 SID，
+            // 不夠時 GetTokenInformation 會失敗而不是寫出界。
+            unsafe {
+                let mut token: Handle = std::ptr::null_mut();
+                if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut len = 0u32;
+                let ok = GetTokenInformation(
+                    token,
+                    TOKEN_USER,
+                    buf.0.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&*buf.0) as u32,
+                    &mut len,
+                );
+                let err = io::Error::last_os_error();
+                CloseHandle(token);
+                if ok == 0 {
+                    return Err(err);
+                }
+            }
+            Ok(buf)
+        }
+
+        /// TOKEN_USER 的第一個欄位就是指向 SID 的指標。
+        fn psid(&self) -> Psid {
+            // SAFETY: current() 成功後緩衝區開頭是有效的 TOKEN_USER。
+            unsafe { *(self.0.as_ptr() as *const Psid) }
+        }
+
+        fn to_sddl(&self) -> io::Result<Vec<u16>> {
+            // SAFETY: 成功時 out 指向以 NUL 結尾、由 LocalAlloc 配置的字串，複製後釋放。
+            unsafe {
+                let mut out: *mut u16 = std::ptr::null_mut();
+                if ConvertSidToStringSidW(self.psid(), &mut out) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut n = 0;
+                while *out.add(n) != 0 {
+                    n += 1;
+                }
+                let s = std::slice::from_raw_parts(out, n).to_vec();
+                LocalFree(out.cast());
+                Ok(s)
+            }
+        }
+    }
+
+    /// 只允許目前的使用者與 SYSTEM 存取的安全描述元（`P` = 不繼承其他 ACE）。
+    pub fn owner_only_descriptor() -> io::Result<SecurityDescriptor> {
+        let sid = UserSid::current()?.to_sddl()?;
+        let mut sddl: Vec<u16> = "D:P(A;;GA;;;SY)(A;;GA;;;".encode_utf16().collect();
+        sddl.extend_from_slice(&sid);
+        sddl.extend(")".encode_utf16());
+        sddl.push(0);
+        let sddl = widestring::U16CStr::from_slice(&sddl)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        SecurityDescriptor::deserialize(sddl)
+    }
+
+    /// client 端：pipe 的擁有者必須是目前的使用者。
+    /// daemon 以系統管理員身分（提升權限）執行時，擁有者會是 Administrators 群組，也接受；SYSTEM 亦同。
+    pub fn check_pipe_owner(s: &Stream) -> io::Result<()> {
+        #[allow(unreachable_patterns)]
+        let handle = match s {
+            Stream::NamedPipe(p) => p.as_handle().as_raw_handle(),
+            _ => return Ok(()),
+        };
+        let me = UserSid::current()?;
+        // SAFETY: handle 在 s 存活期間有效；descriptor 由系統配置，用完以 LocalFree 釋放，
+        // owner 指向 descriptor 內部，只在釋放前使用。
+        unsafe {
+            let mut owner: Psid = std::ptr::null_mut();
+            let mut descriptor: *mut c_void = std::ptr::null_mut();
+            let rc = GetSecurityInfo(
+                handle.cast(),
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            );
+            if rc != 0 {
+                let e = io::Error::from_raw_os_error(rc as i32);
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("無法確認 pipe 的擁有者：{e}"),
+                ));
+            }
+            let ok = !owner.is_null()
+                && (EqualSid(owner, me.psid()) != 0
+                    || IsWellKnownSid(owner, WIN_BUILTIN_ADMINISTRATORS_SID) != 0
+                    || IsWellKnownSid(owner, WIN_LOCAL_SYSTEM_SID) != 0);
+            LocalFree(descriptor);
+            if ok {
+                Ok(())
+            } else {
+                Err(denied(
+                    "拒絕連線：這個 pipe 不是目前的使用者建立的（可能有其他使用者冒充 agt daemon）",
+                ))
+            }
+        }
+    }
 }
 
 /// 在背景啟動 daemon（規格 4.5）：Windows 用 `DETACHED_PROCESS | CREATE_NO_WINDOW`，Unix 用 `setsid`。
@@ -212,6 +452,76 @@ pub fn wait_pid_exit(pid: u32, timeout: std::time::Duration) -> bool {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+
+    fn test_endpoint(dir: &Path) -> String {
+        if cfg!(windows) {
+            format!(r"\\.\pipe\agt-test-{}", std::process::id())
+        } else {
+            dir.join("s")
+                .join("agt.sock")
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+
+    /// 同一位使用者：兩端的身分檢查都通過，連線可用。
+    #[tokio::test]
+    async fn same_user_can_connect() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let d = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(d.path());
+        let l = listen(&ep).unwrap();
+        let server = tokio::spawn(async move {
+            let mut s = accept(&l).await.unwrap();
+            let mut b = [0u8; 2];
+            s.read_exact(&mut b).await.unwrap();
+            b
+        });
+        let mut c = connect(&ep).await.unwrap();
+        c.write_all(b"hi").await.unwrap();
+        assert_eq!(&server.await.unwrap(), b"hi");
+    }
+
+    /// socket 檔本身也只有自己能讀寫（macOS 走「建立後再 chmod」的路徑）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn socket_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(d.path());
+        let _l = listen(&ep).unwrap();
+        let mode = std::fs::metadata(&ep).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+        let dir_mode = std::fs::metadata(Path::new(&ep).parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o777, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_dir_must_be_private_and_ours() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        // 既有的目錄權限太寬：收緊成 0700
+        let dir = d.path().join("loose");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        ensure_private_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        // 符號連結：拒絕（可能指向別人準備好的目錄）
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        let e = ensure_private_dir(&link).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
     }
 }
 

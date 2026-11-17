@@ -257,7 +257,8 @@ agt gc                     # 檢查 worktree 與資料庫是否一致
 | 網路 | 容器可以連外網，沒有限制 |
 | 工具 | 映像檔內只有 Node、git、Python、build-essential。專案需要的其他工具（Rust 等）請加在 `docker/claude/Dockerfile` 後重新建置 |
 | 速度 | Windows 目錄掛載進容器時，大量檔案讀寫會比較慢 |
-| Claude 版本 | 每個容器啟動前會檢查 npm 上的最新版，有新版就先更新（安裝在 volume `agt-claude-home` 內，之後沿用），約多花 1–2 秒；沒網路時直接用現有版本。設定 `update`（見範例）後，agt daemon 啟動時也會在背景先更新一次，開分頁時就不必等安裝。不想檢查時在 `args` 加上 `"-e", "AGT_CLAUDE_UPDATE=0"` |
+| Claude 版本 | 設定 `update`（見範例）後，agt daemon 啟動時會在背景檢查 npm 上的最新版並安裝到 volume `agt-claude-tools`；沒網路時直接用現有版本。分頁的容器把這個 volume 掛成唯讀，本身不會更新，要更新時執行 `agt daemon restart`。沒有掛載 `agt-claude-tools` 的舊設定會使用映像檔內建的版本（重新建置映像檔才會更新） |
+| 安全性 | 範例的 `--cap-drop=ALL`、`--security-opt=no-new-privileges`、`--pids-limit` 限制容器的權限與行程數；Agent 的執行檔在分頁中唯讀。`agt-claude-home` 是所有分頁共用且可寫的家目錄，要完全隔離的做法與 token 的注意事項見 `config/default.toml` 中 `claude-docker` 範例上方的說明。收尾（merge / pr）時，若分頁改了合併後會自動執行的設定檔（`.claude/`、`.agt.toml`、`.github/workflows/` 等），agt 會先列出來要求確認 |
 
 設定中可用的變數：`{cwd}` = worktree 路徑、`{session}` = 分頁 id、`{gitdir}` = 主 repo 的 `.git` 目錄（見下方 claude-sbx）。`adapter = "claude"` 讓自訂 Agent 沿用 Claude Code 的狀態判斷。`{conversation}` = 分頁目前的對話 ID：`claude-docker` 設定 `new_args = ["--session-id", "{conversation}"]` 與 `resume_args = ["--resume", "{conversation}"]` 後，按 `R` 會接續該分頁自己的對話（見第 5 節）。
 
@@ -313,7 +314,7 @@ agt gc                     # 檢查 worktree 與資料庫是否一致
 | 項目 | 說明 |
 | --- | --- |
 | git | 容器內無法使用 git。第一次啟動時會建立 `~/.gemini/GEMINI.md`（全域規則）告訴 agy 不要使用 git；已有內容時不會覆蓋。commit 由 `auto_commit` 處理 |
-| 版本 | 每次啟動前執行 `agy update`；設定 `update` 後 daemon 啟動時也會先更新一次。略過更新：`args` 加上 `"-e", "AGT_AGY_UPDATE=0"` |
+| 版本 | 設定 `update` 後，daemon 啟動時在背景執行 `agy update`（裝進 volume `agt-agy-tools`，分頁中唯讀）；分頁本身不會更新，要更新時執行 `agt daemon restart` |
 | 權限 | 加上 `--dangerously-skip-permissions` 自動核准所有工具；agy 的終端機沙箱在容器內無法使用，由 Docker 隔離取代 |
 | 狀態燈號 | 使用畫面規則判斷（`adapter = "antigravity"`） |
 
@@ -328,7 +329,7 @@ agt gc                     # 檢查 worktree 與資料庫是否一致
 | 項目 | 說明 |
 | --- | --- |
 | git | 容器內無法使用 git。第一次啟動時會建立 `~/.copilot/copilot-instructions.md`（全域指示）告訴 Copilot 不要使用 git；已有內容時不會覆蓋。commit 由 `auto_commit` 處理 |
-| 版本 | 每次啟動前檢查 npm 上的 `@github/copilot` 並更新；設定 `update` 後 daemon 啟動時也會先更新一次。略過更新：`args` 加上 `"-e", "AGT_COPILOT_UPDATE=0"` |
+| 版本 | 設定 `update` 後，daemon 啟動時在背景檢查 npm 上的 `@github/copilot` 並更新（裝進 volume `agt-copilot-tools`，分頁中唯讀）；分頁本身不會更新，要更新時執行 `agt daemon restart` |
 | 權限 | 加上 `--allow-all-tools` 自動核准所有工具，由 Docker 隔離取代逐一核准 |
 | 接續對話 | 開新對話時以 `--session-id` 指定分頁自己的對話 ID，`R` 用同一個 ID 接續；同時開多個 `copilot-docker` 分頁也不會接到別的分頁的對話 |
 | 狀態燈號 | 使用畫面規則判斷（`adapter = "copilot"`）：出現工具核准選單（`No, and tell Copilot ...`）或資料夾信任詢問為等待輸入 |
