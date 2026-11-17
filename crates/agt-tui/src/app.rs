@@ -1146,6 +1146,17 @@ impl App {
             self.dirty = true;
             return;
         }
+        if let Some(Popup::Text { lines, scroll, .. }) = self.popup.as_mut() {
+            // diff / 文字視窗：滾輪一次捲 3 行
+            let max = lines.len().saturating_sub(1);
+            match m.kind {
+                MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
+                MouseEventKind::ScrollDown => *scroll = (*scroll + 3).min(max),
+                _ => return,
+            }
+            self.dirty = true;
+            return;
+        }
         if self.popup.is_some() {
             return;
         }
