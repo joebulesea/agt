@@ -49,6 +49,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(msg) = migrated {
         tracing::info!("{msg}");
     }
+    // 取得 lock 之後才搬：這時沒有 Agent 在寫紀錄檔
+    if let Some(msg) = paths.migrate_logs() {
+        tracing::info!("{msg}");
+    }
     // 啟動時舊版 daemon / TUI 可能還沒完全結束（exe 仍被鎖住），之後在背景再試幾次
     if remove_stale_exes() > 0 {
         std::thread::spawn(|| {

@@ -13,6 +13,9 @@ idle_shutdown_secs = 600
 scrollback_lines = 10000
 merge_strategy = "ask"           # ask | merge | squash | rebase
 log_output = true                # 終端機紀錄檔
+# 分頁中的程式以 OSC 52 寫入剪貼簿時：ask = 先詢問、on = 直接寫入、off = 一律拒絕。
+# 沙箱裡的 Agent 也能送出 OSC 52，例如把剪貼簿換成惡意指令，等你貼到終端機。
+osc52 = "ask"
 
 # new_args / resume_args：開新對話／接續對話（R 重新啟動）時接在 args 後面的參數。
 # {conversation} = 分頁目前的對話 ID（UUID）；N 重新啟動或接續失敗時會換一個新的。

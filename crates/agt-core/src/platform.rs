@@ -196,8 +196,16 @@ pub fn kill_tree(pid: u32) {
 
 /// 送出系統通知（Windows Toast、macOS 通知中心、freedesktop）。失敗時只記錄。
 pub fn notify(title: &str, body: &str) {
-    let title = title.to_string();
-    let body = body.to_string();
+    // 內容可能來自 Agent（hook 的訊息、分頁名稱）：去掉控制字元、限制長度
+    let clip = |s: &str, max: usize| {
+        let s = agt_proto::text::printable_line(s);
+        match s.char_indices().nth(max) {
+            Some((i, _)) => format!("{}…", &s[..i]),
+            None => s,
+        }
+    };
+    let title = clip(title, 100);
+    let body = clip(body, 300);
     std::thread::spawn(move || {
         let r = notify_rust::Notification::new()
             .appname("agt")

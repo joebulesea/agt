@@ -449,7 +449,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Cmd::Diff { id }) => {
             let c = ensure_daemon("cli").await?.client;
             if let ReplyBody::Text(t) = c.request(ClientMsg::Diff { id }).await? {
-                println!("{t}");
+                // 檔案內容可能含有控制序列（例如改寫剪貼簿的 OSC 52），不能原樣送到終端機
+                println!("{}", agt_proto::text::printable(&t));
             }
             Ok(())
         }

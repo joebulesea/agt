@@ -20,6 +20,8 @@ pub struct General {
     pub scrollback_lines: usize,
     pub merge_strategy: String,
     pub log_output: bool,
+    /// 分頁中的程式以 OSC 52 寫入剪貼簿時：off | ask | on
+    pub osc52: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
@@ -69,6 +71,7 @@ struct PartialGeneral {
     scrollback_lines: Option<usize>,
     merge_strategy: Option<String>,
     log_output: Option<bool>,
+    osc52: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +79,10 @@ pub struct Paths {
     pub config_file: PathBuf,
     pub data_dir: PathBuf,
     pub home: PathBuf,
+    /// 終端機紀錄檔的位置；None = `data_dir/logs`。
+    /// Windows 放在 `%LOCALAPPDATA%\agt\logs`：紀錄檔可能含有機密且很大，
+    /// 不能放在會隨網域漫遊設定檔同步到伺服器的 `%APPDATA%`。
+    pub logs_dir: Option<PathBuf>,
 }
 
 impl Paths {
@@ -91,6 +98,7 @@ impl Paths {
                 config_file: h.join("config.toml"),
                 data_dir: h.join("data"),
                 home: h,
+                logs_dir: None,
             };
         }
         let base = directories::BaseDirs::new();
@@ -107,10 +115,17 @@ impl Paths {
                 .map(|b| b.data_local_dir().join("agt"))
                 .unwrap_or_else(|| home.join(".agt/data"))
         };
+        let logs_dir = if cfg!(windows) {
+            base.as_ref()
+                .map(|b| b.data_local_dir().join("agt").join("logs"))
+        } else {
+            None
+        };
         Paths {
             config_file: config_dir.join("config.toml"),
             data_dir,
             home,
+            logs_dir,
         }
     }
 
@@ -129,7 +144,8 @@ impl Paths {
     /// 舊版 daemon 還在執行或搬移失敗時，這次繼續使用舊位置，不會遺失分頁資料。
     /// 回傳要記錄到日誌的訊息。
     pub fn migrate_from(&mut self, legacy: &Path) -> Option<String> {
-        if self.data_dir.exists() || !legacy.is_dir() {
+        // 舊版的資料目錄一定有資料庫；只有 logs\ 的 %LOCALAPPDATA%\agt 是新版放紀錄檔的地方
+        if self.data_dir.exists() || !legacy.join("agt.db").is_file() {
             return None;
         }
         // 舊版 daemon 持有舊位置的 lock：還在執行時不能搬
@@ -172,7 +188,42 @@ impl Paths {
         self.data_dir.join("agt.db")
     }
     pub fn logs(&self) -> PathBuf {
-        self.data_dir.join("logs")
+        self.logs_dir
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("logs"))
+    }
+
+    /// 把舊位置（`data_dir/logs`）的紀錄檔搬到 [`logs`](Self::logs)。daemon 取得 lock 後呼叫，
+    /// 這時沒有 Agent 在寫入。搬不動的檔案留在原處（之後的清理也不會處理），回傳要記錄的訊息。
+    pub fn migrate_logs(&self) -> Option<String> {
+        let old = self.data_dir.join("logs");
+        let new = self.logs();
+        if agt_git::same_path(&old, &new) || !old.is_dir() {
+            return None;
+        }
+        if let Err(e) = std::fs::create_dir_all(&new) {
+            return Some(format!("無法建立紀錄檔目錄 {}：{e}", new.display()));
+        }
+        let (mut moved, mut failed) = (0, 0);
+        for e in std::fs::read_dir(&old).ok()?.flatten() {
+            let to = new.join(e.file_name());
+            let ok = std::fs::rename(e.path(), &to).is_ok()
+                || (std::fs::copy(e.path(), &to).is_ok() && std::fs::remove_file(e.path()).is_ok());
+            if ok { moved += 1 } else { failed += 1 }
+        }
+        let _ = std::fs::remove_dir(&old); // 空了才會成功
+        (moved + failed > 0).then(|| {
+            format!(
+                "已把 {moved} 個紀錄檔從 {} 搬到 {}{}",
+                old.display(),
+                new.display(),
+                if failed > 0 {
+                    format!("（{failed} 個無法搬移，留在原處）")
+                } else {
+                    String::new()
+                }
+            )
+        })
     }
     pub fn lock(&self) -> PathBuf {
         self.data_dir.join("agtd.lock")
@@ -302,6 +353,12 @@ impl Config {
                 self.general.merge_strategy
             ));
         }
+        if !matches!(self.general.osc52.as_str(), "off" | "ask" | "on") {
+            return Err(format!(
+                "general.osc52 必須是 off、ask 或 on，而不是 {:?}",
+                self.general.osc52
+            ));
+        }
         if self.general.sidebar_width < 10 {
             return Err("general.sidebar_width 至少要 10".into());
         }
@@ -316,6 +373,7 @@ impl Config {
             prefix_key: self.general.prefix_key.clone(),
             sidebar_width: self.general.sidebar_width,
             merge_strategy: self.general.merge_strategy.clone(),
+            osc52: self.general.osc52.clone(),
             agents: self.agents.keys().cloned().collect(),
         }
     }
@@ -407,6 +465,7 @@ mod tests {
             config_file: d.path().join("roaming/agt/config.toml"),
             data_dir: new.clone(),
             home: d.path().to_path_buf(),
+            logs_dir: None,
         };
         let msg = p.migrate_from(&legacy).unwrap();
         assert!(msg.contains("已把資料"), "{msg}");
@@ -421,10 +480,48 @@ mod tests {
     }
 
     #[test]
+    fn logs_move_to_their_own_dir_and_do_not_look_like_legacy_data() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("roaming").join("data");
+        let local = d.path().join("local").join("agt");
+        std::fs::create_dir_all(data.join("logs")).unwrap();
+        std::fs::write(data.join("logs").join("a.log"), "a").unwrap();
+        std::fs::write(data.join("logs").join("a.log.1"), "b").unwrap();
+        let p = Paths {
+            config_file: d.path().join("c.toml"),
+            data_dir: data.clone(),
+            home: d.path().to_path_buf(),
+            logs_dir: Some(local.join("logs")),
+        };
+        assert!(p.migrate_logs().unwrap().contains("2 個"));
+        assert_eq!(
+            std::fs::read_to_string(local.join("logs/a.log")).unwrap(),
+            "a"
+        );
+        assert!(!data.join("logs").exists());
+        assert!(p.migrate_logs().is_none(), "已經搬過");
+        // 只有 logs\ 的 %LOCALAPPDATA%\agt 不是舊版資料目錄，不能被搬去當資料目錄
+        let mut fresh = Paths {
+            data_dir: d.path().join("new-data"),
+            ..p.clone()
+        };
+        assert!(fresh.migrate_from(&local).is_none());
+        assert_eq!(fresh.data_dir, d.path().join("new-data"));
+        // 沒有另外指定時沿用 data_dir/logs
+        let plain = Paths {
+            logs_dir: None,
+            ..p
+        };
+        assert_eq!(plain.logs(), data.join("logs"));
+        assert!(plain.migrate_logs().is_none());
+    }
+
+    #[test]
     fn keeps_legacy_dir_while_old_daemon_runs() {
         let d = tempfile::tempdir().unwrap();
         let legacy = d.path().join("old");
         std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("agt.db"), "db").unwrap();
         let lock = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -436,6 +533,7 @@ mod tests {
             config_file: d.path().join("c.toml"),
             data_dir: d.path().join("new"),
             home: d.path().to_path_buf(),
+            logs_dir: None,
         };
         let msg = p.migrate_from(&legacy).unwrap();
         assert!(msg.contains("沿用舊位置"), "{msg}");
@@ -497,6 +595,7 @@ mod tests {
             config_file: d.path().join("c.toml"),
             data_dir: d.path().join("data"),
             home: d.path().to_path_buf(),
+            logs_dir: None,
         };
         let mut c = Config::defaults();
         c.repos.insert(

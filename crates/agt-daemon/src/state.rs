@@ -70,6 +70,40 @@ pub struct Entry {
     pub resume_attempt: Option<(u64, Instant)>,
 }
 
+/// 已關閉分頁的事件與資料列保留多久。
+const CLOSED_RETENTION_SECS: i64 = 30 * 24 * 3600;
+
+/// 刪除不屬於任何開啟中分頁的終端機紀錄檔（`<id>.log`、`<id>.log.1`）。
+/// 分頁關閉時本來就會刪；這裡處理 daemon 異常結束、或刪除時檔案還被鎖住而留下的檔案。
+/// 回傳刪除的檔案數。
+fn remove_orphan_logs(dir: &Path, open: &HashMap<String, Entry>) -> usize {
+    let Ok(list) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for e in list.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name
+            .strip_suffix(".log")
+            .or_else(|| name.strip_suffix(".log.1"))
+        else {
+            continue;
+        };
+        // 只處理 agt 自己的檔名（UUID），不碰使用者放進來的其他檔案
+        if uuid::Uuid::parse_str(id).is_err() || open.contains_key(id) {
+            continue;
+        }
+        match std::fs::remove_file(e.path()) {
+            Ok(()) => removed += 1,
+            Err(err) => tracing::debug!("無法刪除紀錄檔 {name}：{err}"),
+        }
+    }
+    removed
+}
+
+/// 分頁以 OSC 52 寫入剪貼簿的內容上限。
+const CLIPBOARD_MAX: usize = 64 * 1024;
+
 /// 接續對話後在這段時間內以非 0 結束，視為接續失敗（例如找不到對話），自動改開新對話。
 const RESUME_GRACE: Duration = Duration::from_secs(60);
 
@@ -135,7 +169,7 @@ impl Daemon {
         cfg: Config,
         cfg_error: Option<String>,
     ) -> anyhow::Result<Arc<Daemon>> {
-        let store = Store::open(&paths.db())?;
+        let mut store = Store::open(&paths.db())?;
         platform::restrict_permissions(&paths.data_dir);
         let mut entries = HashMap::new();
         // 規格 10：daemon 重啟後無法接回已結束的 PTY，標為 Exited。
@@ -155,6 +189,16 @@ impl Daemon {
                     resume_attempt: None,
                 },
             );
+        }
+        // 已關閉分頁的事件與紀錄保留一段時間後清掉（可能含有 Agent 回報的內容）
+        match store.prune_closed(agt_store::now() - CLOSED_RETENTION_SECS) {
+            Ok(n) if n > 0 => tracing::info!("已清除 {n} 個關閉超過 30 天的分頁紀錄"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("清除舊分頁紀錄失敗：{e}"),
+        }
+        let removed = remove_orphan_logs(&paths.logs(), &entries);
+        if removed > 0 {
+            tracing::info!("已刪除 {removed} 個不屬於任何分頁的終端機紀錄檔");
         }
         let (events, _) = broadcast::channel(1024);
         Ok(Arc::new(Daemon {
@@ -696,8 +740,9 @@ impl Daemon {
                     }
                     SessionEvent::Title(_) => {}
                     SessionEvent::Clipboard(text) => {
-                        // 上限 1 MiB，避免異常輸出塞爆連線
-                        if text.len() <= 1 << 20 {
+                        // 上限 64 KiB：一般複製用不到更多，也避免異常輸出塞爆連線。
+                        // 設定為 off 時直接丟棄；ask / on 由 TUI 處理（ask 先詢問使用者）。
+                        if text.len() <= CLIPBOARD_MAX && d.cfg().general.osc52 != "off" {
                             let _ = d.events.send(ServerMsg::Clipboard {
                                 id: id.clone(),
                                 text,
@@ -1309,12 +1354,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn orphan_logs_are_removed() {
+        let d = tempfile::tempdir().unwrap();
+        let open_id = uuid::Uuid::new_v4().to_string();
+        let gone_id = uuid::Uuid::new_v4().to_string();
+        for name in [
+            format!("{open_id}.log"),
+            format!("{gone_id}.log"),
+            format!("{gone_id}.log.1"),
+            "notes.log".to_string(), // 不是 agt 的檔名：不動
+        ] {
+            std::fs::write(d.path().join(name), "x").unwrap();
+        }
+        let mut open = HashMap::new();
+        open.insert(
+            open_id.clone(),
+            Entry {
+                info: row_to_info(&SessionRow::default()),
+                session: None,
+                conversation: None,
+                generation: 0,
+                resume_attempt: None,
+            },
+        );
+        assert_eq!(remove_orphan_logs(d.path(), &open), 2);
+        assert!(d.path().join(format!("{open_id}.log")).exists());
+        assert!(d.path().join("notes.log").exists());
+        assert!(!d.path().join(format!("{gone_id}.log")).exists());
+        assert_eq!(remove_orphan_logs(&d.path().join("missing"), &open), 0);
+    }
+
+    #[test]
     fn stale_generation_cannot_overwrite_restarted_tab() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             config_file: dir.path().join("config.toml"),
             data_dir: dir.path().join("data"),
             home: dir.path().to_path_buf(),
+            logs_dir: None,
         };
         let d = Daemon::new(paths, "test".into(), "agt".into(), Config::defaults(), None).unwrap();
         let mut info = row_to_info(&SessionRow {
