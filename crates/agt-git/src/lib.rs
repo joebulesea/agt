@@ -497,6 +497,14 @@ pub fn copy_files(from: &Path, to: &Path, files: &[String]) -> Result<Vec<String
                 "copy_files 只能是 repo 內的相對路徑：{f}"
             )));
         }
+        // copy_files 可以來自 repo 的 .agt.toml（不需要使用者確認），repo 也可以 commit 符號連結。
+        // 經過符號連結就可能讀到 repo 外的檔案（例如把 ~/.ssh 複製進沙箱看得到的 worktree），
+        // 或寫到 repo 外（worktree 裡同名的連結指向 ~/.bashrc 時，複製會先把它清空），一律拒絕。
+        if path_has_symlink(from, rel) || path_has_symlink(to, rel) {
+            return Err(GitError::Refused(format!(
+                "copy_files 不能經過符號連結：{f}"
+            )));
+        }
         let src = from.join(rel);
         let dst = to.join(rel);
         if src.is_file() {
@@ -513,11 +521,31 @@ pub fn copy_files(from: &Path, to: &Path, files: &[String]) -> Result<Vec<String
     Ok(copied)
 }
 
+fn is_symlink(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// `base` 之下的 `rel` 路徑上（含每一層上層目錄）是否有符號連結。
+fn path_has_symlink(base: &Path, rel: &Path) -> bool {
+    let mut p = base.to_path_buf();
+    rel.components().any(|c| {
+        p.push(c);
+        is_symlink(&p)
+    })
+}
+
+/// 複製目錄；來源或目的地是符號連結的項目略過（理由見 [`copy_files`]），
+/// 例如 node_modules/.bin 裡的連結。呼叫端已確認 `src`、`dst` 本身不是連結。
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)? {
         let e = e?;
         let target = dst.join(e.file_name());
+        // DirEntry::file_type 不會跟著連結走
+        if e.file_type()?.is_symlink() || is_symlink(&target) {
+            tracing::warn!("copy_files 略過符號連結：{}", e.path().display());
+            continue;
+        }
         if e.file_type()?.is_dir() {
             copy_dir(&e.path(), &target)?;
         } else {
@@ -895,6 +923,47 @@ mod tests {
         add_exclude(&wt, ".env").unwrap();
         assert!(!is_dirty(&wt, true).unwrap());
         assert!(copy_files(root, &wt, &["../x".into()]).is_err());
+    }
+
+    /// 惡意 repo commit 指向 repo 外的符號連結，再用 .agt.toml 的 copy_files 指定它：
+    /// 以前會把外部檔案清空（來源與目的地是同一個檔案）。
+    #[cfg(unix)]
+    #[test]
+    fn copy_files_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+        let repo = init_repo();
+        let root = repo.path();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("bashrc");
+        std::fs::write(&secret, "precious\n").unwrap();
+        // 1. 檔案本身是連結；2. 上層目錄是連結；3. 目錄裡有連結
+        symlink(&secret, root.join("evil")).unwrap();
+        symlink(outside.path(), root.join("evildir")).unwrap();
+        std::fs::create_dir_all(root.join("cfg")).unwrap();
+        std::fs::write(root.join("cfg/ok.txt"), "ok\n").unwrap();
+        symlink(&secret, root.join("cfg/link")).unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-qm", "symlinks"]).unwrap();
+        let wts = tempfile::tempdir().unwrap();
+        let wt = wts.path().join("w");
+        add_worktree(root, &wt, "agt/t/s-000006", "main").unwrap();
+
+        for f in ["evil", "evildir/bashrc"] {
+            assert!(
+                matches!(
+                    copy_files(root, &wt, &[f.into()]),
+                    Err(GitError::Refused(_))
+                ),
+                "{f}"
+            );
+        }
+        // 目錄：一般檔案照常複製，連結略過
+        assert_eq!(copy_files(root, &wt, &["cfg".into()]).unwrap(), ["cfg"]);
+        assert_eq!(
+            std::fs::read_to_string(wt.join("cfg/ok.txt")).unwrap(),
+            "ok\n"
+        );
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "precious\n");
     }
 
     #[test]
