@@ -10,6 +10,7 @@
 #   - 沒有掛載                       → 使用映像檔內建的版本
 #
 # 多個更新同時進行時用鎖檔排隊。設定環境變數 AGT_COPILOT_UPDATE=0 可略過檢查。
+# 設定 AGT_COPILOT_VERSION=<版本> 時只安裝那個版本（例如審視過的版本），不追最新版。
 set -u
 
 TOOLS=/opt/agt-tools
@@ -26,7 +27,7 @@ fi
 
 update() {
   current=$(copilot --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-  latest=$(timeout 10 npm view @github/copilot version 2>/dev/null)
+  latest=${AGT_COPILOT_VERSION:-$(timeout 10 npm view @github/copilot version 2>/dev/null)}
   if [ -n "$latest" ] && [ "$latest" != "$current" ]; then
     echo "[agt] 更新 Copilot CLI ${current:-?} -> $latest ..."
     if timeout 300 npm install -g --prefix "$TOOLS" --no-audit --no-fund --loglevel=error \

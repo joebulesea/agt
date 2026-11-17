@@ -132,6 +132,7 @@ impl Session {
         platform::run_cleanup(&spec.cleanup);
         let pair = native_pty_system().openpty(size).map_err(pty_err)?;
         let (program, pre_args) = crate::platform::resolve_program(&spec.program);
+        crate::platform::check_cmd_args(&pre_args, &spec.args).map_err(Error::msg)?;
         let mut cmd = CommandBuilder::new(&program);
         cmd.args(&pre_args);
         cmd.args(&spec.args);

@@ -5,7 +5,8 @@
 # 登入資料與設定保存在 volume `agt-agy-home`（掛在 /home/agent），只需要登入一次。
 # agy 的更新版保存在 volume `agt-agy-tools`（掛在 /opt/agt-tools，分頁中唯讀）。
 # 專案需要的工具（Rust、Node 等）請自行加在下方。
-FROM debian:bookworm-slim
+# base image 釘在 digest（tag 可能被改指到別的內容）；更新時改 digest，或交給 Dependabot。
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
