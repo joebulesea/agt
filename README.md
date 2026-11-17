@@ -39,7 +39,7 @@ agt gc [--prune]                       # 比對 git worktree 與資料庫
 agt daemon start|stop|restart|status
 ```
 
-TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`x` 關閉、`b` 收合側欄、`?` 說明、`q` detach。
+TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉、`b` 收合側欄、`?` 說明、`q` detach。
 
 設定檔範例與預設值見 [`config/default.toml`](config/default.toml)。
 

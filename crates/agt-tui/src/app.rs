@@ -189,6 +189,8 @@ pub enum Click {
     Item(usize),
     /// 新增分頁表單：開啟目錄瀏覽器選擇 Repo。
     Browse,
+    /// 標題列的工作目錄：雙擊用檔案管理員開啟。
+    OpenDir,
     /// 吃掉點擊，不做任何事（彈出視窗本身的範圍）。
     Nothing,
 }
@@ -216,6 +218,8 @@ pub struct App {
     pub sidebar_area: Rect,
     pub sidebar_hits: Vec<SidebarHit>,
     pub click_hits: Vec<ClickHit>,
+    /// 上一次左鍵點擊可點擊範圍的位置與時間（判斷雙擊用）。
+    pub last_click: Option<(u16, u16, Instant)>,
     /// 等待寫給外層終端機的剪貼簿內容（OSC 52），由主迴圈送出。
     pub clipboard_out: Option<String>,
     pub sent_size: Option<(String, u16, u16)>,
@@ -251,6 +255,7 @@ impl App {
             sidebar_area: Rect::default(),
             sidebar_hits: vec![],
             click_hits: vec![],
+            last_click: None,
             clipboard_out: None,
             sent_size: None,
             quit: false,
@@ -803,6 +808,7 @@ impl App {
                 }
             }
             KeyCode::Char('u') => self.copy_url(),
+            KeyCode::Char('o') => self.open_active_dir(),
             KeyCode::Char('b') => self.sidebar_toggled = !self.sidebar_toggled,
             KeyCode::Char('?') => self.popup = Some(Popup::Help),
             KeyCode::Char('q') => self.quit = true,
@@ -1112,6 +1118,18 @@ impl App {
                 .map(|h| h.click.clone())
         {
             self.dirty = true;
+            let now = Instant::now();
+            let double = crate::open::is_double_click(self.last_click, x, y, now);
+            // 雙擊之後清除，第三下重新計算
+            self.last_click = (!double).then_some((x, y, now));
+            if matches!(c, Click::OpenDir) {
+                if double {
+                    self.open_active_dir();
+                } else {
+                    self.set_message("雙擊開啟工作目錄", false);
+                }
+                return;
+            }
             self.on_click(c);
             return;
         }
@@ -1239,7 +1257,31 @@ impl App {
                 }
                 self.on_popup_key(key(KeyCode::Enter));
             }
+            Click::OpenDir => self.open_active_dir(),
             Click::Nothing => {}
+        }
+    }
+
+    /// 目前分頁的工作目錄：有 worktree 時是 worktree（Agent 改檔案的地方），否則是執行目錄。
+    pub fn active_dir(&self) -> Option<String> {
+        let s = self.active_info()?;
+        s.worktree
+            .clone()
+            .or_else(|| Some(s.cwd.clone()))
+            .filter(|d| !d.is_empty())
+    }
+
+    /// 用系統的檔案管理員開啟目前分頁的工作目錄。
+    fn open_active_dir(&mut self) {
+        let Some(dir) = self.active_dir() else {
+            if self.active.is_some() {
+                self.set_message("這個分頁沒有工作目錄", true);
+            }
+            return;
+        };
+        match crate::open::open_dir(&dir) {
+            Ok(()) => self.set_message(format!("已開啟 {dir}"), false),
+            Err(e) => self.set_message(e, true),
         }
     }
 
