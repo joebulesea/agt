@@ -1,6 +1,6 @@
 [package]
 name = "agt-agents"
-description = "AgentAdapter 實作：claude、antigravity、shell"
+description = "AgentAdapter 實作：claude、antigravity、copilot、shell"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

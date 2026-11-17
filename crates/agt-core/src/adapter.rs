@@ -72,7 +72,7 @@ pub enum StatusSourceKind {
 }
 
 pub trait AgentAdapter: Send + Sync {
-    /// "claude" | "antigravity" | "shell"
+    /// "claude" | "antigravity" | "copilot" | "shell" | "custom"
     fn id(&self) -> &'static str;
     /// 指令、參數、環境變數、cwd = worktree。
     fn launch(&self, ctx: &LaunchCtx) -> CommandSpec;

@@ -31,6 +31,15 @@ waiting_patterns = ['\(y/n\)', 'Allow\?']
 idle_timeout_secs = 20
 resume_args = ["--continue"]     # 接續這個目錄最近一次的對話
 
+# GitHub Copilot CLI（npm install -g @github/copilot）。第一次啟動時在分頁中輸入 /login 登入，
+# 或在主機設定環境變數 GH_TOKEN / GITHUB_TOKEN（具備 Copilot Requests 權限的 fine-grained PAT）。
+[agents.copilot]
+command = "copilot"
+status_source = "pattern"
+waiting_patterns = ['No, and tell Copilot', 'Do you trust the files']
+idle_timeout_secs = 20
+resume_args = ["--continue"]     # 接續最近一次的對話
+
 [agents.shell]
 command = ""                     # 空字串 = 使用者預設 shell
 status_source = "none"
@@ -92,6 +101,22 @@ worktree = false
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]
 # auto_commit = true
 # update = ["docker", "run", "--rm", "-v", "agt-agy-home:/home/agent", "agt-agy", "agy", "--version"]
+
+# 在 Docker 容器中執行 GitHub Copilot CLI（沙箱）。先建置映像檔：docker build -t agt-copilot docker/copilot/
+# 第一次啟動時在分頁中輸入 /login，依畫面上的網址與代碼在主機的瀏覽器登入 GitHub。
+# 使用 token 時，在主機設定環境變數 GH_TOKEN（或 GITHUB_TOKEN）即可略過登入。
+# [agents.copilot-docker]
+# command = "docker"
+# adapter = "copilot"              # 沿用 Copilot CLI 的狀態判斷規則
+# status_source = "pattern"
+# args = ["run", "-it", "--rm", "--init", "--name", "agt-{session}", "--label", "agt=1",
+#         "-v", "{cwd}:/work/{session}", "-v", "agt-copilot-home:/home/node", "-w", "/work/{session}",
+#         "-e", "GH_TOKEN", "-e", "GITHUB_TOKEN",
+#         "agt-copilot", "copilot", "--allow-all-tools"]
+# resume_args = ["--continue"]
+# cleanup = ["docker", "rm", "-f", "agt-{session}"]
+# auto_commit = true
+# update = ["docker", "run", "--rm", "-v", "agt-copilot-home:/home/node", "agt-copilot", "copilot", "--version"]
 #
 # 任何 Agent 都可以設定 update，例如主機上的 Claude Code：
 # [agents.claude]

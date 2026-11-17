@@ -1,4 +1,4 @@
-//! 以輸出規則判斷狀態的通用 Adapter（Antigravity CLI 與自訂 Agent）。
+//! 以輸出規則判斷狀態的通用 Adapter（Antigravity CLI、GitHub Copilot CLI 與自訂 Agent）。
 //!
 //! - 符合 `waiting_patterns` 且輸出已靜止 500 ms → WaitingInput（規格 6.5）
 //! - 超過 `idle_timeout_secs` 沒有輸出且未符合任何規則 → Idle
@@ -10,6 +10,15 @@ use std::time::Duration;
 
 pub const QUIET_FOR_WAITING: Duration = Duration::from_millis(500);
 
+/// Antigravity CLI 的預設等待規則。
+const ANTIGRAVITY_PATTERNS: &[&str] = &[r"\(y/n\)", r"Allow\?"];
+/// GitHub Copilot CLI 的預設等待規則：工具核准選單（「Do you want to run this command?」
+/// 下方的「No, and tell Copilot what to do differently」）與資料夾信任詢問。
+const COPILOT_PATTERNS: &[&str] = &[
+    r"No, and tell Copilot",
+    r"Do you trust the files",
+];
+
 pub struct PatternAdapter {
     id: &'static str,
     settings: AgentSettings,
@@ -19,13 +28,16 @@ pub struct PatternAdapter {
 
 impl PatternAdapter {
     pub fn new(id: &'static str, mut settings: AgentSettings) -> Self {
-        if id == "antigravity" {
-            if settings.command.is_empty() {
-                settings.command = "agy".into();
-            }
-            if settings.waiting_patterns.is_empty() {
-                settings.waiting_patterns = vec![r"\(y/n\)".into(), r"Allow\?".into()];
-            }
+        let (command, patterns): (&str, &[&str]) = match id {
+            "antigravity" => ("agy", ANTIGRAVITY_PATTERNS),
+            "copilot" => ("copilot", COPILOT_PATTERNS),
+            _ => ("", &[]),
+        };
+        if settings.command.is_empty() {
+            settings.command = command.into();
+        }
+        if settings.waiting_patterns.is_empty() {
+            settings.waiting_patterns = patterns.iter().map(|p| p.to_string()).collect();
         }
         let patterns = compile_patterns(&settings.waiting_patterns);
         PatternAdapter {
@@ -53,7 +65,7 @@ impl AgentAdapter for PatternAdapter {
     }
 
     fn install_hooks(&self, _ctx: &LaunchCtx) -> agt_core::Result<()> {
-        // 尚未確認 Antigravity CLI 是否有 hooks 機制（規格 14.2）
+        // 尚未確認 Antigravity CLI / Copilot CLI 是否有可用的 hooks 機制（規格 14.2）
         Ok(())
     }
 
@@ -131,6 +143,24 @@ mod tests {
             Some(AgentStatus::Running)
         );
         assert_eq!(a.on_idle(Duration::from_secs(60)), Some(AgentStatus::Idle));
+    }
+
+    #[test]
+    fn copilot_defaults() {
+        let mut a = PatternAdapter::new("copilot", AgentSettings::default());
+        assert_eq!(a.settings.command, "copilot");
+        let menu = [
+            "Do you want to run this command?",
+            "❯ 1. Yes",
+            "  3. No, and tell Copilot what to do differently (Esc)",
+        ];
+        assert_eq!(
+            a.on_screen(&view(&menu, 600)),
+            Some(AgentStatus::WaitingInput)
+        );
+        // 自訂 Agent 沒有預設指令與規則
+        let c = PatternAdapter::new("custom", AgentSettings::default());
+        assert!(c.settings.command.is_empty() && c.patterns.is_empty());
     }
 
     #[test]

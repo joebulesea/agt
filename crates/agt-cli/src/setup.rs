@@ -36,6 +36,16 @@ const DOCKER_FILES: &[(&str, &str, &str)] = &[
         "entrypoint.sh",
         include_str!("../../../docker/agy/entrypoint.sh"),
     ),
+    (
+        "copilot",
+        "Dockerfile",
+        include_str!("../../../docker/copilot/Dockerfile"),
+    ),
+    (
+        "copilot",
+        "entrypoint.sh",
+        include_str!("../../../docker/copilot/entrypoint.sh"),
+    ),
 ];
 
 pub struct Options {
@@ -65,6 +75,7 @@ struct Env {
     git: Option<String>,
     claude: bool,
     agy: bool,
+    copilot: bool,
     docker: Docker,
     sbx: Sbx,
 }
@@ -163,6 +174,7 @@ fn detect() -> Env {
         git,
         claude: on_path("claude"),
         agy: on_path("agy"),
+        copilot: on_path("copilot"),
         docker,
         sbx,
     }
@@ -239,6 +251,14 @@ fn print_env(env: &Env) {
     } else {
         prompt::status('✗', "Antigravity CLI（agy）：未安裝（選用）");
     }
+    if env.copilot {
+        prompt::status('✓', "GitHub Copilot CLI（copilot）");
+    } else {
+        prompt::status(
+            '✗',
+            "GitHub Copilot CLI（copilot）：未安裝（選用，安裝：npm install -g @github/copilot）",
+        );
+    }
     match &env.docker {
         Docker::Running(v) => prompt::status('✓', &format!("Docker {v}（執行中）")),
         Docker::NotRunning => {
@@ -284,6 +304,12 @@ fn candidates(env: &Env) -> Vec<Candidate> {
             name: "agy-docker",
             desc: "Docker 容器中的 Antigravity CLI",
             image: Some(("agt-agy", "agy")),
+            default_on: false,
+        });
+        list.push(Candidate {
+            name: "copilot-docker",
+            desc: "Docker 容器中的 GitHub Copilot CLI",
+            image: Some(("agt-copilot", "copilot")),
             default_on: false,
         });
     }
@@ -372,7 +398,7 @@ pub fn run(opts: Options) -> anyhow::Result<()> {
         if all.is_empty() {
             println!(
                 "  {}",
-                "沒有偵測到 Docker 或 Docker Sandboxes，只使用內建的 claude / antigravity / shell。"
+                "沒有偵測到 Docker 或 Docker Sandboxes，只使用內建的 claude / antigravity / copilot / shell。"
                     .dark_grey()
             );
         }
@@ -535,6 +561,13 @@ fn after_choose(
                 .into(),
         );
     }
+    if chosen.iter().any(|c| c.name == "copilot-docker") {
+        notes.push(
+            "copilot-docker：新分頁中輸入 /login，用 Ctrl+A → u 複製網址並在主機瀏覽器輸入代碼登入；\
+             或在主機設定環境變數 GH_TOKEN（具備 Copilot Requests 權限的 fine-grained PAT）"
+                .into(),
+        );
+    }
     if env.git.is_none() {
         notes.push("安裝 git 2.20 以上（建立 worktree 需要）".into());
     }
@@ -568,7 +601,7 @@ fn quick_available() -> Vec<&'static str> {
         v.push("claude-sbx");
     }
     if on_path("docker") {
-        v.extend(["claude-docker", "agy-docker"]);
+        v.extend(["claude-docker", "agy-docker", "copilot-docker"]);
     }
     v
 }
@@ -668,7 +701,7 @@ mod tests {
 
     #[test]
     fn example_blocks_are_valid_toml() {
-        for name in ["claude-sbx", "claude-docker", "agy-docker"] {
+        for name in ["claude-sbx", "claude-docker", "agy-docker", "copilot-docker"] {
             let block = example_block(name).unwrap_or_else(|| panic!("找不到 {name}"));
             assert!(block.starts_with(&format!("[agents.{name}]\n")), "{block}");
             let v: toml::Value =
@@ -676,7 +709,9 @@ mod tests {
             assert!(v["agents"][name]["command"].is_str());
         }
         // agy-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
-        assert!(!example_block("agy-docker").unwrap().contains("任何 Agent"));
+        assert!(!example_block("agy-docker").unwrap().contains("copilot"));
+        // copilot-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
+        assert!(!example_block("copilot-docker").unwrap().contains("任何 Agent"));
         assert!(example_block("nope").is_none());
     }
 
@@ -696,11 +731,15 @@ mod tests {
             git: Some("2.44".into()),
             claude: true,
             agy: false,
+            copilot: false,
             docker: Docker::Running("29".into()),
             sbx: Sbx::Ready("v0.53.0".into(), true),
         };
         let all = candidates(&env);
-        let chosen: Vec<&Candidate> = all.iter().filter(|c| c.name != "agy-docker").collect();
+        let chosen: Vec<&Candidate> = all
+            .iter()
+            .filter(|c| c.name != "agy-docker" && c.name != "copilot-docker")
+            .collect();
         write_config(&path, "", &chosen).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let v: toml::Value = toml::from_str(&text).unwrap();
@@ -724,11 +763,13 @@ mod tests {
         assert!(df.contains("COPY entrypoint.sh"));
         let ep = std::fs::read_to_string(dir.join("entrypoint.sh")).unwrap();
         assert!(ep.starts_with("#!/bin/sh") && !ep.contains('\r'));
-        assert!(
-            write_docker_files(d.path(), "agy")
-                .unwrap()
-                .join("Dockerfile")
-                .exists()
-        );
+        for sub in ["agy", "copilot"] {
+            assert!(
+                write_docker_files(d.path(), sub)
+                    .unwrap()
+                    .join("Dockerfile")
+                    .exists()
+            );
+        }
     }
 }
