@@ -10,7 +10,7 @@
 #
 # daemon 或 TUI 執行中時 exe 會被鎖住、無法覆蓋：先把舊檔改名為 .old 再放新檔
 # （Windows 允許改名執行中的檔案），下次發布時再刪除已不再使用的 .old。
-# 需要在 Git Bash 中執行，且 Docker Desktop 正在執行。
+# 需要在 Git Bash 中執行，且 Docker Desktop 正在執行；缺 agt-dev 映像時會先建置。
 set -eu
 RESTART=0
 RESTART_FAILED=0
@@ -28,6 +28,15 @@ TARGET=x86_64-pc-windows-gnu
 DIST=dist/windows
 INSTALL="${APPDATA:?需要在 Windows 的 Git Bash 中執行}/agt"
 INSTALL=$(cygpath -u "$INSTALL" 2>/dev/null || echo "$INSTALL")
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker Desktop 沒有在執行，請先開啟後再試一次。" >&2
+  exit 1
+fi
+if ! docker image inspect agt-dev >/dev/null 2>&1; then
+  echo "==> 建置 agt-dev 映像（第一次執行，需要幾分鐘）"
+  docker build -t agt-dev docker
+fi
 
 echo "==> 編譯 $TARGET release"
 sh docker/cargo.sh build --release --target "$TARGET" --workspace
