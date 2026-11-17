@@ -1,0 +1,104 @@
+# agt 預設設定。使用者設定檔只需要寫要覆蓋的部分。
+#   Windows : %APPDATA%\agt\config.toml
+#   macOS   : ~/Library/Application Support/agt/config.toml
+#   Linux   : $XDG_CONFIG_HOME/agt/config.toml
+# repo 專屬設定可以放在 repo 根目錄的 .agt.toml（copy_files / setup / base_branch）。
+
+[general]
+prefix_key = "ctrl-a"
+sidebar_width = 26
+worktree_root = "~/.agt/worktrees"
+notify = true                    # 系統通知
+idle_shutdown_secs = 600
+scrollback_lines = 10000
+merge_strategy = "ask"           # ask | merge | squash | rebase
+log_output = true                # 終端機紀錄檔
+
+# new_args / resume_args：開新對話／接續對話（R 重新啟動）時接在 args 後面的參數。
+# {conversation} = 分頁目前的對話 ID（UUID）；N 重新啟動或接續失敗時會換一個新的。
+# 設定了 adapter 的 Agent 沒寫 new_args / resume_args 時沿用 adapter 的值（resume_args = [] 可關閉接續）。
+[agents.claude]
+command = "claude"
+args = []
+status_source = "hooks"          # hooks | pattern | none
+new_args = ["--session-id", "{conversation}"]
+resume_args = ["--resume", "{conversation}"]
+
+[agents.antigravity]
+command = "agy"
+status_source = "pattern"        # 確認有 hooks 後改成 "hooks"
+waiting_patterns = ['\(y/n\)', 'Allow\?']
+idle_timeout_secs = 20
+resume_args = ["--continue"]     # 接續這個目錄最近一次的對話
+
+[agents.shell]
+command = ""                     # 空字串 = 使用者預設 shell
+status_source = "none"
+worktree = false
+
+# 在 Docker 容器中執行 Claude Code（沙箱）：容器只看得到這個分頁的 worktree。
+# 先建置映像檔：docker build -t agt-claude docker/claude/
+# 變數：{cwd} = worktree 路徑，{session} = 分頁 id。
+# 容器內無法使用 git（worktree 的 .git 指向主機路徑）；設定 auto_commit 後，收尾時由 agt 在主機上 commit。
+# worktree 掛在容器內的 /work/{session}：每個分頁的路徑不同，Agent 的對話記錄（依專案路徑分組）才不會混在一起。
+# [agents.claude-docker]
+# command = "docker"
+# adapter = "claude"               # 沿用 Claude Code 的狀態判斷規則
+# status_source = "pattern"        # 容器內無法回報 hooks
+# args = ["run", "-it", "--rm", "--init", "--name", "agt-{session}", "--label", "agt=1",
+#         "-v", "{cwd}:/work/{session}", "-v", "agt-claude-home:/home/node", "-w", "/work/{session}",
+#         "-e", "ANTHROPIC_API_KEY", "-e", "CLAUDE_CODE_OAUTH_TOKEN",
+#         "agt-claude", "claude", "--dangerously-skip-permissions",
+#         "--append-system-prompt", "你在 Docker 沙箱中執行，目前所在的目錄就是專案目錄。容器內無法使用 git，不要執行或修復任何 git 指令；只修改檔案，commit 與合併由外部負責。"]
+# new_args = ["--session-id", "{conversation}"]
+# resume_args = ["--resume", "{conversation}"]
+# cleanup = ["docker", "rm", "-f", "agt-{session}"]   # 關閉分頁時一併移除容器
+# auto_commit = true               # 收尾（merge / pr）前自動 commit 容器內做的修改
+# # agt（daemon）啟動時在背景先更新一次容器內的 Claude Code，開分頁時就不用等
+# update = ["docker", "run", "--rm", "-v", "agt-claude-home:/home/node", "agt-claude", "claude", "--version"]
+
+# 在 Docker Sandboxes（sbx，microVM 沙箱）中執行 Claude Code。需要先安裝 sbx 並執行 sbx login，
+# 不需要 Docker Desktop。每個分頁一個沙箱，沙箱會保留到分頁關閉（R 重新啟動時沿用，對話記錄與裝過的套件都還在）。
+#   args         ：第一次啟動時建立沙箱，掛載 worktree 與主 repo 的 .git（唯讀，沙箱內可用 git status / diff / log）
+#   restart_args ：重新啟動時沙箱已存在，不能再指定掛載路徑，只用名稱接回去
+#   cleanup      ：Agent 結束、daemon 停止時停止沙箱（釋放記憶體），啟動前也會先執行一次
+#   on_close     ：關閉分頁時刪除沙箱
+# 變數：{gitdir} = 主 repo 的 .git 目錄（不是 worktree 時，含 {gitdir} 的參數會自動略過）。
+# [agents.claude-sbx]
+# command = "sbx"
+# adapter = "claude"
+# status_source = "pattern"
+# args = ["--no-input", "run", "--name", "agt-{session}", "--cpus", "4", "-m", "3g",   # 資源上限（建立時決定）
+#         "claude", "{cwd}", "{gitdir}:ro", "--"]
+# restart_args = ["--no-input", "run", "--name", "agt-{session}", "--"]
+# new_args = ["--session-id", "{conversation}"]
+# resume_args = ["--resume", "{conversation}"]
+# cleanup = ["sbx", "stop", "agt-{session}"]
+# on_close = ["sbx", "rm", "-f", "agt-{session}"]
+# auto_commit = true               # 沙箱內不能 commit（.git 唯讀），收尾時由 agt 在主機上 commit
+
+# 在 Docker 容器中執行 Antigravity CLI（沙箱）。先建置映像檔：docker build -t agt-agy docker/agy/
+# 第一次啟動時 agy 會印出登入網址：在主機的瀏覽器開啟、登入後，把頁面上的授權碼貼回分頁。
+# 使用 Gemini API 金鑰時，在主機設定環境變數 GEMINI_API_KEY 即可略過登入。
+# [agents.agy-docker]
+# command = "docker"
+# adapter = "antigravity"          # 沿用 Antigravity 的狀態判斷規則
+# status_source = "pattern"
+# args = ["run", "-it", "--rm", "--init", "--name", "agt-{session}", "--label", "agt=1",
+#         "-v", "{cwd}:/work/{session}", "-v", "agt-agy-home:/home/agent", "-w", "/work/{session}",
+#         "-e", "GEMINI_API_KEY",
+#         "agt-agy", "agy", "--dangerously-skip-permissions"]
+# resume_args = ["--continue"]
+# cleanup = ["docker", "rm", "-f", "agt-{session}"]
+# auto_commit = true
+# update = ["docker", "run", "--rm", "-v", "agt-agy-home:/home/agent", "agt-agy", "agy", "--version"]
+#
+# 任何 Agent 都可以設定 update，例如主機上的 Claude Code：
+# [agents.claude]
+# update = ["claude", "update"]
+
+# repo 專屬設定範例：
+# [repos."~/proj"]
+# copy_files = [".env", ".env.local"]
+# setup = "npm install"
+# base_branch = "main"

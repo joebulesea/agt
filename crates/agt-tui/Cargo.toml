@@ -1,0 +1,18 @@
+[package]
+name = "agt-tui"
+description = "agt 的 ratatui 介面；只透過協定和 daemon 溝通"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agt-proto.workspace = true
+tokio.workspace = true
+futures.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

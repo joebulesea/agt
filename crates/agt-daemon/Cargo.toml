@@ -1,0 +1,32 @@
+[package]
+name = "agt-daemon"
+description = "agtd：持有所有 PTY 與畫面狀態的背景 daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "agtd"
+path = "src/main.rs"
+
+[dependencies]
+agt-proto.workspace = true
+agt-core.workspace = true
+agt-agents.workspace = true
+agt-git.workspace = true
+agt-store.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+directories.workspace = true
+notify.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

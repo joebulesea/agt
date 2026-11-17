@@ -1,0 +1,23 @@
+[package]
+name = "agt-core"
+description = "Session、PTY、VT 模擬、狀態機與 platform 模組"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agt-proto.workspace = true
+tokio.workspace = true
+portable-pty.workspace = true
+alacritty_terminal.workspace = true
+notify-rust.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

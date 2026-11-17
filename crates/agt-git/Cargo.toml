@@ -1,0 +1,14 @@
+[package]
+name = "agt-git"
+description = "WorktreeManager：包裝系統的 git 指令"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
