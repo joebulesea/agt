@@ -1087,7 +1087,7 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 })
                 .collect();
             let t = format!(
-                "{title}  {}/{} · ↑↓ PgUp PgDn · q 關閉",
+                "{title}  {}/{} · ↑↓ PgUp PgDn 滾輪 · q 關閉",
                 (*scroll + 1).min(lines.len().max(1)),
                 lines.len()
             );
