@@ -29,10 +29,27 @@ fn reply(out: &Out, req_id: u64, result: OpResult<ReplyBody>) {
             message,
         },
     };
-    let _ = out.send(json_frame(&ServerMsg::Reply { req_id, result }));
+    let body =
+        serde_json::to_vec(&ServerMsg::Reply { req_id, result }).expect("ServerMsg 序列化不會失敗");
+    // 超過封包上限（例如巨大的 diff）時改回錯誤，否則 client 會一直等不到回應
+    let frame = encode_frame(KIND_JSON, &body).unwrap_or_else(|_| {
+        json_frame(&ServerMsg::Reply {
+            req_id,
+            result: ReplyBody::Error {
+                code: codes::INTERNAL.into(),
+                message: format!("回應太大（{} bytes），超過 16 MiB 的封包上限", body.len()),
+            },
+        })
+    });
+    let _ = out.send(frame);
 }
 
+/// 每條連線最多排隊的畫面封包數；超過時畫面轉送 task 會等待、落後，之後改送完整快照。
+const SCREEN_QUEUE: usize = 32;
+
 struct ConnState {
+    /// 畫面封包（有上限）；JSON 回應與事件走 `out`（無上限，量小）。
+    screens: mpsc::Sender<Vec<u8>>,
     attached: HashMap<String, JoinHandle<()>>,
     /// 這個 client 對各分頁要求的大小；有輸入時套用（最後一個有輸入的 client 決定 PTY 大小）。
     sizes: HashMap<String, (u16, u16)>,
@@ -42,14 +59,16 @@ struct ConnState {
 
 pub async fn serve_conn(d: Arc<Daemon>, stream: Conn) {
     let (out, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (screens, screens_rx) = mpsc::channel::<Vec<u8>>(SCREEN_QUEUE);
     let mut st = ConnState {
+        screens,
         attached: HashMap::new(),
         sizes: HashMap::new(),
         is_ui: false,
         events_task: None,
     };
     let mut hello_done = false;
-    codec::drive(&stream, out_rx, |kind, payload| {
+    codec::drive(&stream, out_rx, screens_rx, |kind, payload| {
             match (kind, payload) {
                 (KIND_JSON, payload) => {
                     let req: Request = match serde_json::from_slice(&payload) {
@@ -220,20 +239,23 @@ fn attach(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, id: &str) -> OpResult<
         session.resize(c, r);
     }
     let (mut rx, screen) = session.attach();
-    if let Some(f) = screen_frame(&ScreenUpdate::Snapshot {
-        id: id.clone(),
-        screen,
-    }) {
-        let _ = out.send(f);
-    }
-    let out2 = out.clone();
+    let screens = st.screens.clone();
     let id2 = id.clone();
     let task = tokio::spawn(async move {
+        // 快照與之後的差異走同一個有上限的佇列，順序不會錯；client 讀太慢時這裡會等待，
+        // broadcast 因此落後（Lagged），再改送一份新的完整快照。
+        if let Some(f) = screen_frame(&ScreenUpdate::Snapshot {
+            id: id2.clone(),
+            screen,
+        }) && screens.send(f).await.is_err()
+        {
+            return;
+        }
         loop {
             match rx.recv().await {
                 Ok(u) => {
                     if let Some(f) = screen_frame(&u)
-                        && out2.send(f).is_err()
+                        && screens.send(f).await.is_err()
                     {
                         break;
                     }
@@ -244,7 +266,7 @@ fn attach(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, id: &str) -> OpResult<
                     if let Some(f) = screen_frame(&ScreenUpdate::Snapshot {
                         id: id2.clone(),
                         screen,
-                    }) && out2.send(f).is_err()
+                    }) && screens.send(f).await.is_err()
                     {
                         break;
                     }

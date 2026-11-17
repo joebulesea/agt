@@ -1,9 +1,7 @@
 //! 一般 Shell 分頁：只區分執行中與已結束。
 
 use crate::{AgentSettings, base_command};
-use agt_core::{
-    AgentAdapter, CommandSpec, LaunchCtx, OscEvent, ScreenView, StatusSourceKind, platform,
-};
+use agt_core::{AgentAdapter, CommandSpec, LaunchCtx, OscEvent, ScreenView, platform};
 use agt_proto::AgentStatus;
 use std::time::Duration;
 
@@ -49,9 +47,5 @@ impl AgentAdapter for ShellAdapter {
 
     fn on_idle(&mut self, _: Duration) -> Option<AgentStatus> {
         None
-    }
-
-    fn status_source(&self) -> StatusSourceKind {
-        StatusSourceKind::None
     }
 }

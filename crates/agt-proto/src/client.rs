@@ -63,8 +63,10 @@ impl Client {
         let pending: Pending = Arc::default();
 
         let p2 = pending.clone();
+        // client 不送畫面：sender 立刻丟掉，drive 會把這個佇列視為已關閉
+        let (_, no_screens) = mpsc::channel::<Vec<u8>>(1);
         tokio::spawn(async move {
-            crate::codec::drive(&stream, rx, |kind, payload| {
+            crate::codec::drive(&stream, rx, no_screens, |kind, payload| {
                 match kind {
                     KIND_JSON => {
                         let Ok(msg) = serde_json::from_slice::<ServerMsg>(&payload) else {

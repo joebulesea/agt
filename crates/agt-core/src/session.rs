@@ -82,7 +82,6 @@ struct Inner {
     hook_at: Option<Instant>,
     log: Option<Box<dyn Write + Send>>,
     exit_code: Option<i32>,
-    title: String,
 }
 
 pub struct Session {
@@ -174,7 +173,6 @@ impl Session {
                 hook_at: None,
                 log: opts.log,
                 exit_code: None,
-                title: String::new(),
             }),
             input: Mutex::new(Some(in_tx)),
             master: Mutex::new(Some(pair.master)),
@@ -324,7 +322,6 @@ impl Session {
             match ev {
                 TermEvent::PtyWrite(s) => writes.push(s.into_bytes()),
                 TermEvent::Title(t) => {
-                    inner.title = t.clone();
                     let _ = self.events.send(SessionEvent::Title(t));
                 }
                 TermEvent::Bell => {} // BEL 已由 OscScanner 處理
@@ -493,10 +490,6 @@ impl Session {
         screen
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
-        self.events.subscribe()
-    }
-
     pub fn viewers(&self) -> usize {
         self.screens.receiver_count()
     }
@@ -565,10 +558,6 @@ impl Session {
         self.inner.lock().unwrap().exit_code
     }
 
-    pub fn title(&self) -> String {
-        self.inner.lock().unwrap().title.clone()
-    }
-
     pub fn pid(&self) -> Option<u32> {
         self.pid
     }
@@ -595,7 +584,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::{LaunchCtx, StatusSourceKind};
+    use crate::adapter::LaunchCtx;
 
     struct Plain;
     impl AgentAdapter for Plain {
@@ -617,9 +606,6 @@ mod tests {
         }
         fn on_idle(&mut self, _: Duration) -> Option<AgentStatus> {
             None
-        }
-        fn status_source(&self) -> StatusSourceKind {
-            StatusSourceKind::Pattern
         }
     }
 
@@ -695,6 +681,36 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1200)).await;
         assert_eq!(s.status(), AgentStatus::Done, "規則比對不應覆蓋 hooks 狀態");
         s.kill();
+    }
+
+    /// Windows 的 setup 包裝走 PowerShell（與 Unix 的 /bin/sh 不同），要實際跑過一次。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_setup_wrapper() {
+        let spawn = |setup: &str, id: &str| {
+            Session::spawn(SessionOptions {
+                id: id.into(),
+                cols: 60,
+                rows: 10,
+                scrollback: 100,
+                spec: platform::wrap_with_setup(setup, shell_spec("echo agent-ok")),
+                adapter: Box::new(Plain),
+                log: None,
+            })
+            .unwrap()
+            .0
+        };
+        // setup 失敗：不啟動 Agent，以 SETUP_FAILED_EXIT 結束並進入 Error
+        let s = spawn("cmd /c exit 1", "w1");
+        assert!(wait_for(&s, |s| s.exit_code().is_some()).await);
+        assert_eq!(s.exit_code(), Some(platform::SETUP_FAILED_EXIT as i32));
+        assert_eq!(s.status(), AgentStatus::Error);
+        // setup 成功：接著啟動 Agent
+        let s = spawn("Write-Host setup-ok", "w2");
+        assert!(wait_for(&s, |s| s.exit_code().is_some()).await);
+        assert_eq!(s.exit_code(), Some(0));
+        let snap = s.snapshot();
+        assert!((0..10).any(|y| snap.row_text(y).contains("agent-ok")));
     }
 
     #[cfg(unix)]
