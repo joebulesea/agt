@@ -1,9 +1,11 @@
-//! `agt setup`：檢查環境（git、Claude Code、Docker、Docker Sandboxes），
-//! 依偵測結果產生設定檔中的 Agent 區段，並把 Docker 映像檔需要的 Dockerfile 寫到設定目錄。
+//! `agt setup`：檢查環境（git、Claude Code、Docker、Docker Sandboxes），缺少的項目可以選擇安裝
+//! （見 [`crate::deps`]），再依偵測結果產生設定檔中的 Agent 區段，並把 Docker 映像檔需要的
+//! Dockerfile 寫到設定目錄。
 //!
 //! 只有 `agt.exe`（與 `agtd.exe`）時也能完成設定：Agent 範例與 Dockerfile 都在編譯時內嵌。
 //! 第一次執行 `agt`（還沒有設定檔）時會自動執行，介面類似 Claude Code 的初次設定。
 
+use crate::deps;
 use crate::prompt::{self, Item};
 use anyhow::Context;
 use crossterm::style::Stylize;
@@ -53,10 +55,12 @@ pub struct Options {
     pub yes: bool,
     /// 需要的 Docker 映像檔不存在時直接建置（搭配 `yes` 使用）。
     pub build: bool,
+    /// 不詢問時也用 winget 安裝缺少的必要項目（搭配 `yes` 使用）。
+    pub install: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Docker {
+pub(crate) enum Docker {
     Missing,
     /// 有 docker 指令，但 Docker Desktop / Engine 沒有在執行。
     NotRunning,
@@ -64,20 +68,25 @@ enum Docker {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Sbx {
+pub(crate) enum Sbx {
     Missing,
     NotSignedIn(String),
     /// (版本, 是否已設定網路政策)
     Ready(String, bool),
 }
 
-struct Env {
-    git: Option<String>,
-    claude: bool,
-    agy: bool,
-    copilot: bool,
-    docker: Docker,
-    sbx: Sbx,
+#[derive(Debug, Clone)]
+pub(crate) struct Env {
+    pub git: Option<String>,
+    pub claude: bool,
+    pub agy: bool,
+    pub copilot: bool,
+    pub docker: Docker,
+    pub sbx: Sbx,
+    /// WSL2 是否可用（Docker Desktop 需要）；只在 Windows 偵測，其他平台為 None。
+    pub wsl: Option<bool>,
+    /// 是否有 winget（只在 Windows 偵測）。
+    pub winget: bool,
 }
 
 /// 可以加入設定檔的 Agent。
@@ -108,7 +117,7 @@ pub fn needs_first_run() -> bool {
 }
 
 /// 執行指令並取得輸出（stdout + stderr）；指令不存在時回傳 None。
-fn capture(program: &str, args: &[&str]) -> Option<(bool, String)> {
+pub(crate) fn capture(program: &str, args: &[&str]) -> Option<(bool, String)> {
     let out = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -120,7 +129,7 @@ fn capture(program: &str, args: &[&str]) -> Option<(bool, String)> {
 }
 
 /// 在 PATH 中找指令（含 Windows 的 .exe / .cmd / .ps1 等）。
-fn on_path(name: &str) -> bool {
+pub(crate) fn on_path(name: &str) -> bool {
     let exts: Vec<String> = if cfg!(windows) {
         std::env::var("PATHEXT")
             .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
@@ -139,7 +148,7 @@ fn on_path(name: &str) -> bool {
     })
 }
 
-fn detect() -> Env {
+pub(crate) fn detect() -> Env {
     let git = capture("git", &["--version"])
         .filter(|(ok, _)| *ok)
         .map(|(_, v)| v.trim_start_matches("git version ").to_string());
@@ -170,6 +179,7 @@ fn detect() -> Env {
             }
         }
     };
+    let windows = cfg!(windows);
     Env {
         git,
         claude: on_path("claude"),
@@ -177,6 +187,9 @@ fn detect() -> Env {
         copilot: on_path("copilot"),
         docker,
         sbx,
+        // `wsl --status` 的輸出是 UTF-16，只看結束代碼；沒有安裝時 wsl.exe 可能是只會提示安裝的版本
+        wsl: windows.then(|| capture("wsl", &["--status"]).is_some_and(|(ok, _)| ok)),
+        winget: windows && on_path("winget"),
     }
 }
 
@@ -238,58 +251,116 @@ fn section(title: &str) {
     println!("\n{}", title.bold());
 }
 
+/// 一個項目的狀態：(符號, 說明)。
+fn dep_status(env: &Env, dep: deps::Dep) -> (char, String) {
+    use deps::Dep;
+    let missing = |extra: &str| ('✗', format!("未安裝{extra}"));
+    match dep {
+        Dep::Git => match &env.git {
+            Some(v) if deps::git_ok(v) => ('✓', format!("git {v}")),
+            Some(v) => (
+                '✗',
+                format!("git {v}：版本太舊，需要 2.20 以上（建立 worktree 用）"),
+            ),
+            None => (
+                '✗',
+                "找不到。agt 需要 git 2.20 以上（建立 worktree 用）".into(),
+            ),
+        },
+        Dep::DockerDesktop => match &env.docker {
+            Docker::Running(v) => ('✓', format!("Docker {v}（執行中）")),
+            Docker::NotRunning => ('!', "已安裝但沒有在執行".into()),
+            Docker::Missing => missing("（Docker 容器版 Agent 需要）"),
+        },
+        Dep::Sbx => match &env.sbx {
+            Sbx::Ready(v, true) => ('✓', format!("sbx {v}，已登入")),
+            Sbx::Ready(v, false) => ('!', format!("sbx {v}，已登入，尚未設定網路政策")),
+            Sbx::NotSignedIn(v) => ('!', format!("sbx {v}，尚未登入")),
+            Sbx::Missing => missing("（claude-sbx 需要，microVM 隔離最完整）"),
+        },
+        Dep::Claude if env.claude => ('✓', "claude".into()),
+        Dep::Claude => missing("（內建的 claude Agent 需要；沙箱版不需要）"),
+        Dep::Copilot if env.copilot => ('✓', "copilot".into()),
+        Dep::Copilot => missing(""),
+        Dep::Agy if env.agy => ('✓', "agy".into()),
+        Dep::Agy => missing(""),
+    }
+}
+
 fn print_env(env: &Env) {
     section("檢查環境");
-    match &env.git {
-        Some(v) => prompt::status('✓', &format!("git {v}")),
-        None => prompt::status(
-            '✗',
-            "git：找不到。agt 需要 git 2.20 以上（建立 worktree 用）",
-        ),
-    }
-    if env.claude {
-        prompt::status('✓', "Claude Code（claude）");
-    } else {
-        prompt::status(
-            '!',
-            "Claude Code：主機上沒有安裝（內建的 claude Agent 需要；沙箱版不需要）",
-        );
-    }
-    if env.agy {
-        prompt::status('✓', "Antigravity CLI（agy）");
-    } else {
-        prompt::status('✗', "Antigravity CLI（agy）：未安裝（選用）");
-    }
-    if env.copilot {
-        prompt::status('✓', "GitHub Copilot CLI（copilot）");
-    } else {
-        prompt::status(
-            '✗',
-            "GitHub Copilot CLI（copilot）：未安裝（選用，安裝：npm install -g @github/copilot）",
-        );
-    }
-    match &env.docker {
-        Docker::Running(v) => prompt::status('✓', &format!("Docker {v}（執行中）")),
-        Docker::NotRunning => {
-            prompt::status('!', "Docker：已安裝但沒有在執行（請先啟動 Docker Desktop）")
+    for r in deps::REQUIREMENTS {
+        let (mark, text) = dep_status(env, r.dep);
+        // 有問題的項目標示等級（必要 / 建議 / 選用）
+        let level = if mark == '✓' {
+            String::new()
+        } else {
+            format!("[{}] ", r.level.label())
+        };
+        prompt::status(mark, &format!("{level}{}：{text}", r.name));
+        if r.dep == deps::Dep::DockerDesktop && env.wsl == Some(false) {
+            println!(
+                "      {}",
+                "WSL2：未啟用（Docker Desktop 需要，安裝 Docker Desktop 時會一併啟用）".dark_grey()
+            );
         }
-        Docker::Missing => prompt::status('✗', "Docker：未安裝（選用）"),
     }
-    match &env.sbx {
-        Sbx::Ready(v, true) => prompt::status('✓', &format!("Docker Sandboxes（sbx {v}，已登入）")),
-        Sbx::Ready(v, false) => prompt::status(
-            '!',
-            &format!("Docker Sandboxes（sbx {v}，已登入，尚未設定網路政策）"),
-        ),
-        Sbx::NotSignedIn(v) => prompt::status(
-            '!',
-            &format!("Docker Sandboxes（sbx {v}）：尚未登入，請執行 sbx login"),
-        ),
-        Sbx::Missing => prompt::status(
-            '✗',
-            "Docker Sandboxes（sbx）：未安裝（選用，安裝：winget install Docker.sbx）",
-        ),
+}
+
+/// 列出缺少的項目與安裝方式（不詢問時使用）。
+fn print_missing(env: &Env) {
+    let tasks = deps::plan(env, deps::Os::current());
+    if tasks.is_empty() {
+        return;
     }
+    section("缺少的項目");
+    for t in &tasks {
+        let how = t
+            .methods
+            .iter()
+            .find(|m| !matches!(m, deps::Method::Skip | deps::Method::Open(_)))
+            .map(deps::Method::desc)
+            .unwrap_or_default();
+        println!(
+            "  • [{}] {}：{how}",
+            deps::requirement(t.dep).level.label(),
+            t.title()
+        );
+    }
+    println!(
+        "  {}",
+        "執行 agt setup 選擇安裝方式（或 agt setup --yes --install 用 winget 安裝必要項目）"
+            .dark_grey()
+    );
+}
+
+/// 處理缺少的項目：互動時顯示安裝選單；不詢問時只在 `--install` 下用 winget 安裝必要項目。
+/// 回傳處理後的環境。
+fn handle_missing(opts: &Options, ui: bool, env: Env) -> anyhow::Result<Env> {
+    if ui {
+        return deps::run_menu(env);
+    }
+    let auto = deps::auto_methods(&deps::plan(&env, deps::Os::current()), opts.install);
+    let mut env = env;
+    for (dep, method) in &auto {
+        env = deps::apply(*dep, method, env)?;
+    }
+    print_missing(&env);
+    Ok(env)
+}
+
+/// 每次開啟 agt 時的快速檢查：只看 PATH（不執行程式）有沒有 git。
+pub fn has_git_quick() -> bool {
+    on_path("git")
+}
+
+/// 缺少必要項目時呼叫：完整檢查並顯示安裝選單，回傳 git 是否可用。
+pub fn install_missing() -> anyhow::Result<bool> {
+    prompt::banner("✻ agt 環境檢查", "缺少必要的項目，安裝後才能開啟 agt");
+    let env = detect();
+    print_env(&env);
+    let env = deps::run_menu(env)?;
+    Ok(env.git.as_deref().is_some_and(deps::git_ok))
 }
 
 fn candidates(env: &Env) -> Vec<Candidate> {
@@ -376,10 +447,11 @@ pub fn run(opts: Options) -> anyhow::Result<()> {
     }
     prompt::banner(
         "✻ 歡迎使用 agt 初始設定",
-        "偵測 Docker / Docker Sandboxes，產生設定檔與 Dockerfile",
+        "檢查並安裝需要的工具，產生設定檔與 Dockerfile",
     );
     let env = detect();
     print_env(&env);
+    let env = handle_missing(&opts, ui, env)?;
 
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     section("設定檔");
@@ -577,8 +649,8 @@ fn after_choose(
                 .into(),
         );
     }
-    if env.git.is_none() {
-        notes.push("安裝 git 2.20 以上（建立 worktree 需要）".into());
+    if !env.git.as_deref().is_some_and(deps::git_ok) {
+        notes.push("安裝 git 2.20 以上（建立 worktree 需要），安裝前無法開啟 agt".into());
     }
     if !notes.is_empty() {
         section("接下來");
@@ -639,6 +711,7 @@ pub fn offer_new_agents() -> anyhow::Result<()> {
     let opts = Options {
         yes: false,
         build: false,
+        install: false,
     };
     println!(
         "{} {}",
@@ -765,6 +838,8 @@ mod tests {
             copilot: false,
             docker: Docker::Running("29".into()),
             sbx: Sbx::Ready("v0.53.0".into(), true),
+            wsl: None,
+            winget: false,
         };
         let all = candidates(&env);
         let chosen: Vec<&Candidate> = all

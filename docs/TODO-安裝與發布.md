@@ -56,7 +56,7 @@ agt update                                    # 之後自我更新
   - [ ] 已安裝且 daemon 在執行時，先 `agt daemon stop -y`
   - [ ] 解壓到 `%APPDATA%\agt\`（不需要系統管理員；和設定檔、`docker\`、`data\` 放在一起，與目前手動安裝的位置相同）
   - [ ] 把目錄加進使用者 PATH（已存在則略過）
-  - [ ] 檢查 git 是否存在，沒有就提示安裝（或交給 `agt setup` 的環境檢查，見 [TODO-環境檢查與安裝](TODO-環境檢查與安裝.md)）
+  - [x] 檢查 git 是否存在，沒有就提示安裝：交給 `agt setup` 的環境檢查（已實作，見 [TODO-環境檢查與安裝](TODO-環境檢查與安裝.md)），install.ps1 不另外檢查
   - [ ] 最後執行 `agt setup`
 - [ ] `install.sh`（Linux / macOS）：同上，安裝到 `~/.local/bin`
 - [ ] 在乾淨的 Windows（沒有 Rust、沒有舊版 agt）上實測

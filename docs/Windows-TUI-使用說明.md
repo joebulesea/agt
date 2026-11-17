@@ -54,13 +54,22 @@ daemon 或 TUI 執行中時 exe 會被鎖住，腳本會先把舊檔改名為 `.
 
 ## 3. 初始設定（agt setup）
 
-只有 `agt.exe` 與 `agtd.exe` 也能直接使用：第一次執行 `agt`（還沒有設定檔）時，會先出現初始設定畫面：
+只有 `agt.exe` 與 `agtd.exe` 也能直接使用（在檔案總管雙擊 `agt.exe` 也可以）：第一次執行 `agt`（還沒有設定檔）時，會先出現初始設定畫面：
 
-1. 檢查環境：git、Claude Code、Antigravity CLI、GitHub Copilot CLI、Docker Desktop、Docker Sandboxes（`sbx`，含是否已登入、是否已設定網路政策）。
-2. 用 `↑` / `↓` 移動、`空白鍵` 勾選要加入的 Agent（`claude-sbx`、`claude-docker`、`agy-docker`、`copilot-docker`），`Enter` 確認，`Esc` 取消。
-3. 選到需要映像檔的 Agent 時，把內建的 Dockerfile 寫到 `%APPDATA%\agt\docker\<claude|agy|copilot>\`，並詢問是否馬上 `docker build`。
-4. 選到 `claude-sbx` 而且還沒有沙箱網路政策時，選擇 `balanced` / `allow-all` / `deny-all`。
-5. 產生 `%APPDATA%\agt\config.toml`，最後選擇是否開啟 agt。
+1. 檢查環境：git、Docker Desktop（含 WSL2）、Docker Sandboxes（`sbx`，含是否已登入、是否已設定網路政策）、Claude Code、GitHub Copilot CLI、Antigravity CLI；有問題的項目標示 **必要 / 建議 / 選用**。
+2. 有缺少的項目時，勾選要處理的項目（預設只勾必要的 git），每一項再選擇處理方式：
+   - **用 winget 安裝**：會先顯示完整指令（`winget install -e --id <ID> --source winget`），winget 的輸出直接顯示在畫面上；需要系統管理員權限時由安裝程式跳出 UAC。安裝後會重新讀取 PATH，不用重新開視窗。
+   - **開啟下載頁**：用預設瀏覽器開啟官方網站。
+   - **顯示指令自行安裝**、**略過**。
+   - Docker Desktop 沒有在執行時可以選「啟動 Docker Desktop」，會等待 engine 就緒（最多約 90 秒）；sbx 沒有登入時可以直接執行 `sbx login`。
+   - WSL2 交給 Docker Desktop 安裝程式處理。安裝程式要求重新開機時選「先結束」，重新開機後再開啟 agt 會重新檢查並從這裡繼續。
+   - 沒有 winget（例如 LTSC 版 Windows）時只能開啟下載頁或自行安裝。
+3. 用 `↑` / `↓` 移動、`空白鍵` 勾選要加入的 Agent（`claude-sbx`、`claude-docker`、`agy-docker`、`copilot-docker`），`Enter` 確認，`Esc` 取消。
+4. 選到需要映像檔的 Agent 時，把內建的 Dockerfile 寫到 `%APPDATA%\agt\docker\<claude|agy|copilot>\`，並詢問是否馬上 `docker build`。
+5. 選到 `claude-sbx` 而且還沒有沙箱網路政策時，選擇 `balanced` / `allow-all` / `deny-all`。
+6. 產生 `%APPDATA%\agt\config.toml`，最後選擇是否開啟 agt。
+
+**缺少 git 時無法開啟 agt**（建立 worktree 需要 git 2.20 以上）：之後每次開啟 agt 都會先快速檢查 PATH 中有沒有 git，沒有時再顯示一次安裝選單。從檔案總管雙擊 `agt.exe` 時，出錯或選「離開」後會顯示「按任意鍵關閉」，不會直接關掉視窗。
 
 **之後每次開啟 agt** 都會快速檢查（只看 PATH，不會拖慢啟動）：如果偵測到設定檔中還沒有的可用 Agent（例如剛安裝好 Docker Desktop 或 Docker Sandboxes），會詢問是否加入；沒勾選的可以選「不要再提醒」（記錄在 `%APPDATA%\agt\setup-skip.txt`，刪掉這個檔案就會再提醒）。
 
@@ -68,7 +77,8 @@ daemon 或 TUI 執行中時 exe 會被鎖住，腳本會先把舊檔改名為 `.
 
 ```powershell
 agt setup              # 互動式設定
-agt setup --yes        # 不詢問，採用預設選項（例如腳本中）
+agt setup --yes        # 不詢問，採用預設選項（例如腳本中）；不會安裝任何東西，只列出缺少的項目
+agt setup --yes --install   # 同上，並用 winget 安裝缺少的必要項目（git）
 agt setup --yes --build   # 同上，並直接建置缺少的 Docker 映像檔
 ```
 
