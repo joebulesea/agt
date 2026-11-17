@@ -758,6 +758,8 @@ mod tests {
         git(p, &["init", "-q", "-b", "main"]).unwrap();
         git(p, &["config", "user.email", "t@t"]).unwrap();
         git(p, &["config", "user.name", "t"]).unwrap();
+        // Windows 的 git 常預設 core.autocrlf=true，checkout 會把 \n 轉成 \r\n，讓內容比對失敗
+        git(p, &["config", "core.autocrlf", "false"]).unwrap();
         std::fs::write(p.join("a.txt"), "a\n").unwrap();
         git(p, &["add", "."]).unwrap();
         git(p, &["commit", "-q", "-m", "init"]).unwrap();

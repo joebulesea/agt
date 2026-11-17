@@ -644,7 +644,11 @@ mod tests {
             cols: 40,
             rows: 10,
             scrollback: 100,
-            spec: shell_spec("echo 中文 hello; echo 'Proceed? (y/n)'; read x; echo got $x"),
+            spec: shell_spec(if cfg!(windows) {
+                "echo 中文 hello& echo Proceed? (y/n)& set /p x=& echo got"
+            } else {
+                "echo 中文 hello; echo 'Proceed? (y/n)'; read x; echo got $x"
+            }),
             adapter: Box::new(Plain),
             log: None,
         })
@@ -671,7 +675,12 @@ mod tests {
             cols: 40,
             rows: 10,
             scrollback: 100,
-            spec: shell_spec("echo 'x (y/n)'; sleep 3"),
+            // cmd 沒有 sleep：ping 4 次約 3 秒
+            spec: shell_spec(if cfg!(windows) {
+                "echo x (y/n)& ping -n 4 127.0.0.1 >nul"
+            } else {
+                "echo 'x (y/n)'; sleep 3"
+            }),
             adapter: Box::new(Plain),
             log: None,
         })
