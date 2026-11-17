@@ -36,6 +36,7 @@ agt finish <id> merge --strategy squash   # merge | pr | keep | discard
 agt kill <id> [--cleanup]
 agt restart <id> [--fresh]             # daemon 重啟後，在同一個 worktree 重新啟動 Agent（接續上次的對話；--fresh 開新對話）
 agt gc [--prune]                       # 比對 git worktree 與資料庫
+agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docker Sandboxes，加入 Agent（第一次執行 agt 時自動執行）
 agt daemon start|stop|restart|status
 ```
 

@@ -1,5 +1,6 @@
 //! agt：CLI 與 TUI 入口。
 
+mod deps;
 mod prompt;
 mod setup;
 
@@ -100,14 +101,17 @@ enum Cmd {
         #[arg(long)]
         prune: bool,
     },
-    /// 初始設定：偵測 Docker / Docker Sandboxes，產生設定檔與 Dockerfile（第一次執行 agt 時會自動執行）
+    /// 初始設定：檢查並安裝 git / Docker / Docker Sandboxes，產生設定檔與 Dockerfile（第一次執行 agt 時會自動執行）
     Setup {
-        /// 不詢問，全部採用預設答案
+        /// 不詢問，全部採用預設答案（不會安裝任何東西，除非加上 --install）
         #[arg(long, short)]
         yes: bool,
         /// 需要的 Docker 映像檔不存在時直接建置（搭配 --yes）
         #[arg(long)]
         build: bool,
+        /// 用 winget 安裝缺少的必要項目（搭配 --yes；只限 Windows）
+        #[arg(long)]
+        install: bool,
     },
     /// 管理 daemon
     Daemon {
@@ -143,18 +147,27 @@ fn main() {
         notify(status, message.clone(), tool.clone(), session.clone());
         return;
     }
+    // 從檔案總管雙擊開啟時，結束後視窗會直接關閉；出錯時要先等使用者看完訊息
+    let double_click = deps::launched_by_double_click();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("無法建立 tokio runtime");
     if let Err(e) = rt.block_on(run(cli)) {
-        eprintln!("agt：{e:#}");
+        // 使用者選擇先結束（例如要重新開機），說明已經顯示過
+        let stopped = e.downcast_ref::<deps::Stopped>().is_some();
+        if !stopped {
+            eprintln!("agt：{e:#}");
+        }
         if let Some(ClientError::Remote { code, .. }) = e.downcast_ref::<ClientError>()
             && code == codes::PROTO_MISMATCH
         {
             eprintln!("提示：daemon 版本不同，請執行 `agt daemon restart`");
         }
-        std::process::exit(1);
+        if double_click {
+            prompt::pause();
+        }
+        std::process::exit(if stopped { 0 } else { 1 });
     }
 }
 
@@ -266,6 +279,9 @@ fn print_sessions(list: &[SessionInfo]) {
     }
 }
 
+const NO_GIT: &str = "缺少 git 2.20 以上（建立 worktree 需要），無法開啟 agt。\
+安裝後重新執行 agt（或雙擊 agt.exe）會再檢查一次。";
+
 async fn tui(focus: Option<String>) -> anyhow::Result<()> {
     if !std::io::stdout().is_terminal() {
         bail!("TUI 需要在終端機中執行");
@@ -274,7 +290,11 @@ async fn tui(focus: Option<String>) -> anyhow::Result<()> {
         setup::run(setup::Options {
             yes: false,
             build: false,
+            install: false,
         })?;
+        if !setup::has_git_quick() {
+            bail!("{NO_GIT}");
+        }
         println!();
         let open = prompt::select(
             "要現在開啟 agt 嗎？",
@@ -291,9 +311,16 @@ async fn tui(focus: Option<String>) -> anyhow::Result<()> {
             0,
         )?;
         if open != 0 {
+            if deps::launched_by_double_click() {
+                prompt::pause();
+            }
             return Ok(());
         }
     } else if std::io::stdin().is_terminal() {
+        // 每次開啟都快速檢查必要項目（只看 PATH）；缺少時才做完整檢查並顯示安裝選單
+        if !setup::has_git_quick() && !setup::install_missing()? {
+            bail!("{NO_GIT}");
+        }
         // 每次開啟都檢查：有新的可用 Agent（例如剛安裝 Docker Sandboxes）時詢問是否加入
         // 按 Esc 只是略過這次，不影響開啟 agt；其他錯誤顯示後照常開啟
         if let Err(e) = setup::offer_new_agents()
@@ -315,7 +342,15 @@ async fn tui(focus: Option<String>) -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.cmd {
         None | Some(Cmd::Tui) => tui(None).await,
-        Some(Cmd::Setup { yes, build }) => setup::run(setup::Options { yes, build }),
+        Some(Cmd::Setup {
+            yes,
+            build,
+            install,
+        }) => setup::run(setup::Options {
+            yes,
+            build,
+            install,
+        }),
         Some(Cmd::Attach { id }) => tui(Some(id)).await,
         Some(Cmd::New {
             agent,

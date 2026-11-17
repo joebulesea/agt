@@ -457,7 +457,7 @@ impl App {
                             const PREVIEW: usize = 400;
                             let shown: String = text.chars().take(PREVIEW).collect();
                             let more = if n > PREVIEW {
-                                format!("\n…（共 {n} 字）")
+                                format!("\n…（只顯示前 {PREVIEW} 字；按 y 會複製全部 {n} 字）")
                             } else {
                                 String::new()
                             };

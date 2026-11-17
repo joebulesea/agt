@@ -8,7 +8,7 @@ use crossterm::style::{
 };
 use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
-use std::io::{Write, stdout};
+use std::io::{IsTerminal, Write, stdout};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// 使用者按了 Esc 或 Ctrl+C。
@@ -259,6 +259,19 @@ pub fn banner(title: &str, subtitle: &str) {
         ResetColor,
     );
     let _ = out.flush();
+}
+
+/// 顯示「按任意鍵關閉」並等待按鍵（從檔案總管雙擊開啟時，避免視窗直接關閉看不到訊息）。
+pub fn pause() {
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+    print!("\n{}", "按任意鍵關閉…".dark_grey());
+    let _ = stdout().flush();
+    if let Ok(_raw) = Raw::on() {
+        let _ = read_key();
+    }
+    println!();
 }
 
 /// 狀態列：✓ / ! / ✗ 加上顏色。
