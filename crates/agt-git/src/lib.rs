@@ -35,9 +35,16 @@ pub enum GitError {
 
 pub type Result<T> = std::result::Result<T, GitError>;
 
+// 信任邊界：worktree 的內容（含它的 `.git`）是 Agent 可寫、不可信的，尤其是在容器 / 沙箱中執行的 Agent。
+// 對 worktree 執行 git 一律走 `git_wt`：先確認 `.git` 是指向主 repo 登記的 gitdir 的檔案，
+// 再用 `GIT_DIR` / `GIT_WORK_TREE` 固定，git 就不會去採用 worktree 裡被替換過的 `.git`
+// （例如換成自己的 `.git` 目錄、塞進會執行外部程式的設定）。主 repo 的 git 指令用 `git`。
+
 fn command(dir: &Path) -> Command {
     let mut c = Command::new("git");
     c.current_dir(dir)
+        // 額外保險：背景指令不需要 fsmonitor，也不該因為任何設定來源而啟動外部程式
+        .args(["-c", "core.fsmonitor=false"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         // 背景輪詢的 git status 不搶 index.lock，避免 Agent 自己的 git add / commit 失敗
@@ -56,8 +63,13 @@ fn run_raw(dir: &Path, args: &[&str]) -> Result<Output> {
     Ok(command(dir).args(args).output()?)
 }
 
-/// 執行 git，成功時回傳去掉結尾空白的 stdout。
+/// 執行 git，成功時回傳去掉結尾空白的 stdout。只用於可信的目錄（主 repo）；
+/// worktree 請用 [`git_wt`]。
 pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    run(command(dir), args)
+}
+
+fn run(mut c: Command, args: &[&str]) -> Result<String> {
     debug_assert!(
         !(args.first() == Some(&"push")
             && args.iter().any(|a| a.starts_with("--force") || *a == "-f")),
@@ -67,7 +79,7 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
         !(args.first() == Some(&"reset") && args.contains(&"--hard")),
         "agt 不執行 git reset --hard"
     );
-    let out = run_raw(dir, args)?;
+    let out = c.args(args).output()?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
@@ -80,6 +92,65 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
             stderr,
         })
     }
+}
+
+/// 確認 `wt` 的 `.git` 是指向主 repo 登記的 gitdir（`<common>/worktrees/<id>`）的檔案，回傳該 gitdir。
+///
+/// 拒絕：`.git` 不是一般檔案（被換成目錄或連結）、或它指向的不是主 repo `worktrees/` 底下的目錄
+/// （例如指到 worktree 內自己準備的目錄）。`repo` 必須是可信的主 repo 路徑。
+pub fn trusted_gitdir(repo: &Path, wt: &Path) -> Result<PathBuf> {
+    let refuse = |why: &str| {
+        GitError::Refused(format!(
+            "worktree {} 的 .git 不可信（{why}），不對它執行 git；請檢查 Agent 是否改動過 .git",
+            wt.display()
+        ))
+    };
+    let gitfile = wt.join(".git");
+    let meta = std::fs::symlink_metadata(&gitfile).map_err(|_| refuse("找不到 .git"))?;
+    if !meta.is_file() {
+        return Err(refuse(".git 不是檔案"));
+    }
+    let text = std::fs::read_to_string(&gitfile).map_err(|_| refuse("無法讀取 .git"))?;
+    let target = text
+        .trim()
+        .strip_prefix("gitdir:")
+        .map(str::trim)
+        .ok_or_else(|| refuse(".git 格式不符"))?;
+    let target = PathBuf::from(target);
+    let gitdir = normalize(&if target.is_absolute() {
+        target
+    } else {
+        wt.join(target)
+    });
+
+    // 主 repo 的共用 gitdir。一般 repo 的 `.git` 就是目錄，直接用，不必啟動 git（背景輪詢每次都會呼叫，
+    // Windows 上啟動行程很慢）；`.git` 是檔案（repo 本身是 worktree、或 --separate-git-dir）時才問 git。
+    let dot_git = repo.join(".git");
+    let common = if std::fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_dir()) {
+        dot_git
+    } else {
+        let c = PathBuf::from(git(repo, &["rev-parse", "--git-common-dir"])?);
+        if c.is_absolute() { c } else { repo.join(c) }
+    };
+    let common = normalize(&common);
+    let registered = common.join("worktrees");
+    if !gitdir.is_dir() || !gitdir.parent().is_some_and(|p| same_path(p, &registered)) {
+        return Err(refuse(".git 沒有指向主 repo 登記的 gitdir"));
+    }
+    Ok(gitdir)
+}
+
+/// 對 worktree 執行 git 用的指令：先驗證，再以 `GIT_DIR` / `GIT_WORK_TREE` 固定。
+fn wt_command(repo: &Path, wt: &Path) -> Result<Command> {
+    let gitdir = trusted_gitdir(repo, wt)?;
+    let mut c = command(wt);
+    c.env("GIT_DIR", gitdir).env("GIT_WORK_TREE", wt);
+    Ok(c)
+}
+
+/// 對 worktree 執行 git（`repo` 是可信的主 repo 路徑）。
+pub fn git_wt(repo: &Path, wt: &Path, args: &[&str]) -> Result<String> {
+    run(wt_command(repo, wt)?, args)
 }
 
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
@@ -381,8 +452,9 @@ pub struct GitStatus {
 }
 
 /// 相對 base 的領先 / 落後 commit 數與是否有未 commit 的變更。
-pub fn status(worktree: &Path, base: &str) -> Result<GitStatus> {
-    let counts = git(
+pub fn status(repo: &Path, worktree: &Path, base: &str) -> Result<GitStatus> {
+    let counts = git_wt(
+        repo,
         worktree,
         &[
             "rev-list",
@@ -396,7 +468,7 @@ pub fn status(worktree: &Path, base: &str) -> Result<GitStatus> {
         .map(|s| s.parse::<u32>().unwrap_or(0));
     let behind = it.next().unwrap_or(0);
     let ahead = it.next().unwrap_or(0);
-    let dirty = is_dirty(worktree, true)?;
+    let dirty = is_dirty_wt(repo, worktree, true)?;
     Ok(GitStatus {
         ahead,
         behind,
@@ -404,18 +476,32 @@ pub fn status(worktree: &Path, base: &str) -> Result<GitStatus> {
     })
 }
 
+fn status_args(include_untracked: bool) -> [&'static str; 3] {
+    [
+        "status",
+        "--porcelain",
+        if include_untracked {
+            "--untracked-files=normal"
+        } else {
+            "--untracked-files=no"
+        },
+    ]
+}
+
+/// 可信目錄（主 repo）是否有未 commit 的變更；worktree 請用 [`is_dirty_wt`]。
 pub fn is_dirty(dir: &Path, include_untracked: bool) -> Result<bool> {
-    let flag = if include_untracked {
-        "--untracked-files=normal"
-    } else {
-        "--untracked-files=no"
-    };
-    Ok(!git(dir, &["status", "--porcelain", flag])?.is_empty())
+    Ok(!git(dir, &status_args(include_untracked))?.is_empty())
+}
+
+/// worktree 是否有未 commit 的變更。
+pub fn is_dirty_wt(repo: &Path, wt: &Path, include_untracked: bool) -> Result<bool> {
+    Ok(!git_wt(repo, wt, &status_args(include_untracked))?.is_empty())
 }
 
 /// 是否有不在 base、也不在任何 remote 上的 commit。
-pub fn has_unpushed(worktree: &Path, base: &str) -> Result<bool> {
-    let n = git(
+pub fn has_unpushed(repo: &Path, worktree: &Path, base: &str) -> Result<bool> {
+    let n = git_wt(
+        repo,
         worktree,
         &["rev-list", "--count", "HEAD", "--not", base, "--remotes"],
     )?;
@@ -423,10 +509,28 @@ pub fn has_unpushed(worktree: &Path, base: &str) -> Result<bool> {
 }
 
 /// `git diff <base>...HEAD` 加上未 commit 的變更與未追蹤的檔案。
-pub fn diff(worktree: &Path, base: &str) -> Result<String> {
-    let committed = git(worktree, &["diff", "--no-color", &format!("{base}...HEAD")])?;
-    let uncommitted = git(worktree, &["diff", "--no-color", "HEAD"])?;
-    let untracked = git(worktree, &["ls-files", "--others", "--exclude-standard"])?;
+pub fn diff(repo: &Path, worktree: &Path, base: &str) -> Result<String> {
+    // --no-ext-diff：不執行任何設定的外部 diff 程式
+    let committed = git_wt(
+        repo,
+        worktree,
+        &[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            &format!("{base}...HEAD"),
+        ],
+    )?;
+    let uncommitted = git_wt(
+        repo,
+        worktree,
+        &["diff", "--no-color", "--no-ext-diff", "HEAD"],
+    )?;
+    let untracked = git_wt(
+        repo,
+        worktree,
+        &["ls-files", "--others", "--exclude-standard"],
+    )?;
     let mut out = String::new();
     out.push_str(&format!("### 已 commit（{base}...HEAD）\n"));
     out.push_str(if committed.is_empty() {
@@ -592,18 +696,24 @@ pub enum Strategy {
     Rebase,
 }
 
+const CONFLICT_ARGS: [&str; 3] = ["diff", "--name-only", "--diff-filter=U"];
+
 fn conflicted_files(dir: &Path) -> String {
-    git(dir, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default()
+    git(dir, &CONFLICT_ARGS).unwrap_or_default()
+}
+
+fn conflicted_files_wt(repo: &Path, wt: &Path) -> String {
+    git_wt(repo, wt, &CONFLICT_ARGS).unwrap_or_default()
 }
 
 /// 把 worktree 中所有變更（含未追蹤的檔案）commit 起來；沒有變更時回傳 false。
 /// 給無法自行 commit 的 Agent（例如在容器中執行的）使用。
-pub fn commit_all(worktree: &Path, message: &str) -> Result<bool> {
-    if !is_dirty(worktree, true)? {
+pub fn commit_all(repo: &Path, worktree: &Path, message: &str) -> Result<bool> {
+    if !is_dirty_wt(repo, worktree, true)? {
         return Ok(false);
     }
-    git(worktree, &["add", "-A"])?;
-    git(worktree, &["commit", "-m", message])?;
+    git_wt(repo, worktree, &["add", "-A"])?;
+    git_wt(repo, worktree, &["commit", "-m", message])?;
     Ok(true)
 }
 
@@ -623,7 +733,7 @@ pub fn merge_into_base(
             main.display()
         )));
     }
-    if is_dirty(worktree, false)? {
+    if is_dirty_wt(main, worktree, false)? {
         return Err(GitError::Dirty(
             "worktree 還有未 commit 的變更，請先讓 Agent commit 或手動 commit".into(),
         ));
@@ -673,8 +783,8 @@ pub fn merge_into_base(
             }
         }
         Strategy::Rebase => {
-            if let Err(e) = git(worktree, &["rebase", base]) {
-                let files = conflicted_files(worktree);
+            if let Err(e) = git_wt(main, worktree, &["rebase", base]) {
+                let files = conflicted_files_wt(main, worktree);
                 if !files.is_empty() {
                     return Err(GitError::Conflict(format!(
                         "rebase 發生衝突，已停在 worktree {} 等待處理：\n{files}",
@@ -690,7 +800,15 @@ pub fn merge_into_base(
 }
 
 /// 結果：PR 網址或要使用者手動執行的指令。
-pub fn create_pr(worktree: &Path, branch: &str, base: &str, title: &str) -> Result<String> {
+pub fn create_pr(
+    repo: &Path,
+    worktree: &Path,
+    branch: &str,
+    base: &str,
+    title: &str,
+) -> Result<String> {
+    // 先驗證；gh 自己也會在 worktree 裡呼叫 git，下面用同一個 gitdir 固定它
+    let gitdir = trusted_gitdir(repo, worktree)?;
     let mut probe = Command::new("gh");
     probe
         .arg("--version")
@@ -703,7 +821,7 @@ pub fn create_pr(worktree: &Path, branch: &str, base: &str, title: &str) -> Resu
         probe.creation_flags(0x0800_0000);
     }
     let has_gh = probe.status().map(|s| s.success()).unwrap_or(false);
-    let remote = git(worktree, &["remote"])?;
+    let remote = git_wt(repo, worktree, &["remote"])?;
     let remote = remote
         .lines()
         .find(|r| *r == "origin")
@@ -719,9 +837,11 @@ pub fn create_pr(worktree: &Path, branch: &str, base: &str, title: &str) -> Resu
             worktree.display()
         ));
     }
-    git(worktree, &["push", "-u", &remote, branch])?;
+    git_wt(repo, worktree, &["push", "-u", &remote, branch])?;
     let mut gh = Command::new("gh");
     gh.current_dir(worktree)
+        .env("GIT_DIR", &gitdir)
+        .env("GIT_WORK_TREE", worktree)
         .args([
             "pr", "create", "--base", base, "--head", branch, "--title", title, "--fill",
         ])
@@ -802,17 +922,17 @@ mod tests {
         let wt = wts.path().join("w1");
         add_worktree(root, &wt, "agt/test/x-000001", "main").unwrap();
         std::fs::write(wt.join("b.txt"), "b\n").unwrap();
-        assert!(status(&wt, "main").unwrap().dirty);
+        assert!(status(root, &wt, "main").unwrap().dirty);
         git(&wt, &["add", "."]).unwrap();
         git(&wt, &["commit", "-q", "-m", "b"]).unwrap();
-        let st = status(&wt, "main").unwrap();
+        let st = status(root, &wt, "main").unwrap();
         assert_eq!((st.ahead, st.behind, st.dirty), (1, 0, false));
-        assert!(has_unpushed(&wt, "main").unwrap());
-        assert!(diff(&wt, "main").unwrap().contains("b.txt"));
+        assert!(has_unpushed(root, &wt, "main").unwrap());
+        assert!(diff(root, &wt, "main").unwrap().contains("b.txt"));
 
         merge_into_base(root, &wt, "agt/test/x-000001", "main", Strategy::Merge, "t").unwrap();
         assert!(root.join("b.txt").exists());
-        assert!(!has_unpushed(&wt, "main").unwrap());
+        assert!(!has_unpushed(root, &wt, "main").unwrap());
 
         assert!(delete_branch(root, "main").is_err());
         remove_worktree(root, &wt, false).unwrap();
@@ -827,7 +947,7 @@ mod tests {
         let wts = tempfile::tempdir().unwrap();
         let wt = wts.path().join("w2");
         add_worktree(root, &wt, "agt/test/y-000002", "main").unwrap();
-        assert!(!commit_all(&wt, "沒有變更").unwrap());
+        assert!(!commit_all(root, &wt, "沒有變更").unwrap());
         std::fs::write(wt.join("new.txt"), "n\n").unwrap();
         std::fs::write(wt.join("a.txt"), "changed\n").unwrap();
         assert!(
@@ -841,8 +961,8 @@ mod tests {
             )
             .is_err()
         );
-        assert!(commit_all(&wt, "沙箱的修改").unwrap());
-        assert!(!is_dirty(&wt, true).unwrap());
+        assert!(commit_all(root, &wt, "沙箱的修改").unwrap());
+        assert!(!is_dirty_wt(root, &wt, true).unwrap());
         merge_into_base(
             root,
             &wt,
@@ -921,7 +1041,7 @@ mod tests {
         assert_eq!(copied, vec![".env".to_string()]);
         add_exclude(&wt, ".env").unwrap();
         add_exclude(&wt, ".env").unwrap();
-        assert!(!is_dirty(&wt, true).unwrap());
+        assert!(!is_dirty_wt(root, &wt, true).unwrap());
         assert!(copy_files(root, &wt, &["../x".into()]).is_err());
     }
 
@@ -966,6 +1086,73 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "precious\n");
     }
 
+    /// worktree 內的 `.git` 被替換（換成目錄、或指到 worktree 裡自己的目錄）時，
+    /// 所有對 worktree 的 git 操作都要拒絕，而不是採用它。測試資料都是無害的空目錄，不執行任何程式。
+    #[test]
+    fn untrusted_worktree_gitdir_is_refused() {
+        let repo = init_repo();
+        let root = repo.path();
+        let wts = tempfile::tempdir().unwrap();
+        let wt = wts.path().join("w");
+        add_worktree(root, &wt, "agt/t/u-000007", "main").unwrap();
+
+        // 正常的 worktree：驗證通過，操作照常
+        let good = trusted_gitdir(root, &wt).unwrap();
+        assert!(good.ends_with(Path::new("worktrees").join("w")), "{good:?}");
+        assert!(status(root, &wt, "main").is_ok());
+
+        // 1. `.git` 檔案被換成目錄
+        let backup = std::fs::read_to_string(wt.join(".git")).unwrap();
+        std::fs::remove_file(wt.join(".git")).unwrap();
+        std::fs::create_dir(wt.join(".git")).unwrap();
+        assert!(matches!(
+            trusted_gitdir(root, &wt),
+            Err(GitError::Refused(_))
+        ));
+        assert!(matches!(
+            status(root, &wt, "main"),
+            Err(GitError::Refused(_))
+        ));
+        assert!(matches!(diff(root, &wt, "main"), Err(GitError::Refused(_))));
+        assert!(matches!(
+            commit_all(root, &wt, "x"),
+            Err(GitError::Refused(_))
+        ));
+        assert!(matches!(
+            has_unpushed(root, &wt, "main"),
+            Err(GitError::Refused(_))
+        ));
+        assert!(matches!(
+            is_dirty_wt(root, &wt, true),
+            Err(GitError::Refused(_))
+        ));
+        assert!(matches!(
+            merge_into_base(root, &wt, "agt/t/u-000007", "main", Strategy::Rebase, "t"),
+            Err(GitError::Refused(_))
+        ));
+
+        // 2. `.git` 仍是檔案，但指向 worktree 內自己的目錄
+        std::fs::remove_dir(wt.join(".git")).unwrap();
+        std::fs::create_dir(wt.join("mygit")).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: mygit\n").unwrap();
+        assert!(matches!(
+            trusted_gitdir(root, &wt),
+            Err(GitError::Refused(_))
+        ));
+
+        // 3. 指向主 repo 的 .git 本身（不是 worktrees/ 底下登記的目錄）
+        let main_git = normalize(&root.join(".git"));
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", main_git.display())).unwrap();
+        assert!(matches!(
+            trusted_gitdir(root, &wt),
+            Err(GitError::Refused(_))
+        ));
+
+        // 還原後恢復正常
+        std::fs::write(wt.join(".git"), backup).unwrap();
+        assert!(status(root, &wt, "main").is_ok());
+    }
+
     #[test]
     fn container_gitdir_is_relative_and_still_works() {
         let repo = init_repo();
@@ -984,7 +1171,7 @@ mod tests {
         assert!(!text.contains('\\'));
         // 主機上的 git 照常可用；再呼叫一次結果相同
         std::fs::write(wt.join("n.txt"), "x").unwrap();
-        assert!(is_dirty(&wt, true).unwrap());
+        assert!(is_dirty_wt(root, &wt, true).unwrap());
         assert!(same_path(&prepare_container_gitdir(&wt).unwrap(), &common));
         // 不是 worktree
         assert!(prepare_container_gitdir(root).is_none());
