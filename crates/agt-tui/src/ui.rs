@@ -1,6 +1,6 @@
 //! 畫面繪製：左側欄、主區域、底部狀態列（規格 8.1）。
 
-use crate::app::{App, Click, ClickHit, FINISH_ITEMS, Popup, STRATEGIES};
+use crate::app::{App, Click, ClickHit, Confirm, FINISH_ITEMS, Popup, STRATEGIES};
 use agt_proto::screen::{Color as PColor, Screen, flags};
 use agt_proto::{AgentStatus, SessionInfo};
 use crossterm::event::KeyCode;
@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// 外層終端機不支援真彩時，把 RGB 降級成 256 色。
@@ -628,6 +628,65 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
+/// 依顯示寬度逐字折行（全形字佔 2 欄），每行前面加一個空白。
+/// 不用 ratatui 的依單字折行：它遇到比寬度還長的單字（網址）會在前後多插入空行，
+/// 行數無法預估，確認框的按鈕就會被擠到框外。
+fn wrap_lines(text: &str, w: usize) -> Vec<String> {
+    let w = w.max(2);
+    let mut out = vec![];
+    for l in text.lines() {
+        let mut cur = String::from(" ");
+        let mut cw = 1;
+        for c in l.chars() {
+            let n = c.width().unwrap_or(0);
+            if cw + n > w {
+                out.push(std::mem::take(&mut cur));
+                cw = 0;
+            }
+            cur.push(c);
+            cw += n;
+        }
+        out.push(cur);
+    }
+    out
+}
+
+/// 確認框的內容放不下、被截斷時，最後的說明（由 [`wrap_lines`] 加上行首空白）。
+/// 剪貼簿確認要說清楚：畫面只顯示一部分，但按 y 會複製全部內容。
+fn truncated_note(action: &Confirm) -> String {
+    match action {
+        Confirm::Clipboard(text) => {
+            format!("…（只顯示部分，按 y 複製全部 {} 字）", text.chars().count())
+        }
+        _ => "…（內容太長，已截斷）".into(),
+    }
+}
+
+/// 確認框的版面：(外框, 內容區, 按鈕列的 y, 折行後的內容)。
+/// 高度依框的實際寬度折行後的行數，再加上空行與按鈕列；
+/// 超過畫面時縮小內容區（截斷內容），按鈕列固定在框內最後一行。
+fn confirm_layout(area: Rect, text: &str) -> (Rect, Rect, u16, Vec<String>) {
+    let want = text.lines().map(|l| l.width()).max().unwrap_or(20) as u16 + 4;
+    let w = want.max(40).min(area.width.saturating_sub(2)).max(10);
+    // 左右框線各佔一欄
+    let lines = wrap_lines(text, w.saturating_sub(2) as usize);
+    let r = centered(area, w, (lines.len() + 4).min(u16::MAX as usize) as u16);
+    let inner = Rect::new(
+        r.x + 1,
+        r.y + 1,
+        r.width.saturating_sub(2),
+        r.height.saturating_sub(2),
+    );
+    let by = inner.y + inner.height.saturating_sub(1);
+    let body = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
+    (r, body, by, lines)
+}
+
 fn block(title: &str) -> Block<'_> {
     Block::new()
         .borders(Borders::ALL)
@@ -932,43 +991,51 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             f.render_widget(Paragraph::new(lines).block(block("merge 策略")), r);
             menu_hits(&mut hits, r, STRATEGIES.len());
         }
-        Popup::Confirm { text, .. } => {
-            let mut lines: Vec<Line> = text.lines().map(|l| Line::raw(format!(" {l}"))).collect();
+        Popup::Confirm { text, action } => {
             let yes = " 是 (y) ";
             let no = " 否 (n) ";
-            lines.push(Line::raw(""));
-            let by_off = lines.len() as u16;
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(yes, button_style()),
-                Span::raw("  "),
-                Span::styled(no, Style::new().fg(Color::Black).bg(Color::Gray)),
-            ]));
-            let w = text.lines().map(|l| l.width()).max().unwrap_or(20) as u16 + 4;
-            let r = centered(area, w.max(40), lines.len() as u16 + 2);
+            let (r, body, by, lines) = confirm_layout(area, text);
             f.render_widget(Clear, r);
+            f.render_widget(block("確認"), r);
+            // 內容太長時只截斷內容；按鈕固定在最後一行，一定看得到
+            let room = body.height as usize;
+            let mut lines: Vec<Line> = if lines.len() > room {
+                // 截斷說明也依寬度折行，整句一定顯示完整（含字數）
+                let note = wrap_lines(&truncated_note(action), body.width as usize);
+                let keep = room.saturating_sub(note.len());
+                let dim = Style::new().fg(Color::DarkGray);
+                lines
+                    .into_iter()
+                    .take(keep)
+                    .map(Line::raw)
+                    .chain(note.into_iter().map(|l| Line::styled(l, dim)))
+                    .collect()
+            } else {
+                lines.into_iter().map(Line::raw).collect()
+            };
+            lines.truncate(room);
+            f.render_widget(Paragraph::new(lines), body);
+            let yx = r.x + 2;
             f.render_widget(
-                Paragraph::new(lines)
-                    .wrap(Wrap { trim: false })
-                    .block(block("確認")),
-                r,
+                Paragraph::new(Line::from(vec![
+                    Span::styled(yes, button_style()),
+                    Span::raw("  "),
+                    Span::styled(no, Style::new().fg(Color::Black).bg(Color::Gray)),
+                ])),
+                Rect::new(yx, by, r.width.saturating_sub(3), 1),
             );
             hits.push(ClickHit {
                 rect: r,
                 click: Click::Nothing,
             });
-            let by = r.y + 1 + by_off;
-            if by + 1 < r.y + r.height {
-                let yx = r.x + 2;
-                hits.push(ClickHit {
-                    rect: Rect::new(yx, by, yes.width() as u16, 1),
-                    click: Click::Key(KeyCode::Char('y')),
-                });
-                hits.push(ClickHit {
-                    rect: Rect::new(yx + yes.width() as u16 + 2, by, no.width() as u16, 1),
-                    click: Click::Key(KeyCode::Char('n')),
-                });
-            }
+            hits.push(ClickHit {
+                rect: Rect::new(yx, by, yes.width() as u16, 1),
+                click: Click::Key(KeyCode::Char('y')),
+            });
+            hits.push(ClickHit {
+                rect: Rect::new(yx + yes.width() as u16 + 2, by, no.width() as u16, 1),
+                click: Click::Key(KeyCode::Char('n')),
+            });
         }
         Popup::Rename { input } => {
             let r = centered(area, 60, 3);
@@ -1038,6 +1105,93 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn confirm_text() -> String {
+        let long =
+            "https://claude.ai/oauth/authorize?code=true&client_id=".to_string() + &"x".repeat(340);
+        format!("分頁要求把以下內容複製到剪貼簿（400 字）：\n\n{long}\n\n要複製嗎？")
+    }
+
+    /// 剪貼簿確認框：一行很長的內容會折行，按鈕不能被擠到框外。
+    #[test]
+    fn confirm_buttons_stay_inside_with_long_lines() {
+        let text = confirm_text();
+        for (w, h) in [(120u16, 40u16), (80, 24), (50, 12), (30, 8), (12, 5)] {
+            let (r, body, by, _) = confirm_layout(Rect::new(0, 0, w, h), &text);
+            assert!(r.x + r.width <= w && r.y + r.height <= h, "{w}x{h}: {r:?}");
+            // 按鈕列在框內（不是框線上），內容區在按鈕列上面
+            assert!(
+                by > r.y && by < r.y + r.height - 1,
+                "{w}x{h}: {r:?} by={by}"
+            );
+            assert!(body.y + body.height <= by, "{w}x{h}: {body:?} by={by}");
+        }
+        // 畫面夠大時整段內容都放得下
+        let (_, body, _, lines) = confirm_layout(Rect::new(0, 0, 120, 40), &text);
+        assert!(
+            body.height as usize >= lines.len(),
+            "{body:?} {}",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn truncated_note_shows_total_for_clipboard() {
+        let note = truncated_note(&Confirm::Clipboard("中".repeat(1234)));
+        assert!(note.contains("全部 1234 字"), "{note}");
+        let other = truncated_note(&Confirm::Close { id: "x".into() });
+        assert!(other.contains("已截斷") && !other.contains("字"), "{other}");
+    }
+
+    #[test]
+    fn wrap_lines_by_display_width() {
+        assert_eq!(wrap_lines("abc", 10), [" abc"]);
+        assert_eq!(wrap_lines("abcdef", 4), [" abc", "def"]);
+        // 全形字不會被切成一半
+        assert_eq!(wrap_lines("中文字", 4), [" 中", "文字"]);
+        assert_eq!(wrap_lines("a\n\nb", 10), [" a", " ", " b"]);
+        for l in wrap_lines(&confirm_text(), 30) {
+            assert!(l.width() <= 30, "{l}");
+        }
+    }
+
+    /// 依 confirm_layout 的結果畫出來，確認按鈕與最後一行問句都在畫面上。
+    #[test]
+    fn confirm_renders_buttons() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let text = confirm_text();
+        for (w, h) in [(80u16, 24u16), (60, 30)] {
+            let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+            t.draw(|f| {
+                let (r, body, by, lines) = confirm_layout(f.area(), &text);
+                f.render_widget(block("確認"), r);
+                let lines: Vec<Line> = lines.into_iter().map(Line::raw).collect();
+                f.render_widget(Paragraph::new(lines), body);
+                f.render_widget(
+                    Paragraph::new(" 是 (y)   否 (n) "),
+                    Rect::new(r.x + 2, by, 20, 1),
+                );
+            })
+            .unwrap();
+            let buf = t.backend().buffer().clone();
+            let screen: String = (0..h)
+                .map(|y| {
+                    (0..w)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            // 全形字後面的格子是空白，比對前先去掉空白
+            let compact: String = screen.chars().filter(|c| *c != ' ').collect();
+            assert!(compact.contains("是(y)否(n)"), "{screen}");
+            assert!(
+                compact.contains("要複製嗎？"),
+                "整段內容都要放得下：\n{screen}"
+            );
+        }
+    }
 
     #[test]
     fn truncate_cjk() {
