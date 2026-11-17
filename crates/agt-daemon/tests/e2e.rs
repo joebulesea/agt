@@ -1,6 +1,8 @@
 //! 端對端測試：啟動真正的 agtd，以假 Agent 腳本 + 暫存 git repo 走完整流程。
 //! （規格 12 的 tests/ 目錄；放在 agt-daemon 底下才能取得 agtd 執行檔路徑。）
-#![cfg(unix)]
+//!
+//! Windows 上假 Agent 由 Git for Windows 附的 `sh.exe` 執行（agt 本來就需要 git），
+//! 同一份腳本在兩個平台上都能用。
 
 use agt_proto::client::{Client, Connected, Incoming, expect_session, expect_sessions};
 use agt_proto::*;
@@ -30,6 +32,35 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
+/// 執行假 Agent 腳本的 sh（設定檔中以正斜線表示）。
+fn sh() -> String {
+    if cfg!(windows) {
+        // git --exec-path = <Git>/mingw64/libexec/git-core；<Git>/bin/sh.exe 會設好 PATH（git、sleep 等）
+        let exec = git(Path::new("."), &["--exec-path"]);
+        let root = Path::new(&exec).ancestors().nth(3).unwrap().to_path_buf();
+        let sh = root.join("bin").join("sh.exe");
+        assert!(
+            sh.is_file(),
+            "找不到 Git for Windows 的 sh.exe：{}",
+            sh.display()
+        );
+        sh.to_string_lossy().replace('\\', "/")
+    } else {
+        "/bin/sh".into()
+    }
+}
+
+/// 測試用的 agtd。交叉編譯後在別的機器上執行時，編譯時記下的路徑不存在，
+/// 改找與測試執行檔相鄰的 agtd（和 agt 找 agtd 的方式相同）。
+fn agtd_exe() -> PathBuf {
+    let built = PathBuf::from(env!("CARGO_BIN_EXE_agtd"));
+    if built.is_file() {
+        built
+    } else {
+        agt_proto::transport::sibling_exe("agtd")
+    }
+}
+
 const FAKE_AGENT: &str = r#"
 echo "agent in $(basename "$PWD") 中文輸出"
 echo "work from $AGT_SESSION_ID" > "work-$(basename "$PWD").txt"
@@ -56,6 +87,8 @@ impl Env {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-qm", "init"]);
 
+        // 路徑用 TOML 的 literal string（'...'），Windows 的反斜線才不會被當成跳脫字元
+        let sh = sh();
         let config = format!(
             r#"
 [general]
@@ -63,31 +96,36 @@ notify = false
 idle_shutdown_secs = 0
 
 [agents.fake]
-command = "/bin/sh"
+command = '{sh}'
 args = ["-c", '''{FAKE_AGENT}''']
 status_source = "pattern"
 waiting_patterns = ['\(y/n\)']
 idle_timeout_secs = 30
 
 [agents.conv]
-command = "/bin/sh"
+command = '{sh}'
 args = ["-c", '''{CONV_AGENT}''', "conv"]
 status_source = "none"
 new_args = ["new", "{{conversation}}"]
 resume_args = ["resume", "{{conversation}}"]
 
-[repos."{}"]
+[repos.'{}']
 copy_files = [".env"]
 "#,
             repo.display()
         );
         std::fs::write(home.join("config.toml"), config).unwrap();
-        let sock = dir
-            .path()
-            .join("run")
-            .join("agt.sock")
-            .to_string_lossy()
-            .into_owned();
+        let sock = if cfg!(windows) {
+            // 每個測試各用一個 named pipe，可以平行執行
+            let name = dir.path().file_name().unwrap().to_string_lossy();
+            format!(r"\\.\pipe\agt-e2e-{name}")
+        } else {
+            dir.path()
+                .join("run")
+                .join("agt.sock")
+                .to_string_lossy()
+                .into_owned()
+        };
         let mut e = Env {
             _dir: dir,
             home,
@@ -100,7 +138,7 @@ copy_files = [".env"]
     }
 
     fn start(&mut self) {
-        let child = Command::new(env!("CARGO_BIN_EXE_agtd"))
+        let child = Command::new(agtd_exe())
             .env("AGT_HOME", &self.home)
             .env("AGT_SOCKET", &self.sock)
             .stdin(Stdio::null())
@@ -423,8 +461,11 @@ async fn full_flow() {
     assert!(ok);
 
     // ── git 資訊推播 ──
+    // 只有狀態改變時才推播，第一次的推播可能在前面等待其他事件時就被略過了；
+    // 加一個未追蹤的檔案製造新的變化（dirty），一定會再推播一次（merge 不看未追蹤的檔案）。
+    std::fs::write(wa.join("untracked.txt"), "x").unwrap();
     let ok = wait_until(&mut ev, &mut screen, Duration::from_secs(8), |inc, _| {
-        matches!(inc, Incoming::Msg(m) if matches!(**m, ServerMsg::WorktreeChanged { ahead: 1, .. }))
+        matches!(inc, Incoming::Msg(m) if matches!(&**m, ServerMsg::WorktreeChanged { id, ahead: 1, dirty: true, .. } if *id == a.id))
     })
     .await;
     assert!(ok, "應推播 WorktreeChanged");
@@ -538,10 +579,11 @@ async fn full_flow() {
         list.iter()
             .all(|s| s.status == AgentStatus::Exited || s.status == AgentStatus::Error)
     );
-    // 在同一個 worktree 重新啟動
+    // 在同一個 worktree 重新啟動。用 setup 分頁（s）而不是 a：下面要刪掉 a 的 worktree，
+    // Windows 不能刪除正在執行的 Agent 所在的目錄。
     let r = expect_session(
         c2.request(ClientMsg::Restart {
-            id: a.short_id.clone(),
+            id: s.short_id.clone(),
             fresh: false,
         })
         .await
@@ -653,5 +695,7 @@ async fn proto_mismatch_and_hello_required() {
     s.write_all(&(32u32 * 1024 * 1024).to_be_bytes())
         .await
         .unwrap();
-    assert!(read_frame(&mut s).await.unwrap().is_none());
+    // Unix 是 EOF（Ok(None)），Windows 的 named pipe 是錯誤（pipe 已關閉）；兩者都表示連線被關閉
+    let r = read_frame(&mut s).await;
+    assert!(!matches!(r, Ok(Some(_))), "{r:?}");
 }
