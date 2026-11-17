@@ -276,6 +276,20 @@ impl Daemon {
         Some(e.info.clone())
     }
 
+    /// 只在分頁仍是第 `generation` 次啟動時更新。重新啟動後，前一次啟動的事件可能晚到，
+    /// 不能讓它把新 Agent 的狀態改回 Exited。分頁已移除或已重新啟動時回傳 None。
+    fn update_if_current(
+        &self,
+        id: &str,
+        generation: u64,
+        f: impl FnOnce(&mut SessionInfo),
+    ) -> Option<SessionInfo> {
+        let mut entries = self.entries.lock().unwrap();
+        let e = entries.get_mut(id).filter(|e| e.generation == generation)?;
+        f(&mut e.info);
+        Some(e.info.clone())
+    }
+
     fn publish(&self, info: SessionInfo) {
         let _ = self
             .events
@@ -625,8 +639,9 @@ impl Daemon {
                         source,
                         message,
                     } => {
-                        let Some(info) = d.update_info(&id, |i| i.status = to) else {
-                            break;
+                        let Some(info) = d.update_if_current(&id, generation, |i| i.status = to)
+                        else {
+                            break; // 分頁已關閉，或已重新啟動（這是舊 Agent 的事件）
                         };
                         if let Err(e) = d.store().update_status(&id, to.as_str()) {
                             tracing::warn!("更新狀態失敗：{e}");
@@ -677,7 +692,7 @@ impl Daemon {
                     }
                     SessionEvent::Exited { code } => {
                         let st = session.status();
-                        if let Some(info) = d.update_info(&id, |i| {
+                        if let Some(info) = d.update_if_current(&id, generation, |i| {
                             i.exit_code = code;
                             i.status = st;
                         }) {
@@ -1214,5 +1229,52 @@ fn rollback(created: &Option<(PathBuf, PathBuf, String)>) {
         if let Err(e) = agt_git::delete_branch(repo, branch) {
             tracing::warn!("回滾 branch 失敗：{e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_generation_cannot_overwrite_restarted_tab() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("config.toml"),
+            data_dir: dir.path().join("data"),
+            home: dir.path().to_path_buf(),
+        };
+        let d = Daemon::new(paths, "test".into(), "agt".into(), Config::defaults(), None).unwrap();
+        let mut info = row_to_info(&SessionRow {
+            id: "s1".into(),
+            short_id: "aaaaaa".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        info.status = AgentStatus::Running;
+        d.entries.lock().unwrap().insert(
+            "s1".into(),
+            Entry {
+                info,
+                session: None,
+                conversation: None,
+                generation: 2, // 已重新啟動過一次
+                resume_attempt: None,
+            },
+        );
+        // 第 1 次啟動的結束事件晚到：不能改到目前（第 2 次）的狀態
+        assert!(
+            d.update_if_current("s1", 1, |i| i.status = AgentStatus::Exited)
+                .is_none()
+        );
+        assert_eq!(d.get("s1").unwrap().status, AgentStatus::Running);
+        // 目前這一次的事件照常套用
+        assert!(
+            d.update_if_current("s1", 2, |i| i.status = AgentStatus::Done)
+                .is_some()
+        );
+        assert_eq!(d.get("s1").unwrap().status, AgentStatus::Done);
+        // 分頁已移除
+        assert!(d.update_if_current("nope", 2, |_| {}).is_none());
     }
 }
