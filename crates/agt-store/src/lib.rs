@@ -341,6 +341,24 @@ impl Store {
         Ok(())
     }
 
+    /// 刪除在 `before`（Unix 秒）之前關閉、而且已經沒有 worktree 的分頁，連同它的事件。
+    /// 還留著 worktree 的分頁（例如收尾選了 keep）保留，孤兒偵測要靠它判斷 worktree 不是孤兒。
+    /// 回傳刪除的分頁數。
+    pub fn prune_closed(&mut self, before: i64) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        const CLOSED: &str = "ended_at IS NOT NULL AND ended_at < ?1 \
+             AND (worktree_path IS NULL OR finish_action = 'discard')";
+        tx.execute(
+            &format!(
+                "DELETE FROM events WHERE session_id IN (SELECT id FROM sessions WHERE {CLOSED})"
+            ),
+            [before],
+        )?;
+        let n = tx.execute(&format!("DELETE FROM sessions WHERE {CLOSED}"), [before])?;
+        tx.commit()?;
+        Ok(n)
+    }
+
     pub fn short_id_exists(&self, short_id: &str) -> Result<bool> {
         Ok(self
             .conn
@@ -475,6 +493,41 @@ mod tests {
         s.trust_setup("/r", "npm i").unwrap();
         assert!(s.is_setup_trusted("/r", "npm i").unwrap());
         assert!(!s.is_setup_trusted("/r", "rm -rf /").unwrap());
+    }
+
+    #[test]
+    fn prune_closed_keeps_open_recent_and_kept_worktrees() {
+        let mut s = Store::open_in_memory().unwrap();
+        let ids = ["open", "recent", "old", "old_keep", "old_discard"];
+        for (i, id) in ids.iter().enumerate() {
+            s.insert_session(&row(id, &format!("s{i:05}"))).unwrap();
+            s.add_event(id, "status", Some("{}")).unwrap();
+        }
+        let old = now() - 40 * 24 * 3600;
+        let close = |s: &Store, id: &str, at: i64, action: Option<&str>| {
+            s.conn
+                .execute(
+                    "UPDATE sessions SET ended_at = ?2, finish_action = ?3 WHERE id = ?1",
+                    params![id, at, action],
+                )
+                .unwrap();
+        };
+        close(&s, "recent", now(), None);
+        close(&s, "old", old, None);
+        s.clear_worktree("old").unwrap();
+        close(&s, "old_keep", old, Some("keep")); // worktree 還在：保留
+        close(&s, "old_discard", old, Some("discard"));
+
+        let n = s.prune_closed(now() - 30 * 24 * 3600).unwrap();
+        assert_eq!(n, 2);
+        for id in ["open", "recent", "old_keep"] {
+            assert!(s.get_session(id).unwrap().is_some(), "{id}");
+            assert_eq!(s.events(id).unwrap().len(), 1, "{id}");
+        }
+        for id in ["old", "old_discard"] {
+            assert!(s.get_session(id).unwrap().is_none(), "{id}");
+            assert!(s.events(id).unwrap().is_empty(), "{id}");
+        }
     }
 
     #[test]

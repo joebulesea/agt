@@ -76,8 +76,36 @@ pub fn default_shell() -> String {
     }
 }
 
+/// PowerShell 的單引號字串。PowerShell 除了 `'` 之外也把 `‘ ’ ‚ ‛` 當成單引號，
+/// 只跳脫 `'` 的話，參數裡的 `’` 會提早結束字串、讓後面的內容被當成指令執行。
 fn ps_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+            out.push(c); // 重複一次 = 字面上的引號
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
+/// 經由 `cmd.exe /c` 執行（`.cmd` / `.bat`）時，參數裡這些字元會被 cmd 解讀：
+/// `& | < >` 串接或導向指令、`%` 展開環境變數、`^` 跳脫、`"` 改變引號範圍。
+/// 參數無法安全地跳脫，所以直接拒絕，請改用 `.exe` 或拿掉這些字元。
+pub fn check_cmd_args(pre_args: &[String], args: &[String]) -> Result<(), String> {
+    if pre_args.is_empty() {
+        return Ok(()); // 不經過 cmd.exe
+    }
+    const UNSAFE: &[char] = &['&', '|', '<', '>', '%', '^', '"', '\n', '\r'];
+    match args.iter().find(|a| a.contains(UNSAFE)) {
+        Some(a) => Err(format!(
+            "這個指令是 .cmd / .bat，要經由 cmd.exe 執行，但參數 {a:?} 含有 cmd 會解讀的字元（& | < > % ^ \" 或換行）。\
+             請改用 .exe 版本的指令，或拿掉這些字元。"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// 把 setup 指令包在 Agent 前面執行，輸出會顯示在同一個分頁中（規格 7.1 第 5 步）。
@@ -142,6 +170,10 @@ fn run_quiet(cmd: &[String], what: &str, warn_on_fail: bool) {
         return;
     };
     let (program, pre_args) = resolve_program(first);
+    if let Err(e) = check_cmd_args(&pre_args, rest) {
+        tracing::warn!(?cmd, "不執行{what}：{e}");
+        return;
+    }
     let mut c = std::process::Command::new(program);
     c.args(pre_args)
         .args(rest)
@@ -196,8 +228,16 @@ pub fn kill_tree(pid: u32) {
 
 /// 送出系統通知（Windows Toast、macOS 通知中心、freedesktop）。失敗時只記錄。
 pub fn notify(title: &str, body: &str) {
-    let title = title.to_string();
-    let body = body.to_string();
+    // 內容可能來自 Agent（hook 的訊息、分頁名稱）：去掉控制字元、限制長度
+    let clip = |s: &str, max: usize| {
+        let s = agt_proto::text::printable_line(s);
+        match s.char_indices().nth(max) {
+            Some((i, _)) => format!("{}…", &s[..i]),
+            None => s,
+        }
+    };
+    let title = clip(title, 100);
+    let body = clip(body, 300);
     std::thread::spawn(move || {
         let r = notify_rust::Notification::new()
             .appname("agt")
@@ -226,4 +266,33 @@ pub fn restrict_permissions(path: &Path) {
 /// Windows 路徑長度上限檢查（規格 7.2）。
 pub fn path_too_long(path: &Path) -> bool {
     cfg!(windows) && path.as_os_str().len() > 240
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ps_quote_escapes_all_single_quote_forms() {
+        assert_eq!(ps_quote("a'b"), "'a''b'");
+        // ’ 在 PowerShell 也是單引號：不跳脫的話 `’; calc; ’` 會跳出字串執行 calc
+        assert_eq!(ps_quote("x’; calc; ’"), "'x’’; calc; ’’'");
+        assert_eq!(ps_quote("‘‚‛"), "'‘‘‚‚‛‛'");
+        assert_eq!(ps_quote("中文 ok"), "'中文 ok'");
+    }
+
+    #[test]
+    fn cmd_args_with_metacharacters_are_refused() {
+        let via_cmd = vec!["/d".to_string(), "/c".into(), "x.cmd".into()];
+        let ok = vec!["--resume".to_string(), "中文提示，可以有空白".into()];
+        assert!(check_cmd_args(&via_cmd, &ok).is_ok());
+        for bad in ["a&calc", "x|y", "%PATH%", "a^b", "say \"hi\"", "a\nb"] {
+            assert!(
+                check_cmd_args(&via_cmd, &[bad.to_string()]).is_err(),
+                "{bad}"
+            );
+        }
+        // 不經過 cmd.exe（.exe 或 Unix）：不限制
+        assert!(check_cmd_args(&[], &["a&b".to_string()]).is_ok());
+    }
 }

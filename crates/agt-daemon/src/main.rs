@@ -9,7 +9,11 @@ use config::{Config, Paths};
 use state::Daemon;
 use std::fs::OpenOptions;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+/// 同時連線數上限（TUI、CLI、hook 的 `agt notify` 都是短連線，正常用量遠低於此）。
+const MAX_CONNECTIONS: usize = 64;
 
 fn main() -> anyhow::Result<()> {
     let foreground = std::env::args().any(|a| a == "--foreground");
@@ -47,6 +51,10 @@ fn main() -> anyhow::Result<()> {
         tracing::error!("panic：{info}");
     }));
     if let Some(msg) = migrated {
+        tracing::info!("{msg}");
+    }
+    // 取得 lock 之後才搬：這時沒有 Agent 在寫紀錄檔
+    if let Some(msg) = paths.migrate_logs() {
         tracing::info!("{msg}");
     }
     // 啟動時舊版 daemon / TUI 可能還沒完全結束（exe 仍被鎖住），之後在背景再試幾次
@@ -160,13 +168,25 @@ async fn run(d: Arc<Daemon>) -> anyhow::Result<()> {
         });
     }
 
+    let conns = Arc::new(AtomicUsize::new(0));
     loop {
         tokio::select! {
             conn = transport::accept(&listener) => match conn {
                 Ok(c) => {
+                    // 連線數上限：每條連線都有自己的佇列與 task，不設限的話卡住的 client 可以無限累積
+                    if conns.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+                        tracing::warn!("連線數已達上限 {MAX_CONNECTIONS}，拒絕新連線");
+                        drop(c);
+                        continue;
+                    }
                     tracing::debug!("新連線");
                     let d = d.clone();
-                    tokio::spawn(server::serve_conn(d, c));
+                    let conns = conns.clone();
+                    conns.fetch_add(1, Ordering::Relaxed);
+                    tokio::spawn(async move {
+                        server::serve_conn(d, c).await;
+                        conns.fetch_sub(1, Ordering::Relaxed);
+                    });
                 }
                 Err(e) => {
                     tracing::warn!("accept 失敗：{e}");

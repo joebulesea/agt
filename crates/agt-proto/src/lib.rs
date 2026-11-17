@@ -6,6 +6,7 @@ pub mod client;
 pub mod codec;
 pub mod msg;
 pub mod screen;
+pub mod text;
 pub mod transport;
 pub mod types;
 

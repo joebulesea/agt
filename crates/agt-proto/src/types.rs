@@ -183,8 +183,15 @@ pub struct UiConfig {
     pub sidebar_width: u16,
     /// ask | merge | squash | rebase
     pub merge_strategy: String,
+    /// off | ask | on：分頁以 OSC 52 寫入剪貼簿時怎麼處理
+    #[serde(default = "default_osc52")]
+    pub osc52: String,
     #[serde(default)]
     pub agents: Vec<String>,
+}
+
+fn default_osc52() -> String {
+    "ask".into()
 }
 
 impl Default for UiConfig {
@@ -193,6 +200,7 @@ impl Default for UiConfig {
             prefix_key: "ctrl-a".into(),
             sidebar_width: 26,
             merge_strategy: "ask".into(),
+            osc52: default_osc52(),
             agents: vec![
                 "claude".into(),
                 "antigravity".into(),

@@ -33,6 +33,8 @@ pub enum Confirm {
         action: FinishAction,
     },
     TrustSetup(CreateSession),
+    /// 分頁以 OSC 52 要求寫入剪貼簿（設定 osc52 = "ask"）。
+    Clipboard(String),
 }
 
 pub struct NewForm {
@@ -280,7 +282,9 @@ impl App {
     }
 
     pub fn set_message(&mut self, m: impl Into<String>, error: bool) {
-        self.message = Some((m.into(), error, Instant::now()));
+        // 訊息可能帶有 daemon 轉來的文字（git 錯誤、Agent 的內容）
+        let m = agt_proto::text::printable_line(&m.into());
+        self.message = Some((m, error, Instant::now()));
         self.dirty = true;
     }
 
@@ -437,8 +441,37 @@ impl App {
                 // 只接受目前分頁的複製要求，背景分頁不能偷偷改剪貼簿
                 if self.active.as_deref() == Some(id.as_str()) {
                     let n = text.chars().count();
-                    self.clipboard_out = Some(text);
-                    self.set_message(format!("已複製到剪貼簿（{n} 字）"), false);
+                    match self.ui.osc52.as_str() {
+                        "on" => {
+                            self.clipboard_out = Some(text);
+                            self.set_message(format!("已複製到剪貼簿（{n} 字）"), false);
+                        }
+                        "off" => {}
+                        // ask：顯示內容讓使用者確認。內容可能是 Agent 想讓你貼到終端機的指令
+                        _ if self.popup.is_none() => {
+                            const PREVIEW: usize = 400;
+                            let shown: String = text.chars().take(PREVIEW).collect();
+                            let more = if n > PREVIEW {
+                                format!("\n…（共 {n} 字）")
+                            } else {
+                                String::new()
+                            };
+                            let warn = if agt_proto::text::has_controls(&text) {
+                                "\n注意：內容含有控制字元（已顯示為符號）。"
+                            } else {
+                                ""
+                            };
+                            self.popup = Some(Popup::Confirm {
+                                text: format!(
+                                    "分頁要求把以下內容複製到剪貼簿（{n} 字）：\n\n{}{more}\n{warn}\n要複製嗎？",
+                                    agt_proto::text::printable(&shown)
+                                ),
+                                action: Confirm::Clipboard(text),
+                            });
+                        }
+                        // 已有其他對話框：不打斷，直接拒絕
+                        _ => self.set_message("已拒絕分頁的剪貼簿寫入（有其他對話框）", true),
+                    }
                 }
             }
             ServerMsg::DaemonStopping => {
@@ -519,7 +552,11 @@ impl App {
     fn show_text(&mut self, title: &str, text: &str, diff: bool) {
         self.popup = Some(Popup::Text {
             title: title.into(),
-            lines: text.lines().map(|l| l.replace('\t', "    ")).collect(),
+            // diff、錯誤訊息可能含有檔案內容裡的控制序列：ratatui 會原樣寫到終端機，先換成可見的符號
+            lines: agt_proto::text::printable(text)
+                .lines()
+                .map(|l| l.replace('\t', "    "))
+                .collect(),
             scroll: 0,
             diff,
         });
@@ -964,6 +1001,11 @@ impl App {
                     if let Popup::Confirm { action, .. } = popup {
                         match action {
                             Confirm::Close { id } => self.close(id),
+                            Confirm::Clipboard(text) => {
+                                let n = text.chars().count();
+                                self.clipboard_out = Some(text);
+                                self.set_message(format!("已複製到剪貼簿（{n} 字）"), false);
+                            }
                             Confirm::Finish { id, action } => self.finish_id(id, action, true),
                             Confirm::TrustSetup(mut req) => {
                                 req.trust_setup = true;

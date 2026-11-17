@@ -13,6 +13,13 @@ idle_shutdown_secs = 600
 scrollback_lines = 10000
 merge_strategy = "ask"           # ask | merge | squash | rebase
 log_output = true                # 終端機紀錄檔
+# 分頁中的程式以 OSC 52 寫入剪貼簿時：ask = 先詢問、on = 直接寫入、off = 一律拒絕。
+# 沙箱裡的 Agent 也能送出 OSC 52，例如把剪貼簿換成惡意指令，等你貼到終端機。
+osc52 = "ask"
+# 收尾（merge / pr）時，分頁若改了合併後會自動執行的檔案（.claude/、.agt.toml、CI workflow 等）會先要求確認。
+# 這裡可以追加：以 / 結尾 = 整個目錄、含 / = 從 repo 根目錄起算的路徑、其他 = 任何目錄下同名的檔案。
+# 例如 ["package.json", "Makefile", "scripts/"]（這些檔案常被主機上的指令執行，但也很常修改，預設不列入）。
+sensitive_paths = []
 
 # new_args / resume_args：開新對話／接續對話（R 重新啟動）時接在 args 後面的參數。
 # {conversation} = 分頁目前的對話 ID（UUID）；N 重新啟動或接續失敗時會換一個新的。
@@ -56,7 +63,9 @@ worktree = false
 #
 # 安全性（三個 *-docker 範例相同）：
 #   - --cap-drop / no-new-privileges / --pids-limit：容器內拿不到額外權限，也不能無限產生行程。
-#     需要限制記憶體時自行加上 "--memory", "8g"。
+#     需要限制資源時自行加上 "--memory=8g", "--cpus=4"（Docker Desktop 的 VM 本身也有上限）。
+#   - 網路：容器可以連外網（Agent 要連自己的 API）。Docker 本身無法只允許特定網域；需要網路限制時
+#     改用 claude-sbx（Docker Sandboxes 有網路政策，`sbx policy`），或自行在容器外架設 proxy / 防火牆。
 #   - agt-*-tools（/opt/agt-tools）放 Agent 執行檔的更新版，分頁中一律唯讀（:ro）；只有 update 指令
 #     （daemon 啟動時執行）把它掛成可寫來更新。分頁裡的 Agent 因此改不到之後所有分頁都會執行的程式。
 #   - agt-*-home 是所有分頁共用、可寫的家目錄（登入資料、對話記錄、Agent 的全域設定）。

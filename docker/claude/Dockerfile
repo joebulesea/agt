@@ -5,14 +5,17 @@
 # 登入資料保存在 volume `agt-claude-home`（掛在 /home/node），只需要登入一次。
 # Claude Code 的更新版保存在 volume `agt-claude-tools`（掛在 /opt/agt-tools，分頁中唯讀）。
 # 專案需要的工具（Rust、Python 套件等）請自行加在下方。
-FROM node:22-bookworm-slim
+# base image 釘在 digest（tag 可能被改指到別的內容）；更新時改 digest，或交給 Dependabot。
+FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git ripgrep jq less procps python3 python3-pip build-essential \
  && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
+# 版本：預設 latest；要固定時 docker build --build-arg CLAUDE_CODE_VERSION=<版本>
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && npm cache clean --force
 
 # Claude Code 的更新版放在 volume agt-claude-tools（掛在 /opt/agt-tools）。目錄先建好並交給執行身分，
 # 新的 volume 第一次掛載時會沿用這個擁有者；分頁的容器把它掛成唯讀（見 entrypoint.sh）。

