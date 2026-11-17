@@ -34,8 +34,8 @@ pub struct AgentSettings {
     pub worktree: bool,
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
-    /// 判斷狀態的方式沿用哪一種內建 Agent：claude | antigravity | shell | pattern。
-    /// 空字串 = 依 Agent 名稱（`claude`、`shell`、`antigravity`，其他名稱用 pattern）。
+    /// 判斷狀態的方式沿用哪一種內建 Agent：claude | antigravity | copilot | shell | pattern。
+    /// 空字串 = 依 Agent 名稱（`claude`、`shell`、`antigravity`、`copilot`，其他名稱用 pattern）。
     /// 例如在容器裡執行的 `claude-docker` 設成 `"claude"`，就能沿用 Claude Code 的規則。
     #[serde(default)]
     pub adapter: String,
@@ -70,7 +70,7 @@ pub struct AgentSettings {
 }
 
 /// 可用的 `adapter` 值。
-pub const ADAPTERS: &[&str] = &["claude", "antigravity", "shell", "pattern"];
+pub const ADAPTERS: &[&str] = &["claude", "antigravity", "copilot", "shell", "pattern"];
 
 fn default_source() -> String {
     "pattern".into()
@@ -149,6 +149,7 @@ pub fn build(agent: &str, settings: &AgentSettings) -> Result<Box<dyn AgentAdapt
         "claude" => Box::new(ClaudeAdapter::new(settings.clone())),
         "shell" => Box::new(ShellAdapter::new(settings.clone())),
         "antigravity" => Box::new(PatternAdapter::new("antigravity", settings.clone())),
+        "copilot" => Box::new(PatternAdapter::new("copilot", settings.clone())),
         _ => Box::new(PatternAdapter::new("custom", settings.clone())),
     })
 }
@@ -364,6 +365,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(build("claude-docker", &s).unwrap().id(), "claude");
+        assert_eq!(
+            build("copilot", &AgentSettings::default()).unwrap().id(),
+            "copilot"
+        );
         assert_eq!(
             build("claude-docker", &AgentSettings::default())
                 .unwrap()

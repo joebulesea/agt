@@ -193,7 +193,12 @@ impl Default for UiConfig {
             prefix_key: "ctrl-a".into(),
             sidebar_width: 26,
             merge_strategy: "ask".into(),
-            agents: vec!["claude".into(), "antigravity".into(), "shell".into()],
+            agents: vec![
+                "claude".into(),
+                "antigravity".into(),
+                "copilot".into(),
+                "shell".into(),
+            ],
         }
     }
 }

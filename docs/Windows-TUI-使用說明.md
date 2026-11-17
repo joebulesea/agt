@@ -9,7 +9,7 @@
 | 執行檔 | `agt.exe` 與 `agtd.exe`，必須放在同一個資料夾：安裝在 `%APPDATA%\agt\`（建置輸出另有一份在 `C:\claude\Rust\agt\dist\windows\`） |
 | 終端機 | 建議使用 Windows Terminal（PowerShell） |
 | git | 2.20 以上，需在 PATH 中 |
-| Agent | 要使用的 Agent 指令必須在 PATH 中：`claude`（Claude Code）、`agy`（Antigravity CLI）；`shell` 會使用 `pwsh`，沒有時改用 `powershell` |
+| Agent | 要使用的 Agent 指令必須在 PATH 中：`claude`（Claude Code）、`agy`（Antigravity CLI）、`copilot`（GitHub Copilot CLI，`npm install -g @github/copilot`）；`shell` 會使用 `pwsh`，沒有時改用 `powershell` |
 
 不需要手動啟動 daemon：執行 `agt` 時若 daemon 尚未執行，會自動在背景啟動 `agtd`。
 
@@ -56,9 +56,9 @@ daemon 或 TUI 執行中時 exe 會被鎖住，腳本會先把舊檔改名為 `.
 
 只有 `agt.exe` 與 `agtd.exe` 也能直接使用：第一次執行 `agt`（還沒有設定檔）時，會先出現初始設定畫面：
 
-1. 檢查環境：git、Claude Code、Antigravity CLI、Docker Desktop、Docker Sandboxes（`sbx`，含是否已登入、是否已設定網路政策）。
-2. 用 `↑` / `↓` 移動、`空白鍵` 勾選要加入的 Agent（`claude-sbx`、`claude-docker`、`agy-docker`），`Enter` 確認，`Esc` 取消。
-3. 選到需要映像檔的 Agent 時，把內建的 Dockerfile 寫到 `%APPDATA%\agt\docker\<claude|agy>\`，並詢問是否馬上 `docker build`。
+1. 檢查環境：git、Claude Code、Antigravity CLI、GitHub Copilot CLI、Docker Desktop、Docker Sandboxes（`sbx`，含是否已登入、是否已設定網路政策）。
+2. 用 `↑` / `↓` 移動、`空白鍵` 勾選要加入的 Agent（`claude-sbx`、`claude-docker`、`agy-docker`、`copilot-docker`），`Enter` 確認，`Esc` 取消。
+3. 選到需要映像檔的 Agent 時，把內建的 Dockerfile 寫到 `%APPDATA%\agt\docker\<claude|agy|copilot>\`，並詢問是否馬上 `docker build`。
 4. 選到 `claude-sbx` 而且還沒有沙箱網路政策時，選擇 `balanced` / `allow-all` / `deny-all`。
 5. 產生 `%APPDATA%\agt\config.toml`，最後選擇是否開啟 agt。
 
@@ -133,7 +133,7 @@ agt new claude --repo . --task "登入功能" --attach
 | `R` | 在同一個 worktree 重新啟動已結束的 Agent，**接續上次的對話**（例如電腦重新開機後） |
 | `N` | 在同一個 worktree 重新啟動已結束的 Agent，開新對話 |
 
-> 接續對話靠 Agent 設定的 `new_args` / `resume_args`（`claude` 用 `--session-id` / `--resume` 指定這個分頁自己的對話，agy 用 `--continue`）。接續失敗（例如上次還沒開始對話就結束，找不到對話）時，agt 會自動改開新對話。舊版 agt 建立的分頁沒有記錄對話 ID，第一次按 `R` 會開新對話，之後就能接續。
+> 接續對話靠 Agent 設定的 `new_args` / `resume_args`（`claude` 用 `--session-id` / `--resume` 指定這個分頁自己的對話，agy 與 copilot 用 `--continue`，接續最近一次的對話）。接續失敗（例如上次還沒開始對話就結束，找不到對話）時，agt 會自動改開新對話。舊版 agt 建立的分頁沒有記錄對話 ID，第一次按 `R` 會開新對話，之後就能接續。
 | `[` | 滾動模式（`↑↓`、`PgUp`/`PgDn`、`/` 搜尋、`n` 下一個、`q` 離開） |
 | `u` | 複製畫面上最新的網址（例如 Agent 印出的登入網址；折成多列的長網址會自動接回） |
 | `x` | 關閉分頁（Agent 執行中會先確認，worktree 會保留） |
@@ -316,6 +316,22 @@ agt gc                     # 檢查 worktree 與資料庫是否一致
 | 版本 | 每次啟動前執行 `agy update`；設定 `update` 後 daemon 啟動時也會先更新一次。略過更新：`args` 加上 `"-e", "AGT_AGY_UPDATE=0"` |
 | 權限 | 加上 `--dangerously-skip-permissions` 自動核准所有工具；agy 的終端機沙箱在容器內無法使用，由 Docker 隔離取代 |
 | 狀態燈號 | 使用畫面規則判斷（`adapter = "antigravity"`） |
+
+### GitHub Copilot CLI（copilot-docker）
+
+做法相同，映像檔在 `docker/copilot/`，設定範例是 `config/default.toml` 裡的 `[agents.copilot-docker]`：
+
+1. 建置映像檔：`docker build -t agt-copilot C:\claude\Rust\agt\docker\copilot`
+2. 把 `[agents.copilot-docker]` 複製到 `%APPDATA%\agt\config.toml`，執行 `agt daemon restart`。
+3. 登入：新增 `copilot-docker` 分頁後輸入 `/login`，畫面會顯示 GitHub 的網址與一次性代碼。按 `Ctrl+A` → `u` 複製網址，在主機的瀏覽器開啟並輸入代碼。登入資料保存在 volume `agt-copilot-home`，之後不需要再登入。也可以在主機設定 `GH_TOKEN`（或 `GITHUB_TOKEN`，具備 Copilot Requests 權限的 fine-grained PAT），daemon 會傳進容器。
+
+| 項目 | 說明 |
+| --- | --- |
+| git | 容器內無法使用 git。第一次啟動時會建立 `~/.copilot/copilot-instructions.md`（全域指示）告訴 Copilot 不要使用 git；已有內容時不會覆蓋。commit 由 `auto_commit` 處理 |
+| 版本 | 每次啟動前檢查 npm 上的 `@github/copilot` 並更新；設定 `update` 後 daemon 啟動時也會先更新一次。略過更新：`args` 加上 `"-e", "AGT_COPILOT_UPDATE=0"` |
+| 權限 | 加上 `--allow-all-tools` 自動核准所有工具，由 Docker 隔離取代逐一核准 |
+| 接續對話 | `R` 使用 `--continue`，接續的是 volume 中最近一次的對話；同時開多個 `copilot-docker` 分頁時可能接到別的分頁的對話，這時改用 `N` 開新對話 |
+| 狀態燈號 | 使用畫面規則判斷（`adapter = "copilot"`）：出現工具核准選單（`No, and tell Copilot ...`）或資料夾信任詢問為等待輸入 |
 
 ## 11. 疑難排解
 
