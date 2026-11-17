@@ -371,7 +371,7 @@ fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapsed: bool) {
     }
 }
 
-fn draw_title(buf: &mut Buffer, app: &App, area: Rect) {
+fn draw_title(buf: &mut Buffer, app: &mut App, area: Rect) {
     let border = Style::new().fg(Color::DarkGray);
     buf.set_string(area.x, area.y, "─".repeat(area.width as usize), border);
     let Some(s) = app.active_info() else { return };
@@ -399,10 +399,36 @@ fn draw_title(buf: &mut Buffer, app: &App, area: Rect) {
         Style::new().add_modifier(Modifier::BOLD),
     );
     let st = format!(" {} {} ", s.status.symbol(), s.status.as_str());
-    let x = area.x + area.width.saturating_sub(st.width() as u16 + 1);
-    if x > area.x + title.width() as u16 + 1 {
-        buf.set_string(x, area.y, &st, status_style(s.status));
+    let st_x = area.x + area.width.saturating_sub(st.width() as u16 + 1);
+    let title_end = area.x + 1 + title.width() as u16;
+    if st_x <= title_end {
+        return;
     }
+    let status = s.status;
+    buf.set_string(st_x, area.y, &st, status_style(status));
+    // 標題與狀態之間：工作目錄（太長時保留後段），雙擊用檔案管理員開啟
+    let Some(dir) = app.active_dir() else { return };
+    let dir = agt_proto::text::printable_line(&dir);
+    let room = st_x.saturating_sub(title_end + 1) as usize;
+    if room < 12 {
+        return;
+    }
+    // 太長時保留後段（路徑的最後幾層最有辨識度）
+    let shown = format!(" {} ", tail(&dir, room - 2));
+    let w = shown.width() as u16;
+    let x = st_x - w;
+    buf.set_string(
+        x,
+        area.y,
+        &shown,
+        Style::new()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::UNDERLINED),
+    );
+    app.click_hits.push(ClickHit {
+        rect: Rect::new(x, area.y, w, 1),
+        click: Click::OpenDir,
+    });
 }
 
 fn draw_screen(buf: &mut Buffer, s: &Screen, area: Rect) {
@@ -527,10 +553,11 @@ fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
         let has_active = app.active.is_some();
         let on = Style::new().fg(Color::Black).bg(Color::Indexed(37));
         let off = Style::new().fg(Color::Indexed(244)).bg(Color::Indexed(238));
-        let items: [(&str, char, bool); 6] = [
+        let items: [(&str, char, bool); 7] = [
             (" + 新增 ", 'n', true),
             (" Diff ", 'd', has_active),
             (" 收尾 ", 'm', has_active),
+            (" 目錄 ", 'o', has_active),
             (" 改名 ", 'r', has_active),
             (" 關閉 ", 'x', has_active),
             (" 說明 ", '?', true),
@@ -721,6 +748,10 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ("N", "重新啟動已結束的 Agent，開新對話"),
                 ("[", "進入滾動模式，/ 搜尋歷史"),
                 ("u", "複製畫面上最新的網址（例如登入網址）"),
+                (
+                    "o",
+                    "用檔案總管開啟分頁的工作目錄（worktree）；也可以雙擊標題列的路徑",
+                ),
                 ("x", "關閉分頁（Agent 執行中會先確認）"),
                 ("b", "收合或展開左側欄"),
                 ("?", "快捷鍵說明"),
