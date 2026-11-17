@@ -140,21 +140,32 @@ fn ensure_private_dir(dir: &Path) -> io::Result<()> {
 pub fn listen(ep: &str) -> io::Result<Listener> {
     let opts = ListenerOptions::new().name(name(ep)?);
     #[cfg(unix)]
-    let opts = {
+    {
         use interprocess::os::unix::local_socket::ListenerOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
         let p = Path::new(ep);
         if let Some(dir) = p.parent() {
             ensure_private_dir(dir)?;
         }
         let _ = std::fs::remove_file(p);
-        opts.mode(0o600)
-    };
+        // 建立前就設定權限（fchmod）：Linux 支援；macOS 等平台回傳 Unsupported，
+        // 改成建立後再 chmod。中間的空檔無害：外層目錄已是只有自己能進入的 0700。
+        match opts.mode(0o600).create_tokio() {
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                let _ = std::fs::remove_file(p);
+                let l = ListenerOptions::new().name(name(ep)?).create_tokio()?;
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
+                Ok(l)
+            }
+            r => r,
+        }
+    }
     #[cfg(windows)]
-    let opts = {
+    {
         use interprocess::os::windows::local_socket::ListenerOptionsExt;
         opts.security_descriptor(winsec::owner_only_descriptor()?)
-    };
-    opts.create_tokio()
+            .create_tokio()
+    }
 }
 
 /// Windows 的存取控制：pipe 的 ACL 與擁有者檢查。
@@ -475,6 +486,23 @@ mod access_tests {
         let mut c = connect(&ep).await.unwrap();
         c.write_all(b"hi").await.unwrap();
         assert_eq!(&server.await.unwrap(), b"hi");
+    }
+
+    /// socket 檔本身也只有自己能讀寫（macOS 走「建立後再 chmod」的路徑）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn socket_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(d.path());
+        let _l = listen(&ep).unwrap();
+        let mode = std::fs::metadata(&ep).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+        let dir_mode = std::fs::metadata(Path::new(&ep).parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o777, 0o700);
     }
 
     #[cfg(unix)]
