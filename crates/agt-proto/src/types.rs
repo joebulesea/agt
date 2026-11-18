@@ -214,7 +214,8 @@ impl Default for UiConfig {
 /// `agt gc` 找到的不一致項目（規格 7.5）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GcItem {
-    /// `orphan_worktree`：git 有、資料庫沒有；`missing_worktree`：資料庫有、磁碟上沒有。
+    /// `orphan_worktree`：git 有、資料庫沒有；`missing_worktree`：資料庫有、磁碟上沒有；
+    /// `closed_worktree`：分頁已關閉，但 worktree 副本還留著。
     pub kind: String,
     pub repo: String,
     pub path: String,

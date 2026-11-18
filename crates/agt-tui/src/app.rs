@@ -19,6 +19,8 @@ pub enum AppEvent {
     Diff(Result<String, ClientError>),
     Searched(bool),
     Closed(Result<(), ClientError>),
+    /// 開啟 TUI 時找到的、留下來的 worktree 副本（`agt gc`）。
+    Leftovers(Vec<GcItem>),
     Error(String),
     Info(String),
 }
@@ -35,6 +37,8 @@ pub enum Confirm {
     TrustSetup(CreateSession),
     /// 分頁以 OSC 52 要求寫入剪貼簿（設定 osc52 = "ask"）。
     Clipboard(String),
+    /// 清理已關閉分頁留下的 worktree 副本（`agt gc --prune`）。
+    CleanLeftovers,
 }
 
 pub struct NewForm {
@@ -133,6 +137,13 @@ pub enum Popup {
     Finish {
         selected: usize,
     },
+    /// 關閉有 worktree 的分頁：選擇刪除或保留副本。
+    Close {
+        id: String,
+        /// Agent 還在執行時是 Agent 的名稱，選單上會提醒。
+        busy: Option<String>,
+        selected: usize,
+    },
     Strategy {
         selected: usize,
     },
@@ -156,6 +167,10 @@ pub const FINISH_ITEMS: [(&str, &str); 4] = [
     ("pr", "push 並建立 PR"),
     ("keep", "結束 Agent，保留 worktree 與 branch"),
     ("discard", "移除 worktree 並刪除 branch"),
+];
+pub const CLOSE_ITEMS: [(&str, &str); 2] = [
+    ("delete", "關閉並刪除 worktree 副本與 branch"),
+    ("keep", "關閉，保留副本（之後會提示清理）"),
 ];
 pub const STRATEGIES: [MergeStrategy; 3] = [
     MergeStrategy::Merge,
@@ -548,6 +563,14 @@ impl App {
                 }
             }
             AppEvent::Closed(Ok(())) => {}
+            AppEvent::Leftovers(items) => {
+                if !items.is_empty() && self.popup.is_none() {
+                    self.popup = Some(Popup::Confirm {
+                        text: leftovers_text(&items),
+                        action: Confirm::CleanLeftovers,
+                    });
+                }
+            }
             AppEvent::Closed(Err(e)) => self.set_message(e.to_string(), true),
             AppEvent::Error(m) => self.set_message(m, true),
             AppEvent::Info(m) => self.set_message(m, false),
@@ -621,6 +644,20 @@ impl App {
     }
 
     fn close(&mut self, id: String) {
+        let left = self
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .filter(|s| !s.shared)
+            .and_then(|s| s.worktree.clone());
+        if let Some(wt) = left {
+            self.set_message(
+                format!(
+                    "已保留 worktree 副本 {wt}；下次開啟 agt 時會提示清理，或執行 agt gc --prune"
+                ),
+                false,
+            );
+        }
         let c = self.client.clone();
         self.spawn(async move {
             AppEvent::Closed(
@@ -632,6 +669,35 @@ impl App {
                 .await
                 .map(|_| ()),
             )
+        });
+    }
+
+    /// 開啟 TUI 時檢查有沒有留下來的 worktree 副本，有的話詢問是否清理。
+    pub fn check_leftovers(&mut self) {
+        let c = self.client.clone();
+        self.spawn(async move {
+            match c.request(ClientMsg::Gc { prune: false }).await {
+                Ok(ReplyBody::Gc(items)) => AppEvent::Leftovers(items),
+                _ => AppEvent::Leftovers(vec![]),
+            }
+        });
+    }
+
+    fn clean_leftovers(&mut self) {
+        let c = self.client.clone();
+        self.set_message("清理 worktree 副本中…", false);
+        self.spawn(async move {
+            if let Err(e) = c.request(ClientMsg::Gc { prune: true }).await {
+                return AppEvent::Error(e.to_string());
+            }
+            match c.request(ClientMsg::Gc { prune: false }).await {
+                Ok(ReplyBody::Gc(left)) if !left.is_empty() => AppEvent::Info(format!(
+                    "已清理；{} 個副本有未 commit 的變更，已保留（執行 agt gc 查看）",
+                    left.len()
+                )),
+                Ok(_) => AppEvent::Info("已清理留下的 worktree 副本".into()),
+                Err(e) => AppEvent::Error(e.to_string()),
+            }
         });
     }
 
@@ -794,12 +860,17 @@ impl App {
             KeyCode::Char('x') => {
                 if let Some(s) = self.active_info() {
                     let id = s.id.clone();
-                    if s.status.is_busy() || s.status == AgentStatus::WaitingInput {
+                    let busy = (s.status.is_busy() || s.status == AgentStatus::WaitingInput)
+                        .then(|| s.agent.clone());
+                    if s.worktree.is_some() && !s.shared {
+                        self.popup = Some(Popup::Close {
+                            id,
+                            busy,
+                            selected: 0,
+                        });
+                    } else if let Some(agent) = busy {
                         self.popup = Some(Popup::Confirm {
-                            text: format!(
-                                "{} 仍在執行中，確定要關閉這個分頁嗎？\nworktree 會保留。(y/n)",
-                                s.agent
-                            ),
+                            text: format!("{agent} 仍在執行中，確定要關閉這個分頁嗎？(y/n)"),
                             action: Confirm::Close { id },
                         });
                     } else {
@@ -985,6 +1056,27 @@ impl App {
                 }
                 _ => true,
             },
+            Popup::Close { id, selected, .. } => match k.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') => false,
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+                    *selected = (*selected + 1) % CLOSE_ITEMS.len();
+                    true
+                }
+                KeyCode::Enter => {
+                    let (id, sel) = (id.clone(), *selected);
+                    self.choose_close(id, sel);
+                    return;
+                }
+                KeyCode::Char(c) => {
+                    if let Some(i) = CLOSE_ITEMS.iter().position(|(n, _)| n.starts_with(c)) {
+                        let id = id.clone();
+                        self.choose_close(id, i);
+                        return;
+                    }
+                    true
+                }
+                _ => true,
+            },
             Popup::Strategy { selected } => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') => false,
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -1017,6 +1109,7 @@ impl App {
                                 req.trust_setup = true;
                                 self.create(req);
                             }
+                            Confirm::CleanLeftovers => self.clean_leftovers(),
                         }
                     }
                     return;
@@ -1088,6 +1181,15 @@ impl App {
         };
         if keep {
             self.popup = Some(popup);
+        }
+    }
+
+    fn choose_close(&mut self, id: String, i: usize) {
+        if CLOSE_ITEMS[i].0 == "delete" {
+            // 與收尾的 discard 相同：有未 commit / 未合併的內容時會再確認一次
+            self.finish_id(id, FinishAction::Discard, false);
+        } else {
+            self.close(id);
         }
     }
 
@@ -1257,9 +1359,9 @@ impl App {
             }
             Click::Item(i) => {
                 match self.popup.as_mut() {
-                    Some(Popup::Finish { selected }) | Some(Popup::Strategy { selected }) => {
-                        *selected = i
-                    }
+                    Some(Popup::Finish { selected })
+                    | Some(Popup::Strategy { selected })
+                    | Some(Popup::Close { selected, .. }) => *selected = i,
                     // 目錄瀏覽器：點一下等於選到該項後按 Enter（進入目錄 / 使用這個目錄）
                     Some(Popup::New(NewForm {
                         browser: Some(b), ..
@@ -1361,4 +1463,24 @@ fn expand_home(p: &str) -> String {
             p.into()
         }
     }
+}
+
+/// 留下來的 worktree 副本的確認訊息。
+fn leftovers_text(items: &[GcItem]) -> String {
+    let mut t = format!("找到 {} 個留下來的 worktree 副本：\n", items.len());
+    for it in items.iter().take(8) {
+        let what = match it.kind.as_str() {
+            "closed_worktree" => "已關閉的分頁",
+            "orphan_worktree" => "不在資料庫中",
+            _ => "資料夾已不存在",
+        };
+        t.push_str(&format!("\n  {}（{what}）", it.path));
+    }
+    if items.len() > 8 {
+        t.push_str(&format!("\n  …還有 {} 個", items.len() - 8));
+    }
+    t.push_str(
+        "\n\n要刪除這些副本嗎？有未 commit 變更的副本會保留，已合併的 branch 一併刪除。(y/n)",
+    );
+    t
 }

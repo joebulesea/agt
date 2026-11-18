@@ -35,12 +35,12 @@ agt diff <id>
 agt finish <id> merge --strategy squash   # merge | pr | keep | discard
 agt kill <id> [--cleanup]
 agt restart <id> [--fresh]             # daemon 重啟後，在同一個 worktree 重新啟動 Agent（接續上次的對話；--fresh 開新對話）
-agt gc [--prune]                       # 比對 git worktree 與資料庫
+agt gc [--prune]                       # 比對 git worktree 與資料庫，列出 / 清理留下的 worktree 副本
 agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docker Sandboxes，加入 Agent（第一次執行 agt 時自動執行）
 agt daemon start|stop|restart|status
 ```
 
-TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉、`b` 收合側欄、`?` 說明、`q` detach。
+TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
 
 設定檔範例與預設值見 [`config/default.toml`](config/default.toml)。
 

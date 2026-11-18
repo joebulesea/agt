@@ -639,6 +639,64 @@ async fn full_flow() {
     };
     assert!(items.is_empty(), "prune 後應一致：{items:?}");
 
+    // ── 關閉分頁時保留副本：gc 回報 closed_worktree，prune 移除副本與已合併的 branch ──
+    let k = expect_session(
+        c2.request(create("fake", &env.repo, "keep copy"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let wk = PathBuf::from(k.worktree.clone().unwrap());
+    let bk = k.branch.clone().unwrap();
+    c2.request(ClientMsg::Kill {
+        id: k.id.clone(),
+        cleanup: false,
+        force: false,
+    })
+    .await
+    .unwrap();
+    assert!(wk.exists(), "關閉時選擇保留，副本應還在");
+    let ReplyBody::Gc(items) = c2.request(ClientMsg::Gc { prune: false }).await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0].kind, "closed_worktree");
+    assert_eq!(items[0].session.as_deref(), Some(k.short_id.as_str()));
+    // 等 Agent 結束，不再寫入副本
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // 有未 commit 的變更：prune 保留副本
+    std::fs::write(wk.join("note.txt"), "keep me").unwrap();
+    let ReplyBody::Gc(_) = c2.request(ClientMsg::Gc { prune: true }).await.unwrap() else {
+        panic!()
+    };
+    assert!(wk.join("note.txt").exists(), "有變更的副本應保留");
+    // 清乾淨、回到 base 後（ignored 的 .env 不算變更）prune 移除副本與 branch。
+    // 假 Agent 有時會 commit，那種 branch 會被保留，所以先回到 base。
+    git(
+        &wk,
+        &["reset", "-q", "--hard", k.base_branch.as_deref().unwrap()],
+    );
+    git(&wk, &["clean", "-q", "-fd"]);
+    // Windows：剛結束的 Agent 可能還佔著資料夾，移除失敗時 prune 會保留，重試即可
+    for _ in 0..50 {
+        let ReplyBody::Gc(_) = c2.request(ClientMsg::Gc { prune: true }).await.unwrap() else {
+            panic!()
+        };
+        if !wk.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!wk.exists(), "prune 應移除乾淨的副本");
+    assert!(
+        git(&env.repo, &["branch", "--list", &bk]).is_empty(),
+        "沒有新 commit 的 branch 應一併刪除"
+    );
+    let ReplyBody::Gc(items) = c2.request(ClientMsg::Gc { prune: false }).await.unwrap() else {
+        panic!()
+    };
+    assert!(items.is_empty(), "清理後應一致：{items:?}");
+
     // 同一條連線連續送出多個請求（DaemonStatus 曾因重複上鎖而死結）
     for _ in 0..3 {
         let ReplyBody::Daemon(info) = c2

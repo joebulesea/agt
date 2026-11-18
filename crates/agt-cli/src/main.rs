@@ -512,6 +512,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             for it in &items {
                 let what = match it.kind.as_str() {
                     "orphan_worktree" => "孤兒 worktree（git 有、資料庫沒有）",
+                    "closed_worktree" => "已關閉分頁留下的 worktree 副本",
                     _ => "遺失的 worktree（資料庫有、git 或磁碟上沒有）",
                 };
                 println!(
@@ -523,7 +524,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             if !items.is_empty() && !prune {
                 println!(
-                    "\n執行 `agt gc --prune` 清理（有變更的 worktree 會保留，branch 不會刪除）"
+                    "\n執行 `agt gc --prune` 清理（有變更的 worktree 會保留；已關閉分頁的 branch 只在已合併時刪除，其他 branch 不會刪除）"
                 );
             }
             Ok(())

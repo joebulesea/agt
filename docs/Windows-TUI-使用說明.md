@@ -147,7 +147,7 @@ agt new claude --repo . --task "登入功能" --attach
 | `[` | 滾動模式（`↑↓`、`PgUp`/`PgDn`、`/` 搜尋、`n` 下一個、`q` 離開） |
 | `u` | 複製畫面上最新的網址（例如 Agent 印出的登入網址；折成多列的長網址會自動接回） |
 | `o` | 用檔案總管開啟分頁的工作目錄（worktree，Agent 改檔案的地方） |
-| `x` | 關閉分頁（Agent 執行中會先確認，worktree 會保留） |
+| `x` | 關閉分頁：選擇刪除 worktree 副本與 branch，或保留副本。保留的副本會被註記，下次開啟 agt 時提示清理（也可執行 `agt gc --prune`） |
 | `b` | 收合或展開左側欄 |
 | `?` | 快捷鍵說明 |
 | `q` | 離開 TUI（detach），Agent 繼續在背景執行 |
@@ -173,7 +173,8 @@ agt new claude --repo . --task "登入功能" --attach
 | 確認視窗 | 點 `是` / `否` |
 | 說明、diff、重新命名視窗 | 點視窗外面關閉 |
 
-Agent 沒有開啟滑鼠模式時，在主區域捲動滾輪可以瀏覽歷史。diff 視窗打開時，滾輪會捲動 diff 內容（一次 3 行）。
+Agent 沒有開啟滑鼠模式時，在主區域捲動滾輪可以瀏覽歷史。
+diff 視窗打開時，滾輪會捲動 diff 內容（一次 3 行）。
 
 ### 新增分頁表單
 
@@ -211,7 +212,8 @@ git repo 會以黃色 `⎇` 標示。選好後游標會自動移到「任務」�
 agt ls                     # 列出分頁
 agt daemon status          # daemon 狀態
 agt daemon stop            # 停止 daemon（會一併結束所有 Agent，執行前會確認）
-agt gc                     # 檢查 worktree 與資料庫是否一致
+agt gc                     # 檢查 worktree 與資料庫是否一致，列出關閉分頁後留下的副本
+agt gc --prune             # 清理：有未 commit 變更的副本會保留，已合併的 branch 一併刪除
 ```
 
 ## 8. 檔案位置
