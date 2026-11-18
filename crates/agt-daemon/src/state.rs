@@ -1009,7 +1009,15 @@ impl Daemon {
         if cleanup {
             self.discard_worktree(&info)?;
         }
-        self.record(&id, "status", json!({"to": "closed", "cleanup": cleanup}));
+        // 註記留下的副本：之後 `agt gc` 與開啟 TUI 時會提示清理（closed_worktree）
+        let left = (!cleanup && !info.shared)
+            .then_some(info.worktree.as_deref())
+            .flatten();
+        self.record(
+            &id,
+            "status",
+            json!({"to": "closed", "cleanup": cleanup, "worktree_left": left}),
+        );
         self.remove_entry(&id, if cleanup { Some("discard") } else { None })
     }
 
@@ -1172,6 +1180,15 @@ impl Daemon {
                         branch: r.branch.clone(),
                         session: Some(r.short_id.clone()),
                     });
+                } else if r.ended_at.is_some() && !r.shared && !in_use(&known, r, p) {
+                    // 分頁已關閉，但 worktree 副本還留在磁碟上（關閉時選了保留）
+                    items.push(GcItem {
+                        kind: "closed_worktree".into(),
+                        repo: repo.clone(),
+                        path: p.clone(),
+                        branch: r.branch.clone(),
+                        session: Some(r.short_id.clone()),
+                    });
                 }
             }
         }
@@ -1185,6 +1202,7 @@ impl Daemon {
                             tracing::warn!("無法移除 {}：{e}", it.path);
                         }
                     }
+                    "closed_worktree" => self.prune_closed_worktree(it)?,
                     _ => {
                         let _ = agt_git::prune(repo);
                         if let Some(sid) = &it.session {
@@ -1198,6 +1216,42 @@ impl Daemon {
             }
         }
         Ok(items)
+    }
+
+    /// 移除已關閉分頁留下的 worktree 副本。只移除乾淨的副本（有變更時 git 會拒絕，保留給使用者決定）；
+    /// branch 只在沒有 base 以外、也沒有 push 的 commit 時刪除，否則保留。
+    fn prune_closed_worktree(&self, it: &GcItem) -> OpResult<()> {
+        let (repo, wt) = (Path::new(&it.repo), Path::new(&it.path));
+        let Some(row) = it
+            .session
+            .as_deref()
+            .map(|sid| self.store().get_session(sid))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(());
+        };
+        // .git 被改動過就不在裡面執行 git，留給使用者處理
+        if let Err(e) = agt_git::trusted_gitdir(repo, wt) {
+            tracing::warn!("不清理 {}：{e}", it.path);
+            return Ok(());
+        }
+        let keep_branch = match &row.base_branch {
+            Some(base) => agt_git::has_unpushed(repo, wt, base).unwrap_or(true),
+            None => true,
+        };
+        if let Err(e) = agt_git::remove_worktree(repo, wt, false) {
+            tracing::warn!("無法移除 {}：{e}", it.path);
+            return Ok(());
+        }
+        if !keep_branch
+            && let Some(b) = &row.branch
+            && let Err(e) = agt_git::delete_branch(repo, b)
+        {
+            tracing::warn!("無法刪除 branch {b}：{e}");
+        }
+        self.store().clear_worktree(&row.id)?;
+        Ok(())
     }
 
     /// 定期更新 git 資訊，有變化時推播 `WorktreeChanged`。
@@ -1331,6 +1385,17 @@ fn confirm_sensitive(
             list.join("\n")
         ),
     ))
+}
+
+/// 還有尚未關閉的分頁使用這個 worktree（例如共用者還開著）。
+fn in_use(rows: &[&SessionRow], me: &SessionRow, path: &str) -> bool {
+    rows.iter().any(|o| {
+        o.id != me.id
+            && o.ended_at.is_none()
+            && o.worktree_path
+                .as_deref()
+                .is_some_and(|q| agt_git::same_path(Path::new(q), Path::new(path)))
+    })
 }
 
 fn need_worktree(info: &SessionInfo) -> OpResult<(String, String, String, String)> {

@@ -66,6 +66,7 @@ pub async fn run(conn: Connected, opts: Options) -> io::Result<Option<String>> {
     for s in sessions {
         app.upsert(s);
     }
+    app.check_leftovers();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

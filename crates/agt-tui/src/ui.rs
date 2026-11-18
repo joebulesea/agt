@@ -1,6 +1,6 @@
 //! 畫面繪製：左側欄、主區域、底部狀態列（規格 8.1）。
 
-use crate::app::{App, Click, ClickHit, Confirm, FINISH_ITEMS, Popup, STRATEGIES};
+use crate::app::{App, CLOSE_ITEMS, Click, ClickHit, Confirm, FINISH_ITEMS, Popup, STRATEGIES};
 use agt_proto::screen::{Color as PColor, Screen, flags};
 use agt_proto::{AgentStatus, SessionInfo};
 use crossterm::event::KeyCode;
@@ -811,7 +811,7 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                     "o",
                     "用檔案總管開啟分頁的工作目錄（worktree）；也可以雙擊標題列的路徑",
                 ),
-                ("x", "關閉分頁（Agent 執行中會先確認）"),
+                ("x", "關閉分頁（選擇刪除或保留 worktree 副本）"),
                 ("b", "收合或展開左側欄"),
                 ("?", "快捷鍵說明"),
                 ("q", "detach：只關閉 UI，Agent 繼續執行"),
@@ -967,6 +967,44 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(lines).block(block("收尾")), r);
             menu_hits(&mut hits, r, FINISH_ITEMS.len());
+        }
+        Popup::Close { busy, selected, .. } => {
+            let mut lines = vec![Line::raw("")];
+            if let Some(agent) = busy {
+                lines.push(Line::styled(
+                    format!("  {agent} 仍在執行中，關閉會結束它"),
+                    Style::new().fg(Color::Yellow),
+                ));
+                lines.push(Line::raw(""));
+            }
+            let top = lines.len();
+            for (i, (name, desc)) in CLOSE_ITEMS.iter().enumerate() {
+                let style = if i == *selected {
+                    Style::new().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::new()
+                };
+                lines.push(Line::styled(format!("  {name:<8} {desc}  "), style));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "  點選項或 ↑↓ 選擇 · Enter 執行 · Esc 取消",
+                Style::new().fg(Color::DarkGray),
+            ));
+            let r = centered(area, 56, lines.len() as u16 + 2);
+            f.render_widget(Clear, r);
+            f.render_widget(Paragraph::new(lines).block(block("關閉分頁")), r);
+            hits.push(ClickHit {
+                rect: r,
+                click: Click::Nothing,
+            });
+            // menu_hits 假設選項從第二行開始；有提醒時往下移
+            let off = (top - 1) as u16;
+            menu_hits(
+                &mut hits,
+                Rect::new(r.x, r.y + off, r.width, r.height.saturating_sub(off)),
+                CLOSE_ITEMS.len(),
+            );
         }
         Popup::Strategy { selected } => {
             let desc = [
