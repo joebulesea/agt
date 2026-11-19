@@ -21,6 +21,7 @@
 - `.agt/` 加入主 repo 的 info/exclude，說明檔不會出現在 diff，也不會被 auto_commit 加進 commit
 - 新增分頁表單的 Base 欄位留空時顯示實際會用的 branch（主 repo 目前的 HEAD）；它不是 remote 的預設 branch 時以黃字提醒，避免 PR 開到 feature branch
 - 收尾（merge / pr / discard）失敗時寫進 `agtd.log` 與該分頁的事件記錄，錯誤視窗關掉後也查得到原因
+- 在 workspace 與各 crate 的 `Cargo.toml` 加上 `rust-version = "1.89"`，Rust 太舊時 cargo 會直接指出需要的版本，不再出現難懂的編譯錯誤
 
 ### 修正
 

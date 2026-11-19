@@ -3,6 +3,7 @@ name = "agt-proto"
 description = "agt IPC 訊息、封包編解碼與傳輸層"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
