@@ -66,8 +66,8 @@ worktree = false
 #     需要限制資源時自行加上 "--memory=8g", "--cpus=4"（Docker Desktop 的 VM 本身也有上限）。
 #   - 網路：容器可以連外網（Agent 要連自己的 API）。Docker 本身無法只允許特定網域；需要網路限制時
 #     改用 claude-sbx（Docker Sandboxes 有網路政策，`sbx policy`），或自行在容器外架設 proxy / 防火牆。
-#   - agt-*-tools（/opt/agt-tools）放 Agent 執行檔的更新版，分頁中一律唯讀（:ro）；只有 update 指令
-#     （daemon 啟動時執行）把它掛成可寫來更新。分頁裡的 Agent 因此改不到之後所有分頁都會執行的程式。
+#   - agt-*-tools（/opt/agt-tools）放 Agent 執行檔的更新版，Agent 的容器一律唯讀（:ro）；只有 update 指令
+#     （daemon 啟動與新建分頁時，在另一個容器執行）把它掛成可寫來更新。分頁裡的 Agent 因此改不到之後所有分頁都會執行的程式。
 #   - agt-*-home 是所有分頁共用、可寫的家目錄（登入資料、對話記錄、Agent 的全域設定）。
 #     某個分頁的 Agent 若被惡意內容操控，可以改這裡的設定來影響之後的分頁。要完全隔離，把它換成
 #     每個分頁各自的 volume "agt-home-{session}:/home/node"，加上
@@ -90,7 +90,8 @@ worktree = false
 # resume_args = ["--resume", "{conversation}"]
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]   # 關閉分頁時一併移除容器
 # auto_commit = true               # 收尾（merge / pr）前自動 commit 容器內做的修改
-# # agt（daemon）啟動時在背景更新 Claude Code（裝進 agt-claude-tools；分頁本身不會更新）
+# # 更新 Claude Code 到最新版（裝進 agt-claude-tools）：agt daemon 啟動時在背景執行，
+# # 新建分頁時也會先在分頁中執行一次再啟動 Claude（update_on_new = false 可關閉；R 重新啟動不會執行）
 # update = ["docker", "run", "--rm", "-v", "agt-claude-tools:/opt/agt-tools", "agt-claude", "claude", "--version"]
 
 # 在 Docker Sandboxes（sbx，microVM 沙箱）中執行 Claude Code。需要先安裝 sbx 並執行 sbx login，
@@ -150,7 +151,8 @@ worktree = false
 # auto_commit = true
 # update = ["docker", "run", "--rm", "-v", "agt-copilot-tools:/opt/agt-tools", "agt-copilot", "copilot", "--version"]
 #
-# 任何 Agent 都可以設定 update，例如主機上的 Claude Code：
+# 任何 Agent 都可以設定 update（daemon 啟動與新建分頁時執行；update_on_new = false 則只在 daemon 啟動時），
+# 例如主機上的 Claude Code：
 # [agents.claude]
 # update = ["claude", "update"]
 

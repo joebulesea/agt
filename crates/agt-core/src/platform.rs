@@ -153,6 +153,30 @@ pub fn wrap_with_setup(setup: &str, spec: CommandSpec) -> CommandSpec {
     }
 }
 
+/// 把 Agent 的更新指令（設定 `update`）轉成可放在 [`wrap_with_setup`] 前面的腳本片段：
+/// 在分頁中顯示進度，更新失敗只印出訊息、不會讓 setup 判定失敗。
+pub fn update_script(cmd: &[String]) -> Option<String> {
+    if cmd.is_empty() {
+        return None;
+    }
+    Some(if cfg!(windows) {
+        let line = cmd.iter().map(|a| ps_quote(a)).collect::<Vec<_>>().join(" ");
+        format!(
+            "Write-Host '[agt] 檢查 Agent 更新…'\n& {line}\nif (-not $?) {{ Write-Host '[agt] 更新指令失敗，使用現有版本' }}\n$null = 0"
+        )
+    } else {
+        let line = cmd.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ");
+        format!(
+            "echo '[agt] 檢查 Agent 更新…'\n{line} || echo \"[agt] 更新指令失敗（exit $?），使用現有版本\""
+        )
+    })
+}
+
+/// POSIX sh 的單引號字串（`'` 改寫成 `'\''`）。
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 /// 執行收尾指令（見 [`CommandSpec::cleanup`]），等它結束；失敗只記錄、不回報。
 pub fn run_cleanup(cmd: &[String]) {
     // 啟動前執行時要清的東西通常不存在，失敗是正常的，不記成警告
@@ -271,6 +295,24 @@ pub fn path_too_long(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_script_quotes_args_and_never_fails() {
+        assert!(update_script(&[]).is_none());
+        let s = update_script(&["docker".into(), "a b".into(), "it's".into()]).unwrap();
+        if cfg!(windows) {
+            assert!(s.contains("& 'docker' 'a b' 'it''s'"), "{s}");
+        } else {
+            assert!(s.contains(r"'docker' 'a b' 'it'\''s' ||"), "{s}");
+            // 更新失敗不能讓 setup 判定失敗
+            let fail = update_script(&["false".into()]).unwrap();
+            let st = std::process::Command::new("/bin/sh")
+                .args(["-c", &fail])
+                .output()
+                .unwrap();
+            assert!(st.status.success());
+        }
+    }
 
     #[test]
     fn ps_quote_escapes_all_single_quote_forms() {

@@ -2,7 +2,7 @@
 # agt-claude 容器的進入點：決定要用哪一份 Claude Code，必要時更新。
 #
 # 新版安裝在 /opt/agt-tools（volume agt-claude-tools）。這個 volume 只有「更新用」的容器
-# 掛成可寫（設定檔的 update 指令，agt daemon 啟動時執行）；分頁的容器一律掛成唯讀（:ro），
+# 掛成可寫（設定檔的 update 指令，agt daemon 啟動與新建分頁時執行）；Agent 的容器一律掛成唯讀（:ro），
 # 所以分頁裡的 Agent 改不到之後所有分頁都會執行的 claude 執行檔。
 #
 #   - /opt/agt-tools 是可寫的 volume → 檢查 npm 上的最新版並安裝（更新用容器）

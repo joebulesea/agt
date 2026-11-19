@@ -3,7 +3,7 @@
 #
 # agy 放在 /opt/agt-tools/bin（volume agt-agy-tools），第一次從映像檔內的 /opt/agy 複製過去，
 # 之後由 `agy update` 更新。這個 volume 只有「更新用」的容器掛成可寫（設定檔的 update 指令，
-# agt daemon 啟動時執行）；分頁的容器一律掛成唯讀（:ro），所以分頁裡的 Agent 改不到
+# agt daemon 啟動與新建分頁時執行）；Agent 的容器一律掛成唯讀（:ro），所以分頁裡的 Agent 改不到
 # 之後所有分頁都會執行的 agy 執行檔。
 #
 #   - /opt/agt-tools 是可寫的 volume → 安裝並執行 agy update（更新用容器）
