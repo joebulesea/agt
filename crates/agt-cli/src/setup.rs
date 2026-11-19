@@ -914,7 +914,11 @@ mod tests {
         // copilot-docker 的範例後面接著 codex-docker 的範例，不能被收進來
         assert!(!example_block("copilot-docker").unwrap().contains("codex"));
         // codex-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
-        assert!(!example_block("codex-docker").unwrap().contains("任何 Agent"));
+        assert!(
+            !example_block("codex-docker")
+                .unwrap()
+                .contains("任何 Agent")
+        );
         assert!(example_block("nope").is_none());
         // advisor 版：只有 extends 與 extra_args，後面的範例不能被收進來
         for name in [
@@ -972,9 +976,15 @@ mod tests {
         write_config(&path, "", &out).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let v: toml::Value = toml::from_str(&text).unwrap();
-        assert_eq!(v["agents"]["claude-sbx-advisor"]["extends"].as_str(), Some("claude-sbx"));
+        assert_eq!(
+            v["agents"]["claude-sbx-advisor"]["extends"].as_str(),
+            Some("claude-sbx")
+        );
         assert!(v["agents"]["claude-sbx"]["args"].is_array());
-        assert_eq!(v["agents"]["claude-advisor"]["extends"].as_str(), Some("claude"));
+        assert_eq!(
+            v["agents"]["claude-advisor"]["extends"].as_str(),
+            Some("claude")
+        );
     }
 
     #[test]
