@@ -4,6 +4,7 @@ mod app;
 mod dirs;
 mod keys;
 mod open;
+mod repohead;
 mod ui;
 
 pub use keys::{Prefix, encode_key};

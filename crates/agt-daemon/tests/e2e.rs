@@ -532,6 +532,16 @@ async fn full_flow() {
     std::fs::create_dir_all(&plain).unwrap();
     let p = expect_session(c.request(create("shell", &plain, "")).await.unwrap()).unwrap();
     assert!(p.worktree.is_none());
+    // 收尾失敗會寫進 agtd.log（錯誤視窗關掉後也查得到）
+    c.request(ClientMsg::Finish {
+        id: p.id.clone(),
+        action: FinishAction::Pr,
+        force: false,
+    })
+    .await
+    .unwrap_err();
+    let log = std::fs::read_to_string(env.home.join("data/agtd.log")).unwrap_or_default();
+    assert!(log.contains(&format!("{}：收尾 pr 失敗", p.id)), "{log}");
 
     // ── setup 指令第一次執行前要確認 ──
     std::fs::write(env.repo.join(".agt.toml"), "setup = \"echo SETUP-RAN\"\n").unwrap();
