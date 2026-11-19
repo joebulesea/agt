@@ -454,7 +454,7 @@ dependencies = [
  "mio 1.2.4",
  "parking_lot",
  "rustix 1.1.6",
- "signal-hook",
+ "signal-hook 0.3.18",
  "signal-hook-mio",
  "winapi",
 ]
