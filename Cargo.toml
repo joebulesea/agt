@@ -28,7 +28,7 @@ agt-tui = { path = "crates/agt-tui" }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 portable-pty = "0.9"
-alacritty_terminal = "0.25"
+alacritty_terminal = "0.26"
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 interprocess = { version = "2", features = ["tokio"] }
