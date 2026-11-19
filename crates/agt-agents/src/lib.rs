@@ -72,6 +72,14 @@ pub struct AgentSettings {
     /// 之後沙箱已存在、不能再指定路徑，只能用 `sbx run --name X` 接回去。
     #[serde(default)]
     pub restart_args: Vec<String>,
+    /// 接在 `args`（重新啟動時是 `restart_args`）後面、`new_args` / `resume_args` 前面的參數，
+    /// 例如 `["--model", "sonnet"]`。搭配 `extends` 使用：沿用另一個 Agent 的整串 `args`，只追加參數。
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+    /// 沿用另一個 Agent 的設定（例如 `"claude-sbx"`），只寫要改的欄位。
+    /// 由設定檔載入時展開（見 agt-daemon 的 `config.rs`）；展開後只留作紀錄。
+    #[serde(default)]
+    pub extends: String,
 }
 
 /// 可用的 `adapter` 值。
@@ -106,6 +114,8 @@ impl Default for AgentSettings {
             new_args: vec![],
             resume_args: vec![],
             restart_args: vec![],
+            extra_args: vec![],
+            extends: String::new(),
         }
     }
 }
@@ -187,6 +197,7 @@ pub(crate) fn base_command(
                 &settings.args
             }
             .iter()
+            .chain(&settings.extra_args)
             .chain(extra),
             ctx,
         ),
@@ -333,6 +344,31 @@ mod tests {
         assert_eq!(
             base_command("claude", &s, &c).args,
             ["--verbose", "--resume", "conv-1"]
+        );
+    }
+
+    #[test]
+    fn extra_args_go_between_args_and_conversation_args() {
+        let s = AgentSettings {
+            command: "sbx".into(),
+            args: vec!["run".into(), "claude".into(), "{cwd}".into(), "--".into()],
+            restart_args: vec!["run".into(), "--".into()],
+            extra_args: vec!["--model".into(), "sonnet".into()],
+            new_args: vec!["--session-id".into(), "{conversation}".into()],
+            resume_args: vec!["--resume".into(), "{conversation}".into()],
+            ..Default::default()
+        };
+        let mut c = ctx();
+        assert_eq!(
+            base_command("sbx", &s, &c).args,
+            ["run", "claude", "/wt/proj", "--", "--model", "sonnet", "--session-id", "conv-1"]
+        );
+        // 重新啟動（restart_args）時也要帶上
+        c.restarted = true;
+        c.resume = true;
+        assert_eq!(
+            base_command("sbx", &s, &c).args,
+            ["run", "--", "--model", "sonnet", "--resume", "conv-1"]
         );
     }
 

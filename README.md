@@ -42,7 +42,28 @@ agt daemon start|stop|restart|status
 
 TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
 
-設定檔範例與預設值見 [`config/default.toml`](config/default.toml)。
+設定檔範例與預設值見 [`config/default.toml`](config/default.toml)。同一個 Agent 想多一個選項（例如指定模型）時，用 `extends` 沿用既有設定、`extra_args` 追加參數：
+
+```toml
+[agents.claude-sbx-advisor]
+extends = "claude-sbx"
+extra_args = ["--model", "sonnet", "--advisor", "opus"]
+```
+
+### Advisor 版 Claude Code
+
+Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --advisor opus`）。執行 `agt setup`，在「要加入哪些 Agent？」選單中勾選即可，依偵測到的環境出現：
+
+| Agent | 出現條件 | 沿用的設定 |
+| --- | --- | --- |
+| `claude-advisor` | 主機上有 `claude` | `claude`（主機版） |
+| `claude-sbx-advisor` | 有 Docker Sandboxes | `claude-sbx` |
+| `claude-docker-advisor` | 有 Docker | `claude-docker`（使用 `agt-claude` 映像檔） |
+
+- 預設不勾選：需要支援 `--advisor` 的 Claude Code，版本太舊時分頁會一啟動就結束（主機上執行 `claude update`；`claude-docker` 開一個新分頁會自動更新）。
+- 只勾選 advisor 版時，設定檔中還沒有的 `claude-sbx` / `claude-docker` 會一併加入（`extends` 找不到被繼承的 Agent 時設定檔無法載入）。
+- 已經設定過的環境，開啟 agt 時也會提醒加入 advisor 版；選「不要再提醒」後不再詢問，之後仍可執行 `agt setup` 加入。
+- 新建分頁時（`Ctrl+A` → `n`）在 Agent 欄位用 ←/→ 切換；branch 名稱取自 Agent 名稱，例如 `agt/claude-sbx-advisor/<slug>-<id>`。
 
 ## 專案結構
 
@@ -59,7 +80,7 @@ TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` �
 
 ## Docker 沙箱（claude-docker、claude-sbx、agy-docker、copilot-docker）
 
-最簡單的方式：執行 `agt setup`（第一次執行 `agt` 時會自動出現）。它會偵測 Docker Desktop 與 Docker Sandboxes、用選單勾選要加入的 Agent、產生設定檔，並把內建的 Dockerfile 寫到設定目錄、詢問是否建置映像檔。之後每次開啟 agt 偵測到新的可用 Agent 時也會詢問是否加入。
+最簡單的方式：執行 `agt setup`（第一次執行 `agt` 時會自動出現）。它會偵測 Docker Desktop 與 Docker Sandboxes、用選單勾選要加入的 Agent、產生設定檔，並把內建的 Dockerfile 寫到設定目錄、詢問是否建置映像檔。之後每次開啟 agt 偵測到新的可用 Agent 時也會詢問是否加入。選單中也有 advisor 版（`claude-sbx-advisor`、`claude-docker-advisor`），見上方「[Advisor 版 Claude Code](#advisor-版-claude-code)」。
 
 `claude-sbx` 使用 [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/)（`sbx`，microVM，不需要 Docker Desktop）：沙箱保留到分頁關閉，沙箱內可唯讀使用 git。相關設定 `restart_args`（重新啟動時取代 `args`）、`on_close`（只在關閉分頁時執行）與 `{gitdir}` 變數，範例見 [`config/default.toml`](config/default.toml) 的 `[agents.claude-sbx]`。
 

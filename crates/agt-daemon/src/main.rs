@@ -7,6 +7,7 @@ mod state;
 use agt_proto::transport;
 use config::{Config, Paths};
 use state::Daemon;
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -129,9 +130,17 @@ async fn run(d: Arc<Daemon>) -> anyhow::Result<()> {
         });
     }
 
-    // 啟動時執行各 Agent 的更新指令（設定 `update`），各自在背景跑，不擋住啟動
+    // 啟動時執行各 Agent 的更新指令（設定 `update`），各自在背景跑，不擋住啟動。
+    // 相同的指令只執行一次：用 `extends` 繼承的 Agent 會沿用同一個 update。
+    // 重複執行不會出錯（映像檔的 entrypoint 用鎖檔讓更新排隊，後面的發現已是最新版就略過），
+    // 只是多跑一個容器、多查一次 npm。
+    let mut updates: BTreeMap<Vec<String>, String> = BTreeMap::new();
     for (name, a) in d.cfg().agents.iter().filter(|(_, a)| !a.update.is_empty()) {
-        let (name, cmd) = (name.clone(), a.update.clone());
+        updates
+            .entry(a.update.clone())
+            .or_insert_with(|| name.clone());
+    }
+    for (cmd, name) in updates {
         tokio::task::spawn_blocking(move || {
             tracing::info!("更新 Agent {name}：{cmd:?}");
             agt_core::platform::run_update(&cmd);

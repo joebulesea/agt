@@ -156,6 +156,24 @@ worktree = false
 # [agents.claude]
 # update = ["claude", "update"]
 
+# extends：沿用另一個 Agent 的設定，只寫要改的欄位（可以多層）。
+# extra_args：接在 args（重新啟動時是 restart_args）後面、new_args / resume_args 前面的參數。
+# 兩者搭配，就能替同一個 Agent 多開幾個選項，不必把整串 args 複製一份；新建分頁時在 Agent 欄位切換。
+# 繼承 claude / antigravity / copilot / shell 又沒寫 adapter 時，自動沿用同名的 adapter。
+# 例如用 Sonnet 執行、由 Opus 擔任顧問的 Claude Code（主機版、claude-sbx 版與 claude-docker 版，
+# agt setup 可以勾選加入；需要支援 --advisor 的 Claude Code）：
+# [agents.claude-advisor]
+# extends = "claude"
+# extra_args = ["--model", "sonnet", "--advisor", "opus"]
+#
+# [agents.claude-sbx-advisor]
+# extends = "claude-sbx"
+# extra_args = ["--model", "sonnet", "--advisor", "opus"]
+#
+# [agents.claude-docker-advisor]
+# extends = "claude-docker"
+# extra_args = ["--model", "sonnet", "--advisor", "opus"]
+
 # repo 專屬設定範例：
 # [repos."~/proj"]
 # copy_files = [".env", ".env.local"]
