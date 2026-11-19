@@ -125,6 +125,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let status = Rect::new(0, body_h, area.width, 1);
     app.sidebar_area = sidebar;
     app.main_area = main;
+    app.screen_area = area;
     app.send_resize();
 
     let border = Style::new().fg(Color::DarkGray);
@@ -724,6 +725,36 @@ fn wrap_lines(text: &str, w: usize) -> Vec<String> {
     out
 }
 
+/// 文字視窗（錯誤訊息等）的外框寬度：畫面寬度左右各留 3 欄。
+fn text_popup_width(screen_w: u16) -> u16 {
+    screen_w.saturating_sub(6)
+}
+
+/// 文字視窗實際顯示的列：一般文字依視窗內寬逐字折行（全形字佔 2 欄），
+/// diff 不折行（保留程式碼的排版）。捲動位置以這裡的列數計算。
+pub fn text_rows(lines: &[String], diff: bool, screen_w: u16) -> Vec<String> {
+    if diff {
+        return lines.to_vec();
+    }
+    let w = (text_popup_width(screen_w).saturating_sub(2) as usize).max(1);
+    let mut out = vec![];
+    for l in lines {
+        let mut cur = String::new();
+        let mut cw = 0;
+        for c in l.chars() {
+            let n = c.width().unwrap_or(0);
+            if cw + n > w && !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+                cw = 0;
+            }
+            cur.push(c);
+            cw += n;
+        }
+        out.push(cur);
+    }
+    out
+}
+
 /// 確認框的內容放不下、被截斷時，最後的說明（由 [`wrap_lines`] 加上行首空白）。
 /// 剪貼簿確認要說清楚：畫面只顯示一部分，但按 y 會複製全部內容。
 fn truncated_note(action: &Confirm) -> String {
@@ -1169,10 +1200,12 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
         } => {
             let r = centered(
                 area,
-                area.width.saturating_sub(6),
+                text_popup_width(area.width),
                 area.height.saturating_sub(4),
             );
             let inner_h = r.height.saturating_sub(2) as usize;
+            let rows = text_rows(lines, *diff, area.width);
+            let lines = &rows;
             let shown: Vec<Line> = lines
                 .iter()
                 .skip(*scroll)
@@ -1198,7 +1231,7 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 })
                 .collect();
             let t = format!(
-                "{title}  {}/{} · ↑↓ PgUp PgDn 滾輪 · q 關閉",
+                "{title}  {}/{} · ↑↓ PgUp PgDn 滾輪 · c 複製 · q 關閉",
                 (*scroll + 1).min(lines.len().max(1)),
                 lines.len()
             );
@@ -1286,6 +1319,23 @@ mod tests {
         assert!(note.contains("全部 1234 字"), "{note}");
         let other = truncated_note(&Confirm::Close { id: "x".into() });
         assert!(other.contains("已截斷") && !other.contains("字"), "{other}");
+    }
+
+    /// 錯誤視窗：長訊息依視窗內寬折行（全形字 2 欄），空行保留；diff 不折行。
+    #[test]
+    fn text_popup_wraps_errors_but_not_diff() {
+        // 畫面 20 欄 → 外框 14、內寬 12
+        let lines = vec![
+            "git gh pr create 失敗：Base sha".to_string(),
+            String::new(),
+            "ok".to_string(),
+        ];
+        let rows = text_rows(&lines, false, 20);
+        assert!(rows.iter().all(|r| r.width() <= 12), "{rows:?}");
+        assert_eq!(rows.concat(), lines.concat());
+        assert!(rows.len() > lines.len());
+        assert_eq!(rows[rows.len() - 2..], ["".to_string(), "ok".to_string()]);
+        assert_eq!(text_rows(&lines, true, 20), lines);
     }
 
     #[test]

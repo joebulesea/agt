@@ -230,6 +230,8 @@ pub struct App {
     pub scroll: Option<Scroll>,
     pub message: Option<(String, bool, Instant)>,
     pub main_area: Rect,
+    /// 整個畫面（文字視窗依它的寬度折行）。
+    pub screen_area: Rect,
     pub sidebar_area: Rect,
     pub sidebar_hits: Vec<SidebarHit>,
     pub click_hits: Vec<ClickHit>,
@@ -267,6 +269,7 @@ impl App {
             scroll: None,
             message: None,
             main_area: Rect::default(),
+            screen_area: Rect::default(),
             sidebar_area: Rect::default(),
             sidebar_hits: vec![],
             click_hits: vec![],
@@ -986,9 +989,16 @@ impl App {
                         KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Enter
                     ))
             }
-            Popup::Text { lines, scroll, .. } => {
+            Popup::Text {
+                lines,
+                scroll,
+                diff,
+                ..
+            } => {
                 let page = self.main_area.height.saturating_sub(4).max(1) as usize;
-                let max = lines.len().saturating_sub(1);
+                let max = crate::ui::text_rows(lines, *diff, self.screen_area.width)
+                    .len()
+                    .saturating_sub(1);
                 match k.code {
                     KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => false,
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -1013,6 +1023,13 @@ impl App {
                     }
                     KeyCode::End | KeyCode::Char('G') => {
                         *scroll = max;
+                        true
+                    }
+                    // 複製全部內容（例如收尾失敗的錯誤訊息）：TUI 開了滑鼠模式，無法直接用滑鼠選取
+                    KeyCode::Char('c') | KeyCode::Char('y') => {
+                        let text = lines.join("\n");
+                        self.set_message(format!("已複製 {} 行到剪貼簿", lines.len()), false);
+                        self.clipboard_out = Some(text);
                         true
                     }
                     _ => true,
@@ -1248,9 +1265,17 @@ impl App {
             self.dirty = true;
             return;
         }
-        if let Some(Popup::Text { lines, scroll, .. }) = self.popup.as_mut() {
+        if let Some(Popup::Text {
+            lines,
+            scroll,
+            diff,
+            ..
+        }) = self.popup.as_mut()
+        {
             // diff / 文字視窗：滾輪一次捲 3 行
-            let max = lines.len().saturating_sub(1);
+            let max = crate::ui::text_rows(lines, *diff, self.screen_area.width)
+                .len()
+                .saturating_sub(1);
             match m.kind {
                 MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
                 MouseEventKind::ScrollDown => *scroll = (*scroll + 3).min(max),
