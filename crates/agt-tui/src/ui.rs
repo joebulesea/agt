@@ -136,6 +136,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_title(buf, app, Rect::new(main_outer.x, 0, main_outer.width, 1));
     if let Some(screen) = &app.screen {
         draw_screen(buf, screen, main);
+        draw_exit_hint(buf, app, main);
     } else if app.sessions.is_empty() {
         let p = app.prefix.label();
         let lines = vec![
@@ -493,6 +494,72 @@ fn draw_screen(buf: &mut Buffer, s: &Screen, area: Rect) {
     }
 }
 
+/// 提示列放在畫面最後一列有內容的下一列（空一列）；放不下時放在最底下一列。
+fn exit_hint_row(s: &Screen, height: u16) -> u16 {
+    let rows = (s.rows as usize).min(s.lines.len());
+    let last = (0..rows).rev().find(|&y| {
+        s.lines[y]
+            .iter()
+            .any(|c| !matches!(c.ch, ' ' | '\0') && c.flags & flags::HIDDEN == 0)
+    });
+    let want = last.map_or(0, |y| y as u16 + 2);
+    want.min(height.saturating_sub(1))
+}
+
+/// Agent 已結束（例如 /exit、/logout）時，提示怎麼重新啟動，並提供可點擊的按鈕。
+fn draw_exit_hint(buf: &mut Buffer, app: &mut App, area: Rect) {
+    let status = app.active_info().map(|s| s.status);
+    if !matches!(status, Some(AgentStatus::Exited | AgentStatus::Error)) || area.height == 0 {
+        return;
+    }
+    let Some(screen) = &app.screen else { return };
+    if screen.display_offset > 0 || app.scroll.is_some() {
+        return;
+    }
+    let y = area.y + exit_hint_row(screen, area.height);
+    let p = app.prefix.label();
+    let note = " Agent 已結束 ";
+    let restart = format!(" 重新啟動，接續對話（{p} R） ");
+    let fresh = format!(" 開新對話（{p} N） ");
+    let need = (note.width() + 1 + restart.width() + 1 + fresh.width()) as u16;
+    if need > area.width {
+        let short = format!(" Agent 已結束：按 {p} R 重新啟動 ");
+        buf.set_string(
+            area.x,
+            y,
+            truncate(&short, area.width as usize),
+            Style::new().fg(Color::Black).bg(Color::Yellow),
+        );
+        app.click_hits.push(ClickHit {
+            rect: Rect::new(area.x, y, area.width.min(short.width() as u16), 1),
+            click: Click::Command('R'),
+        });
+        return;
+    }
+    buf.set_string(area.x, y, " ".repeat(area.width as usize), Style::new());
+    let mut x = area.x;
+    buf.set_string(x, y, note, Style::new().fg(Color::Black).bg(Color::Yellow));
+    x += note.width() as u16 + 1;
+    x += button(
+        buf,
+        &mut app.click_hits,
+        x,
+        y,
+        &restart,
+        button_style(),
+        Click::Command('R'),
+    ) + 1;
+    button(
+        buf,
+        &mut app.click_hits,
+        x,
+        y,
+        &fresh,
+        Style::new().fg(Color::Black).bg(Color::Indexed(37)),
+        Click::Command('N'),
+    );
+}
+
 fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
     let count = |st: AgentStatus| app.sessions.iter().filter(|s| s.status == st).count();
     let running =
@@ -540,11 +607,17 @@ fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
                 bar.fg(Color::White)
             },
         ))
+    } else if let Some(e) = &app.config_error {
+        Some((format!("設定檔錯誤：{e}"), bar.fg(Color::Red)))
     } else {
-        app.config_error
-            .as_ref()
-            .map(|e| (format!("設定檔錯誤：{e}"), bar.fg(Color::Red)))
+        // 沒有訊息時在最右邊顯示版本號
+        Some((
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            bar.fg(Color::Gray),
+        ))
     };
+    // 版本號放不下就不顯示（不截斷）；訊息則截斷後顯示
+    let is_version = app.message.is_none() && app.config_error.is_none();
     let left = Line::from(spans);
     let mut left_w = left.width() as u16;
     buf.set_line(area.x, area.y, &left, area.width);
@@ -609,7 +682,7 @@ fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
     }
     if let Some((text, style)) = right {
         let room = area.width.saturating_sub(left_w + 3) as usize;
-        if room > 4 {
+        if room > 4 && !(is_version && text.width() > room) {
             let t = truncate(&text.replace('\n', " "), room);
             let x = area.x + area.width - t.width() as u16 - 1;
             buf.set_string(x, area.y, &t, style);
@@ -1171,6 +1244,40 @@ mod tests {
             "{body:?} {}",
             lines.len()
         );
+    }
+
+    /// Agent 結束後的提示列：放在最後一列內容下方空一列；畫面滿了就放在最底下。
+    #[test]
+    fn exit_hint_below_last_content() {
+        use agt_proto::screen::{Cell, Cursor};
+        let screen = |texts: &[&str], rows: u16| Screen {
+            cols: 20,
+            rows,
+            lines: (0..rows as usize)
+                .map(|y| {
+                    let t = texts.get(y).copied().unwrap_or("");
+                    let mut r: Vec<Cell> = t
+                        .chars()
+                        .map(|ch| Cell {
+                            ch,
+                            ..Cell::default()
+                        })
+                        .collect();
+                    r.resize(20, Cell::default());
+                    r
+                })
+                .collect(),
+            cursor: Cursor::default(),
+            modes: 0,
+            display_offset: 0,
+            history: 0,
+        };
+        assert_eq!(exit_hint_row(&screen(&[], 10), 10), 0);
+        assert_eq!(exit_hint_row(&screen(&["", "Resume", "claude"], 10), 10), 4);
+        let full: Vec<&str> = vec!["x"; 10];
+        assert_eq!(exit_hint_row(&screen(&full, 10), 10), 9);
+        // 主區域比畫面矮時也不超出
+        assert_eq!(exit_hint_row(&screen(&["", "", "", "a"], 10), 3), 2);
     }
 
     #[test]

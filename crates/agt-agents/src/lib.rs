@@ -51,10 +51,15 @@ pub struct AgentSettings {
     /// 給無法自行使用 git 的 Agent（例如 `claude-docker`）使用。
     #[serde(default)]
     pub auto_commit: bool,
-    /// 更新指令：daemon 啟動時在背景執行一次，例如 `["claude", "update"]`。
+    /// 更新指令：daemon 啟動時在背景執行一次（`update_on_new` 時新建分頁也會執行），例如 `["claude", "update"]`。
     /// 不支援 `{cwd}`、`{session}` 變數。
     #[serde(default)]
     pub update: Vec<String>,
+    /// 新建分頁時，先在分頁中執行一次 `update` 再啟動 Agent（輸出顯示在分頁中；
+    /// 更新失敗仍會啟動 Agent）。預設開啟；設成 `false` 則只在 daemon 啟動時更新。
+    /// 重新啟動（`R` / `N`）不會執行。
+    #[serde(default = "default_true")]
+    pub update_on_new: bool,
     /// 開新對話時接在 `args` 後面的參數，例如 `["--session-id", "{conversation}"]`。
     #[serde(default)]
     pub new_args: Vec<String>,
@@ -97,6 +102,7 @@ impl Default for AgentSettings {
             on_close: vec![],
             auto_commit: false,
             update: vec![],
+            update_on_new: true,
             new_args: vec![],
             resume_args: vec![],
             restart_args: vec![],
