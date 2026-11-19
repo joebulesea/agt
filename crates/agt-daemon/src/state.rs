@@ -491,13 +491,13 @@ impl Daemon {
         }
 
         // 新分頁先執行更新指令（例如把 claude-docker 的 Claude Code 更新到最新版），再執行 repo 的 setup
-        if settings.update_on_new {
-            if let Some(u) = platform::update_script(&settings.update) {
-                setup = Some(match setup {
-                    Some(s) => format!("{u}\n{s}"),
-                    None => u,
-                });
-            }
+        if settings.update_on_new
+            && let Some(u) = platform::update_script(&settings.update)
+        {
+            setup = Some(match setup {
+                Some(s) => format!("{u}\n{s}"),
+                None => u,
+            });
         }
 
         let conversation = new_conversation_id();
