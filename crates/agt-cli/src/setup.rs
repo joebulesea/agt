@@ -911,12 +911,10 @@ mod tests {
         }
         // agy-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
         assert!(!example_block("agy-docker").unwrap().contains("copilot"));
-        // copilot-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
-        assert!(
-            !example_block("copilot-docker")
-                .unwrap()
-                .contains("任何 Agent")
-        );
+        // copilot-docker 的範例後面接著 codex-docker 的範例，不能被收進來
+        assert!(!example_block("copilot-docker").unwrap().contains("codex"));
+        // codex-docker 的範例後面接著說明文字（單獨的 #），不能被收進來
+        assert!(!example_block("codex-docker").unwrap().contains("任何 Agent"));
         assert!(example_block("nope").is_none());
         // advisor 版：只有 extends 與 extra_args，後面的範例不能被收進來
         for name in [

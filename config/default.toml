@@ -159,6 +159,7 @@ worktree = false
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]
 # auto_commit = true
 # update = ["docker", "run", "--rm", "-v", "agt-copilot-tools:/opt/agt-tools", "agt-copilot", "copilot", "--version"]
+
 # 在 Docker 容器中執行 OpenAI Codex CLI（沙箱）。先建置映像檔：docker build -t agt-codex docker/codex/
 # 第一次啟動時在分頁中執行 codex login --device-auth，依畫面上的網址與代碼在主機的瀏覽器登入；
 # 或在主機設定環境變數 OPENAI_API_KEY 略過登入。容器本身就是沙箱，所以略過 Codex 自己的核准與沙箱。
