@@ -1180,8 +1180,10 @@ pub fn create_pr(
             worktree.display()
         ));
     }
-    // 先讀說明檔：不合規定（連結等）時在 push 之前就停下
+    // 先讀說明檔、確認 PR 的目標：不合規定（連結、base 不在 remote 上等）時在 push 之前就停下
     let body = read_note(worktree, PR_BODY_FILE)?;
+    let (pr_base, note) = resolve_pr_base(repo, worktree, &remote, base)?;
+    let base = pr_base.as_str();
     git_wt(repo, worktree, &["push", "-u", &remote, branch])?;
     let staged = match &body {
         Some(text) => Some(stage_note(&gitdir, "AGT_PR_BODY.md", text)?),
@@ -1194,7 +1196,58 @@ pub fn create_pr(
     if r.is_ok() && body.is_some() {
         remove_note(worktree, PR_BODY_FILE);
     }
-    r
+    r.map(|out| match note {
+        Some(n) => format!("{out}\n{n}"),
+        None => out,
+    })
+}
+
+/// PR 的目標 branch。分頁的 base 常是主 repo 當時所在、只在本機的 branch（例如還沒 push 的 feat/…），
+/// GitHub 上沒有它就無法建立 PR：這時若它的內容都已在 remote 的預設 branch 裡，改用預設 branch
+/// （PR 的內容仍只有這個分頁的 commit），並回傳說明；否則拒絕（避免 PR 混進 base 上未發布的 commit）。
+fn resolve_pr_base(
+    repo: &Path,
+    worktree: &Path,
+    remote: &str,
+    base: &str,
+) -> Result<(String, Option<String>)> {
+    let heads = git_wt(
+        repo,
+        worktree,
+        &[
+            "ls-remote",
+            "--heads",
+            remote,
+            &format!("refs/heads/{base}"),
+        ],
+    )?;
+    if !heads.trim().is_empty() {
+        return Ok((base.to_string(), None));
+    }
+    let head = git_wt(repo, worktree, &["ls-remote", "--symref", remote, "HEAD"])?;
+    let default = head.lines().find_map(|l| {
+        l.strip_prefix("ref: refs/heads/")
+            .and_then(|r| r.strip_suffix("\tHEAD"))
+            .map(str::to_string)
+    });
+    let sha = head
+        .lines()
+        .find(|l| !l.starts_with("ref:") && l.ends_with("\tHEAD"))
+        .and_then(|l| l.split('\t').next())
+        .map(str::to_string);
+    if let (Some(default), Some(sha)) = (default, sha)
+        && default != base
+        && git_wt(repo, worktree, &["merge-base", "--is-ancestor", base, &sha]).is_ok()
+    {
+        let note = format!(
+            "（{base} 不在 {remote} 上，它的內容都已在 {default} 中，PR 改以 {default} 為目標）"
+        );
+        return Ok((default, Some(note)));
+    }
+    Err(GitError::Refused(format!(
+        "這個分頁的 base branch {base} 不在 {remote} 上，而且有 {remote} 還沒有的 commit，無法建立 PR。\
+         請先 push {base}（git push -u {remote} {base}）再收尾 → pr。"
+    )))
 }
 
 /// 已有開啟中的 PR：push 已經更新了它，有新的說明時改寫說明；否則建立 PR。
@@ -1439,6 +1492,42 @@ mod tests {
             commit_all(root, &wt, "任務名稱").unwrap().as_deref(),
             Some("任務名稱")
         );
+    }
+
+    #[test]
+    fn pr_base_falls_back_to_remote_default_only_when_safe() {
+        let repo = init_repo();
+        let root = repo.path();
+        let remote_dir = tempfile::tempdir().unwrap();
+        let remote = remote_dir.path().join("origin.git");
+        git(
+            root,
+            &["clone", "-q", "--bare", ".", &remote.to_string_lossy()],
+        )
+        .unwrap();
+        git(
+            root,
+            &["remote", "add", "origin", &remote.to_string_lossy()],
+        )
+        .unwrap();
+        // 只在本機的 feat，內容都已在 origin/main 裡
+        git(root, &["branch", "feat"]).unwrap();
+        let wts = tempfile::tempdir().unwrap();
+        let wt = wts.path().join("w-base");
+        add_worktree(root, &wt, "agt/test/b-000004", "feat").unwrap();
+
+        let (b, note) = resolve_pr_base(root, &wt, "origin", "main").unwrap();
+        assert_eq!((b.as_str(), note), ("main", None));
+        let (b, note) = resolve_pr_base(root, &wt, "origin", "feat").unwrap();
+        assert_eq!(b, "main");
+        assert!(note.unwrap().contains("feat"));
+
+        // feat 多了 origin 沒有的 commit：拒絕，不能讓 PR 混進去
+        git(root, &["checkout", "-q", "feat"]).unwrap();
+        std::fs::write(root.join("f.txt"), "f\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-q", "-m", "local only"]).unwrap();
+        assert!(resolve_pr_base(root, &wt, "origin", "feat").is_err());
     }
 
     #[test]
