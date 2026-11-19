@@ -6,7 +6,7 @@
 # Copilot CLI 的更新版保存在 volume `agt-copilot-tools`（掛在 /opt/agt-tools，分頁中唯讀）。
 # 專案需要的工具（Rust、Python 套件等）請自行加在下方。
 # base image 釘在 digest（tag 可能被改指到別的內容）；更新時改 digest，或交給 Dependabot。
-FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
+FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
