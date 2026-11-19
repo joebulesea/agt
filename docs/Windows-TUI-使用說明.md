@@ -9,7 +9,7 @@
 | 執行檔 | `agt.exe` 與 `agtd.exe`，必須放在同一個資料夾：安裝在 `%APPDATA%\agt\`（建置輸出另有一份在 `C:\claude\Rust\agt\dist\windows\`） |
 | 終端機 | 建議使用 Windows Terminal（PowerShell） |
 | git | 2.20 以上，需在 PATH 中 |
-| Agent | 要使用的 Agent 指令必須在 PATH 中：`claude`（Claude Code）、`agy`（Antigravity CLI）、`copilot`（GitHub Copilot CLI，`npm install -g @github/copilot`）；`shell` 會使用 `pwsh`，沒有時改用 `powershell` |
+| Agent | 要使用的 Agent 指令必須在 PATH 中：`claude`（Claude Code）、`agy`（Antigravity CLI）、`copilot`（GitHub Copilot CLI，`npm install -g @github/copilot`）、`codex`（OpenAI Codex CLI，`npm install -g @openai/codex`）；`shell` 會使用 `pwsh`，沒有時改用 `powershell` |
 
 不需要手動啟動 daemon：執行 `agt` 時若 daemon 尚未執行，會自動在背景啟動 `agtd`。
 
@@ -56,7 +56,7 @@ daemon 或 TUI 執行中時 exe 會被鎖住，腳本會先把舊檔改名為 `.
 
 只有 `agt.exe` 與 `agtd.exe` 也能直接使用（在檔案總管雙擊 `agt.exe` 也可以）：第一次執行 `agt`（還沒有設定檔）時，會先出現初始設定畫面：
 
-1. 檢查環境：git、Docker Desktop（含 WSL2）、Docker Sandboxes（`sbx`，含是否已登入、是否已設定網路政策）、Claude Code、GitHub Copilot CLI、Antigravity CLI；有問題的項目標示 **必要 / 建議 / 選用**。
+1. 檢查環境：git、Docker Desktop（含 WSL2）、Docker Sandboxes（`sbx`，含是否已登入、是否已設定網路政策）、Claude Code、GitHub Copilot CLI、OpenAI Codex CLI、Antigravity CLI；有問題的項目標示 **必要 / 建議 / 選用**。
 2. 有缺少的項目時，勾選要處理的項目（預設只勾必要的 git），每一項再選擇處理方式：
    - **用 winget 安裝**：會先顯示完整指令（`winget install -e --id <ID> --source winget`），winget 的輸出直接顯示在畫面上；需要系統管理員權限時由安裝程式跳出 UAC。安裝後會重新讀取 PATH，不用重新開視窗。
    - **開啟下載頁**：用預設瀏覽器開啟官方網站。
@@ -64,8 +64,8 @@ daemon 或 TUI 執行中時 exe 會被鎖住，腳本會先把舊檔改名為 `.
    - Docker Desktop 沒有在執行時可以選「啟動 Docker Desktop」，會等待 engine 就緒（最多約 90 秒）；sbx 沒有登入時可以直接執行 `sbx login`。
    - WSL2 交給 Docker Desktop 安裝程式處理。安裝程式要求重新開機時選「先結束」，重新開機後再開啟 agt 會重新檢查並從這裡繼續。
    - 沒有 winget（例如 LTSC 版 Windows）時只能開啟下載頁或自行安裝。
-3. 用 `↑` / `↓` 移動、`空白鍵` 勾選要加入的 Agent（`claude-sbx`、`claude-docker`、`agy-docker`、`copilot-docker`），`Enter` 確認，`Esc` 取消。
-4. 選到需要映像檔的 Agent 時，把內建的 Dockerfile 寫到 `%APPDATA%\agt\docker\<claude|agy|copilot>\`，並詢問是否馬上 `docker build`。
+3. 用 `↑` / `↓` 移動、`空白鍵` 勾選要加入的 Agent（`claude-sbx`、`claude-docker`、`agy-docker`、`copilot-docker`、`codex-docker`），`Enter` 確認，`Esc` 取消。
+4. 選到需要映像檔的 Agent 時，把內建的 Dockerfile 寫到 `%APPDATA%\agt\docker\<claude|agy|copilot|codex>\`，並詢問是否馬上 `docker build`。
 5. 選到 `claude-sbx` 而且還沒有沙箱網路政策時，選擇 `balanced` / `allow-all` / `deny-all`。
 6. 產生 `%APPDATA%\agt\config.toml`，最後選擇是否開啟 agt。
 
@@ -143,7 +143,7 @@ agt new claude --repo . --task "登入功能" --attach
 | `R` | 在同一個 worktree 重新啟動已結束的 Agent，**接續上次的對話**（例如電腦重新開機後） |
 | `N` | 在同一個 worktree 重新啟動已結束的 Agent，開新對話 |
 
-> 接續對話靠 Agent 設定的 `new_args` / `resume_args`（`claude` 用 `--session-id` / `--resume`、`copilot` 用 `--session-id` 指定這個分頁自己的對話；agy 用 `--continue`，接續最近一次的對話）。接續失敗（例如上次還沒開始對話就結束，找不到對話）時，agt 會自動改開新對話。舊版 agt 建立的分頁沒有記錄對話 ID，第一次按 `R` 會開新對話，之後就能接續。
+> 接續對話靠 Agent 設定的 `new_args` / `resume_args`（`claude` 用 `--session-id` / `--resume`、`copilot` 用 `--session-id` 指定這個分頁自己的對話；agy 用 `--continue`、`codex` 用 `resume --last`，接續最近一次的對話）。接續失敗（例如上次還沒開始對話就結束，找不到對話）時，agt 會自動改開新對話。舊版 agt 建立的分頁沒有記錄對話 ID，第一次按 `R` 會開新對話，之後就能接續。
 | `[` | 滾動模式（`↑↓`、`PgUp`/`PgDn`、`/` 搜尋、`n` 下一個、`q` 離開） |
 | `u` | 複製畫面上最新的網址（例如 Agent 印出的登入網址；折成多列的長網址會自動接回） |
 | `o` | 用檔案總管開啟分頁的工作目錄（worktree，Agent 改檔案的地方） |
@@ -347,6 +347,22 @@ agt gc --prune             # 清理：有未 commit 變更的副本會保留，�
 | 權限 | 加上 `--allow-all-tools` 自動核准所有工具，由 Docker 隔離取代逐一核准 |
 | 接續對話 | 開新對話時以 `--session-id` 指定分頁自己的對話 ID，`R` 用同一個 ID 接續；同時開多個 `copilot-docker` 分頁也不會接到別的分頁的對話 |
 | 狀態燈號 | 使用畫面規則判斷（`adapter = "copilot"`）：出現工具核准選單（`No, and tell Copilot ...`）或資料夾信任詢問為等待輸入 |
+
+### OpenAI Codex CLI（codex-docker）
+
+做法相同，映像檔在 `docker/codex/`，設定範例是 `config/default.toml` 裡的 `[agents.codex-docker]`：
+
+1. 建置映像檔：`docker build -t agt-codex C:\claude\Rust\agt\docker\codex`
+2. 把 `[agents.codex-docker]` 複製到 `%APPDATA%\agt\config.toml`，執行 `agt daemon restart`。
+3. 登入：新增 `codex-docker` 分頁後執行 `codex login --device-auth`，按 `Ctrl+A` → `u` 複製網址，在主機的瀏覽器開啟並輸入代碼。登入資料保存在 volume `agt-codex-home`，之後不需要再登入。也可以在主機設定 `OPENAI_API_KEY`，daemon 會傳進容器。
+
+| 項目 | 說明 |
+| --- | --- |
+| git | 容器內無法使用 git。第一次啟動時會建立 `~/.codex/AGENTS.md`（全域指示）告訴 Codex 不要使用 git；已有內容時不會覆蓋。commit 由 `auto_commit` 處理 |
+| 版本 | 設定 `update` 後，daemon 啟動時在背景檢查 npm 上的 `@openai/codex` 並更新（裝進 volume `agt-codex-tools`，分頁中唯讀），新建分頁時也會先更新一次（`update_on_new = false` 可關閉） |
+| 權限 | 加上 `--dangerously-bypass-approvals-and-sandbox` 略過 Codex 自己的核准與沙箱，由 Docker 隔離取代 |
+| 接續對話 | `R` 以 `resume --last` 接續容器內最近一次的對話；同時開多個 `codex-docker` 分頁時可能接到別的分頁的對話 |
+| 狀態燈號 | 使用畫面規則判斷（`adapter = "codex"`）：出現指令／修改核准選單或資料夾信任詢問為等待輸入 |
 
 ## 11. 疑難排解
 

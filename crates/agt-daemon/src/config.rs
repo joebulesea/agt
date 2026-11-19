@@ -273,7 +273,7 @@ fn merge(base: &mut toml::Value, over: toml::Value) {
 
 /// 依名稱決定狀態判斷方式的內建 Agent。`extends` 這些 Agent 又沒寫 `adapter` 時，
 /// 自動設成同名的 adapter；否則名稱不同（例如 `claude-advisor`）會被當成一般的自訂 Agent。
-const NAMED_ADAPTERS: &[&str] = &["claude", "antigravity", "copilot", "shell"];
+const NAMED_ADAPTERS: &[&str] = &["claude", "antigravity", "copilot", "codex", "shell"];
 
 /// 展開 `extends`：沒寫的欄位沿用被繼承的 Agent（可以多層，不可循環）。
 /// 必須在 [`inherit_adapter_args`] 之前執行。

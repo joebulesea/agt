@@ -205,6 +205,7 @@ impl Default for UiConfig {
                 "claude".into(),
                 "antigravity".into(),
                 "copilot".into(),
+                "codex".into(),
                 "shell".into(),
             ],
         }

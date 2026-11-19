@@ -48,6 +48,16 @@ const DOCKER_FILES: &[(&str, &str, &str)] = &[
         "entrypoint.sh",
         include_str!("../../../docker/copilot/entrypoint.sh"),
     ),
+    (
+        "codex",
+        "Dockerfile",
+        include_str!("../../../docker/codex/Dockerfile"),
+    ),
+    (
+        "codex",
+        "entrypoint.sh",
+        include_str!("../../../docker/codex/entrypoint.sh"),
+    ),
 ];
 
 pub struct Options {
@@ -81,6 +91,7 @@ pub(crate) struct Env {
     pub claude: bool,
     pub agy: bool,
     pub copilot: bool,
+    pub codex: bool,
     pub docker: Docker,
     pub sbx: Sbx,
     /// WSL2 是否可用（Docker Desktop 需要）；只在 Windows 偵測，其他平台為 None。
@@ -188,6 +199,7 @@ pub(crate) fn detect() -> Env {
         claude: on_path("claude"),
         agy: on_path("agy"),
         copilot: on_path("copilot"),
+        codex: on_path("codex"),
         docker,
         sbx,
         // `wsl --status` 的輸出是 UTF-16，只看結束代碼；沒有安裝時 wsl.exe 可能是只會提示安裝的版本
@@ -285,6 +297,8 @@ fn dep_status(env: &Env, dep: deps::Dep) -> (char, String) {
         Dep::Claude => missing("（內建的 claude Agent 需要；沙箱版不需要）"),
         Dep::Copilot if env.copilot => ('✓', "copilot".into()),
         Dep::Copilot => missing(""),
+        Dep::Codex if env.codex => ('✓', "codex".into()),
+        Dep::Codex => missing(""),
         Dep::Agy if env.agy => ('✓', "agy".into()),
         Dep::Agy => missing(""),
     }
@@ -396,6 +410,13 @@ fn candidates(env: &Env) -> Vec<Candidate> {
             name: "copilot-docker",
             desc: "Docker 容器中的 GitHub Copilot CLI",
             image: Some(("agt-copilot", "copilot")),
+            default_on: false,
+            extends: None,
+        });
+        list.push(Candidate {
+            name: "codex-docker",
+            desc: "Docker 容器中的 OpenAI Codex CLI",
+            image: Some(("agt-codex", "codex")),
             default_on: false,
             extends: None,
         });
@@ -552,7 +573,7 @@ pub fn run(opts: Options) -> anyhow::Result<()> {
         if all.is_empty() {
             println!(
                 "  {}",
-                "沒有偵測到 Docker 或 Docker Sandboxes，只使用內建的 claude / antigravity / copilot / shell。"
+                "沒有偵測到 Docker 或 Docker Sandboxes，只使用內建的 claude / antigravity / copilot / codex / shell。"
                     .dark_grey()
             );
         }
@@ -723,6 +744,13 @@ fn after_choose(
                 .into(),
         );
     }
+    if chosen.iter().any(|c| c.name == "codex-docker") {
+        notes.push(
+            "codex-docker：新分頁中執行 codex login --device-auth，在主機瀏覽器輸入代碼登入；\
+             或在主機設定環境變數 OPENAI_API_KEY"
+                .into(),
+        );
+    }
     if !env.git.as_deref().is_some_and(deps::git_ok) {
         notes.push("安裝 git 2.20 以上（建立 worktree 需要），安裝前無法開啟 agt".into());
     }
@@ -764,6 +792,7 @@ fn quick_available() -> Vec<&'static str> {
             "claude-docker",
             "agy-docker",
             "copilot-docker",
+            "codex-docker",
             "claude-docker-advisor",
         ]);
     }
@@ -872,6 +901,7 @@ mod tests {
             "claude-docker",
             "agy-docker",
             "copilot-docker",
+            "codex-docker",
         ] {
             let block = example_block(name).unwrap_or_else(|| panic!("找不到 {name}"));
             assert!(block.starts_with(&format!("[agents.{name}]\n")), "{block}");
@@ -911,6 +941,7 @@ mod tests {
             claude: true,
             agy: false,
             copilot: false,
+            codex: false,
             docker: Docker::Running("29".into()),
             sbx: Sbx::Ready("v0.53.0".into(), true),
             wsl: None,
@@ -978,6 +1009,7 @@ mod tests {
             claude: true,
             agy: false,
             copilot: false,
+            codex: false,
             docker: Docker::Running("29".into()),
             sbx: Sbx::Ready("v0.53.0".into(), true),
             wsl: None,
@@ -986,7 +1018,9 @@ mod tests {
         let all = candidates(&env);
         let chosen: Vec<&Candidate> = all
             .iter()
-            .filter(|c| c.name != "agy-docker" && c.name != "copilot-docker")
+            .filter(|c| {
+                c.name != "agy-docker" && c.name != "copilot-docker" && c.name != "codex-docker"
+            })
             .collect();
         write_config(&path, "", &chosen).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -1011,7 +1045,7 @@ mod tests {
         assert!(df.contains("COPY entrypoint.sh"));
         let ep = std::fs::read_to_string(dir.join("entrypoint.sh")).unwrap();
         assert!(ep.starts_with("#!/bin/sh") && !ep.contains('\r'));
-        for sub in ["agy", "copilot"] {
+        for sub in ["agy", "copilot", "codex"] {
             assert!(
                 write_docker_files(d.path(), sub)
                     .unwrap()

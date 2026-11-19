@@ -25,7 +25,7 @@ enum Cmd {
     Tui,
     /// 建立分頁（含 worktree）
     New {
-        /// claude | antigravity | copilot | shell，或設定檔中的其他 Agent
+        /// claude | antigravity | copilot | codex | shell，或設定檔中的其他 Agent
         agent: String,
         /// repo 或任意目錄，預設為目前目錄
         #[arg(long, default_value = ".")]

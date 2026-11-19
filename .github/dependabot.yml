@@ -16,5 +16,6 @@ updates:
       - /docker/claude
       - /docker/agy
       - /docker/copilot
+      - /docker/codex
     schedule:
       interval: weekly

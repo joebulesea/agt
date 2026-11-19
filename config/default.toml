@@ -50,6 +50,15 @@ idle_timeout_secs = 20
 new_args = ["--session-id", "{conversation}"]
 resume_args = ["--session-id", "{conversation}"]
 
+# OpenAI Codex CLI（npm install -g @openai/codex）。第一次啟動時依畫面指示登入，
+# 或在主機設定環境變數 OPENAI_API_KEY。
+[agents.codex]
+command = "codex"
+status_source = "pattern"
+waiting_patterns = ['Would you like to run the following command', 'Would you like to make the following edits', 'Do you trust the contents of this directory']
+idle_timeout_secs = 20
+resume_args = ["resume", "--last"]   # 接續這個目錄最近一次的對話
+
 [agents.shell]
 command = ""                     # 空字串 = 使用者預設 shell
 status_source = "none"
@@ -150,6 +159,23 @@ worktree = false
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]
 # auto_commit = true
 # update = ["docker", "run", "--rm", "-v", "agt-copilot-tools:/opt/agt-tools", "agt-copilot", "copilot", "--version"]
+# 在 Docker 容器中執行 OpenAI Codex CLI（沙箱）。先建置映像檔：docker build -t agt-codex docker/codex/
+# 第一次啟動時在分頁中執行 codex login --device-auth，依畫面上的網址與代碼在主機的瀏覽器登入；
+# 或在主機設定環境變數 OPENAI_API_KEY 略過登入。容器本身就是沙箱，所以略過 Codex 自己的核准與沙箱。
+# [agents.codex-docker]
+# command = "docker"
+# adapter = "codex"                # 沿用 Codex CLI 的狀態判斷規則
+# status_source = "pattern"
+# args = ["run", "-it", "--rm", "--init", "--name", "agt-{session}", "--label", "agt=1",
+#         "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=2048",
+#         "-v", "{cwd}:/work/{session}", "-v", "agt-codex-home:/home/node",
+#         "-v", "agt-codex-tools:/opt/agt-tools:ro", "-w", "/work/{session}",
+#         "-e", "OPENAI_API_KEY",
+#         "agt-codex", "codex", "--dangerously-bypass-approvals-and-sandbox"]
+# resume_args = ["resume", "--last"]
+# cleanup = ["docker", "rm", "-f", "agt-{session}"]
+# auto_commit = true
+# update = ["docker", "run", "--rm", "-v", "agt-codex-tools:/opt/agt-tools", "agt-codex", "codex", "--version"]
 #
 # 任何 Agent 都可以設定 update（daemon 啟動與新建分頁時執行；update_on_new = false 則只在 daemon 啟動時），
 # 例如主機上的 Claude Code：
