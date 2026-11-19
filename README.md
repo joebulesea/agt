@@ -40,6 +40,8 @@ agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docke
 agt daemon start|stop|restart|status
 ```
 
+`agt gc` 用來清理殘留的 worktree：它會比對 git worktree 與資料庫，列出已沒有對應分頁的副本，加上 `--prune` 才會實際刪除。
+
 TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
 
 設定檔範例與預設值見 [`config/default.toml`](config/default.toml)。同一個 Agent 想多一個選項（例如指定模型）時，用 `extends` 沿用既有設定、`extra_args` 追加參數：
