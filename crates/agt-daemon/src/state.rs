@@ -481,6 +481,10 @@ impl Daemon {
                             rollback(&created_wt);
                             return Err(e.into());
                         }
+                        // Agent 寫的 commit / PR 說明檔不出現在 diff，也不會被 commit
+                        if let Err(e) = agt_git::add_exclude(&wt, agt_git::NOTES_EXCLUDE) {
+                            tracing::warn!("無法加入 info/exclude：{e}");
+                        }
                         info.worktree = Some(wt.to_string_lossy().into_owned());
                         info.branch = Some(branch);
                         info.base_branch = Some(base);
@@ -1098,16 +1102,13 @@ impl Daemon {
             }
             FinishAction::Pr => {
                 let (wt, branch, base, repo) = need_worktree(&info)?;
-                self.auto_commit(&id, &info, &repo, &wt)?;
+                let subject = self.auto_commit(&id, &info, &repo, &wt)?;
                 let extra = self.cfg().general.sensitive_paths.clone();
                 confirm_sensitive(&repo, &wt, &base, &extra, "建立 PR", force)?;
-                let out = agt_git::create_pr(
-                    Path::new(&repo),
-                    Path::new(&wt),
-                    &branch,
-                    &base,
-                    &info.task,
-                )?;
+                // PR 標題：這次 commit 的標題（Agent 寫的 COMMIT_MSG），沒有時用任務名稱
+                let title = subject.unwrap_or_else(|| info.task.clone());
+                let out =
+                    agt_git::create_pr(Path::new(&repo), Path::new(&wt), &branch, &base, &title)?;
                 self.record(&id, "git", json!({"action": "pr", "result": out}));
                 self.store().set_finish_action(&id, "pr")?;
                 Ok(out)
@@ -1115,17 +1116,29 @@ impl Daemon {
         }
     }
 
-    /// Agent 設定了 `auto_commit` 時，收尾前先 commit worktree 中的所有變更。
-    fn auto_commit(&self, id: &str, info: &SessionInfo, repo: &str, wt: &str) -> OpResult<()> {
+    /// Agent 設定了 `auto_commit` 時，收尾前先 commit worktree 中的所有變更
+    /// （Agent 寫了 `.agt/COMMIT_MSG` 時用它當 commit 訊息，否則用任務名稱）。
+    /// 有 commit 時回傳 commit 訊息的標題。
+    fn auto_commit(
+        &self,
+        id: &str,
+        info: &SessionInfo,
+        repo: &str,
+        wt: &str,
+    ) -> OpResult<Option<String>> {
         let enabled = self
             .cfg()
             .agents
             .get(&info.agent)
             .is_some_and(|a| a.auto_commit);
-        if enabled && agt_git::commit_all(Path::new(repo), Path::new(wt), &info.task)? {
+        if !enabled {
+            return Ok(None);
+        }
+        let msg = agt_git::commit_all(Path::new(repo), Path::new(wt), &info.task)?;
+        if msg.is_some() {
             self.record(id, "git", json!({"action": "auto_commit"}));
         }
-        Ok(())
+        Ok(msg.as_deref().and_then(agt_git::subject_line))
     }
 
     pub fn diff(&self, id: &str) -> OpResult<String> {

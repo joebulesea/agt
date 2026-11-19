@@ -805,12 +805,123 @@ fn conflicted_files_wt(repo: &Path, wt: &Path) -> String {
     git_wt(repo, wt, &CONFLICT_ARGS).unwrap_or_default()
 }
 
-/// 把 worktree 中所有變更（含未追蹤的檔案）commit 起來；沒有變更時回傳 false。
-/// 給無法自行 commit 的 Agent（例如在容器中執行的）使用。
-pub fn commit_all(repo: &Path, worktree: &Path, message: &str) -> Result<bool> {
-    if !is_dirty_wt(repo, worktree, true)? {
-        return Ok(false);
+/// 無法自行 commit 的 Agent（例如在容器中執行的）寫說明檔的目錄（相對於 worktree）。
+pub const NOTES_DIR: &str = ".agt";
+/// commit 訊息：第一行是標題，空一行後是內文。
+pub const COMMIT_MSG_FILE: &str = "COMMIT_MSG";
+/// PR 說明（Markdown）。
+pub const PR_BODY_FILE: &str = "PR_BODY.md";
+/// 讓 git 忽略說明檔目錄的 info/exclude 規則。
+pub const NOTES_EXCLUDE: &str = "/.agt/";
+const NOTE_MAX: u64 = 64 * 1024;
+
+/// 讀取 Agent 寫在 `<worktree>/.agt/<name>` 的說明檔。沒有檔案、或內容只有空白時回傳 None。
+///
+/// 說明檔由 Agent 控制，只當成文字使用。拒絕：目錄或檔案是連結（可能指向主機上的其他檔案，例如金鑰，
+/// 內容會被當成 commit / PR 說明送出去）、不是一般檔案、超過 64KB、不是 UTF-8。
+/// 開檔時不跟隨連結，並以開啟後的 handle 再檢查一次，避免檢查與讀取之間被換成連結。
+pub fn read_note(worktree: &Path, name: &str) -> Result<Option<String>> {
+    use std::io::Read;
+    let refuse = |p: &Path, why: &str| GitError::Refused(format!("{} {why}，不處理", p.display()));
+    let dir = worktree.join(NOTES_DIR);
+    match std::fs::symlink_metadata(&dir) {
+        Err(_) => return Ok(None),
+        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
+            return Err(refuse(&dir, "是連結或不是目錄"));
+        }
+        Ok(_) => {}
     }
+    let path = dir.join(name);
+    match std::fs::symlink_metadata(&path) {
+        Err(_) => return Ok(None),
+        Ok(m) if m.file_type().is_symlink() => return Err(refuse(&path, "是連結")),
+        Ok(_) => {}
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc_o_nofollow());
+    }
+    let mut f = opts.open(&path).map_err(|_| refuse(&path, "無法開啟"))?;
+    let meta = f.metadata()?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(refuse(&path, "是連結或不是一般檔案"));
+    }
+    if meta.len() > NOTE_MAX {
+        return Err(refuse(&path, "超過 64KB，不像是說明文字"));
+    }
+    let mut buf = Vec::new();
+    f.by_ref().take(NOTE_MAX + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > NOTE_MAX {
+        return Err(refuse(&path, "超過 64KB，不像是說明文字"));
+    }
+    let text = String::from_utf8(buf).map_err(|_| refuse(&path, "不是 UTF-8 文字"))?;
+    let text = text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&text)
+        .replace("\r\n", "\n");
+    Ok(if text.trim().is_empty() {
+        None
+    } else {
+        Some(text.trim().to_string() + "\n")
+    })
+}
+
+#[cfg(unix)]
+fn libc_o_nofollow() -> i32 {
+    // 不為了一個常數引入 libc：Linux 0o400000、macOS / BSD 0x100
+    if cfg!(target_os = "linux") {
+        0o400000
+    } else {
+        0x100
+    }
+}
+
+/// 刪除用過的說明檔（下一輪由 Agent 重寫）；失敗只記錄。
+pub fn remove_note(worktree: &Path, name: &str) {
+    let p = worktree.join(NOTES_DIR).join(name);
+    if let Err(e) = std::fs::remove_file(&p) {
+        tracing::warn!("無法刪除 {}：{e}", p.display());
+    }
+}
+
+/// 把說明文字寫到可信的 gitdir 裡，給 `git commit -F` / `gh --body-file` 使用
+/// （不直接傳 worktree 裡的檔案：讀取之後 Agent 仍可能把它換掉）。
+fn stage_note(gitdir: &Path, name: &str, text: &str) -> Result<PathBuf> {
+    let p = gitdir.join(name);
+    std::fs::write(&p, text)?;
+    Ok(p)
+}
+
+/// 說明檔第一個非空白行，當成標題。
+pub fn subject_line(message: &str) -> Option<String> {
+    message
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
+/// 把 worktree 中所有變更（含未追蹤的檔案）commit 起來；沒有變更時回傳 None，
+/// 有 commit 時回傳實際使用的 commit 訊息。給無法自行 commit 的 Agent（例如在容器中執行的）使用。
+///
+/// Agent 寫了 `.agt/COMMIT_MSG` 時用它當 commit 訊息（commit 後刪除），否則用 `fallback`。
+/// `.agt/` 一律不 commit（加入主 repo 的 info/exclude）。
+pub fn commit_all(repo: &Path, worktree: &Path, fallback: &str) -> Result<Option<String>> {
+    let gitdir = trusted_gitdir(repo, worktree)?;
+    add_exclude(worktree, NOTES_EXCLUDE)?;
+    if !is_dirty_wt(repo, worktree, true)? {
+        return Ok(None);
+    }
+    let note = read_note(worktree, COMMIT_MSG_FILE)?;
     git_wt(repo, worktree, &["add", "-A"])?;
     let nested = new_gitlinks(repo, worktree)?;
     if !nested.is_empty() {
@@ -825,8 +936,30 @@ pub fn commit_all(repo: &Path, worktree: &Path, message: &str) -> Result<bool> {
             nested.join("、")
         )));
     }
-    git_wt(repo, worktree, &["commit", "-m", message])?;
-    Ok(true)
+    let message = match note {
+        Some(text) => {
+            let staged = stage_note(&gitdir, "AGT_COMMIT_MSG", &text)?;
+            let r = git_wt(
+                repo,
+                worktree,
+                &[
+                    "commit",
+                    "--cleanup=whitespace",
+                    "-F",
+                    &staged.to_string_lossy(),
+                ],
+            );
+            let _ = std::fs::remove_file(&staged);
+            r?;
+            remove_note(worktree, COMMIT_MSG_FILE);
+            text
+        }
+        None => {
+            git_wt(repo, worktree, &["commit", "-m", fallback])?;
+            fallback.to_string()
+        }
+    };
+    Ok(Some(message))
 }
 
 /// index 裡有、HEAD 沒有的 gitlink（`git add -A` 把含有 `.git` 的子目錄當成 submodule 加入）。
@@ -1047,10 +1180,129 @@ pub fn create_pr(
             worktree.display()
         ));
     }
+    // 先讀說明檔、確認 PR 的目標：不合規定（連結、base 不在 remote 上等）時在 push 之前就停下
+    let body = read_note(worktree, PR_BODY_FILE)?;
+    let (pr_base, note) = resolve_pr_base(repo, worktree, &remote, base)?;
+    let base = pr_base.as_str();
     git_wt(repo, worktree, &["push", "-u", &remote, branch])?;
+    let staged = match &body {
+        Some(text) => Some(stage_note(&gitdir, "AGT_PR_BODY.md", text)?),
+        None => None,
+    };
+    let r = open_or_update_pr(worktree, &gitdir, branch, base, title, staged.as_deref());
+    if let Some(p) = &staged {
+        let _ = std::fs::remove_file(p);
+    }
+    if r.is_ok() && body.is_some() {
+        remove_note(worktree, PR_BODY_FILE);
+    }
+    r.map(|out| match note {
+        Some(n) => format!("{out}\n{n}"),
+        None => out,
+    })
+}
+
+/// PR 的目標 branch。分頁的 base 常是主 repo 當時所在、只在本機的 branch（例如還沒 push 的 feat/…），
+/// GitHub 上沒有它就無法建立 PR：這時若它的內容都已在 remote 的預設 branch 裡，改用預設 branch
+/// （PR 的內容仍只有這個分頁的 commit），並回傳說明；否則拒絕（避免 PR 混進 base 上未發布的 commit）。
+fn resolve_pr_base(
+    repo: &Path,
+    worktree: &Path,
+    remote: &str,
+    base: &str,
+) -> Result<(String, Option<String>)> {
+    let heads = git_wt(
+        repo,
+        worktree,
+        &[
+            "ls-remote",
+            "--heads",
+            remote,
+            &format!("refs/heads/{base}"),
+        ],
+    )?;
+    if !heads.trim().is_empty() {
+        return Ok((base.to_string(), None));
+    }
+    let head = git_wt(repo, worktree, &["ls-remote", "--symref", remote, "HEAD"])?;
+    let default = head.lines().find_map(|l| {
+        l.strip_prefix("ref: refs/heads/")
+            .and_then(|r| r.strip_suffix("\tHEAD"))
+            .map(str::to_string)
+    });
+    let sha = head
+        .lines()
+        .find(|l| !l.starts_with("ref:") && l.ends_with("\tHEAD"))
+        .and_then(|l| l.split('\t').next())
+        .map(str::to_string);
+    if let (Some(default), Some(sha)) = (default, sha)
+        && default != base
+        && git_wt(repo, worktree, &["merge-base", "--is-ancestor", base, &sha]).is_ok()
+    {
+        let note = format!(
+            "（{base} 不在 {remote} 上，它的內容都已在 {default} 中，PR 改以 {default} 為目標）"
+        );
+        return Ok((default, Some(note)));
+    }
+    Err(GitError::Refused(format!(
+        "這個分頁的 base branch {base} 不在 {remote} 上，而且有 {remote} 還沒有的 commit，無法建立 PR。\
+         請先 push {base}（git push -u {remote} {base}）再收尾 → pr。"
+    )))
+}
+
+/// 已有開啟中的 PR：push 已經更新了它，有新的說明時改寫說明；否則建立 PR。
+fn open_or_update_pr(
+    worktree: &Path,
+    gitdir: &Path,
+    branch: &str,
+    base: &str,
+    title: &str,
+    body_file: Option<&Path>,
+) -> Result<String> {
+    let view = gh_run(
+        worktree,
+        gitdir,
+        &[
+            "pr",
+            "view",
+            branch,
+            "--json",
+            "url,state",
+            "--jq",
+            ".state + \" \" + .url",
+        ],
+    );
+    if let Ok(line) = &view
+        && let Some(url) = line.strip_prefix("OPEN ")
+    {
+        if let Some(f) = body_file {
+            gh_run(
+                worktree,
+                gitdir,
+                &["pr", "edit", branch, "--body-file", &f.to_string_lossy()],
+            )?;
+            return Ok(format!("已 push 並更新 PR 說明：{url}"));
+        }
+        return Ok(format!("已 push，PR 已更新：{url}"));
+    }
+    let mut args = vec![
+        "pr", "create", "--base", base, "--head", branch, "--title", title,
+    ];
+    let body_path;
+    match body_file {
+        Some(f) => {
+            body_path = f.to_string_lossy().into_owned();
+            args.extend(["--body-file", &body_path]);
+        }
+        None => args.push("--fill"),
+    }
+    gh_run(worktree, gitdir, &args)
+}
+
+fn gh_run(worktree: &Path, gitdir: &Path, args: &[&str]) -> Result<String> {
     let mut gh = Command::new("gh");
     gh.current_dir(worktree)
-        .env("GIT_DIR", &gitdir)
+        .env("GIT_DIR", gitdir)
         .env("GIT_WORK_TREE", worktree)
         // gh 自己呼叫的 git 也不能進巢狀 repo、不能啟動 fsmonitor（-c 只管我們直接執行的 git）
         .env("GIT_CONFIG_COUNT", "3")
@@ -1060,9 +1312,7 @@ pub fn create_pr(
         .env("GIT_CONFIG_VALUE_1", "all")
         .env("GIT_CONFIG_KEY_2", "submodule.recurse")
         .env("GIT_CONFIG_VALUE_2", "false")
-        .args([
-            "pr", "create", "--base", base, "--head", branch, "--title", title, "--fill",
-        ])
+        .args(args)
         .stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -1074,7 +1324,10 @@ pub fn create_pr(
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         Err(GitError::Command {
-            args: "gh pr create".into(),
+            args: format!(
+                "gh {}",
+                args.iter().take(2).copied().collect::<Vec<_>>().join(" ")
+            ),
             stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
         })
     }
@@ -1165,7 +1418,7 @@ mod tests {
         let wts = tempfile::tempdir().unwrap();
         let wt = wts.path().join("w2");
         add_worktree(root, &wt, "agt/test/y-000002", "main").unwrap();
-        assert!(!commit_all(root, &wt, "沒有變更").unwrap());
+        assert!(commit_all(root, &wt, "沒有變更").unwrap().is_none());
         std::fs::write(wt.join("new.txt"), "n\n").unwrap();
         std::fs::write(wt.join("a.txt"), "changed\n").unwrap();
         assert!(
@@ -1179,7 +1432,10 @@ mod tests {
             )
             .is_err()
         );
-        assert!(commit_all(root, &wt, "沙箱的修改").unwrap());
+        assert_eq!(
+            commit_all(root, &wt, "沙箱的修改").unwrap().as_deref(),
+            Some("沙箱的修改")
+        );
         assert!(!is_dirty_wt(root, &wt, true).unwrap());
         merge_into_base(
             root,
@@ -1195,6 +1451,112 @@ mod tests {
             std::fs::read_to_string(root.join("a.txt")).unwrap(),
             "changed\n"
         );
+    }
+
+    #[test]
+    fn commit_all_uses_agent_commit_msg_and_never_commits_notes() {
+        let repo = init_repo();
+        let root = repo.path();
+        let wts = tempfile::tempdir().unwrap();
+        let wt = wts.path().join("w-notes");
+        add_worktree(root, &wt, "agt/test/n-000003", "main").unwrap();
+        std::fs::write(wt.join("x.txt"), "x\n").unwrap();
+        let notes = wt.join(NOTES_DIR);
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(
+            notes.join(COMMIT_MSG_FILE),
+            "\u{feff}新增 x\r\n\r\n# 不是註解，要保留\r\n",
+        )
+        .unwrap();
+        std::fs::write(notes.join(PR_BODY_FILE), "## 說明\n").unwrap();
+
+        let msg = commit_all(root, &wt, "任務名稱").unwrap().unwrap();
+        assert_eq!(subject_line(&msg).as_deref(), Some("新增 x"));
+        let log = git(root, &["log", "-1", "--format=%B", "agt/test/n-000003"]).unwrap();
+        assert_eq!(log.trim(), "新增 x\n\n# 不是註解，要保留");
+        // .agt/ 沒有被 commit；COMMIT_MSG 用完刪除，PR_BODY 留給建立 PR
+        let files = git(root, &["ls-tree", "-r", "--name-only", "agt/test/n-000003"]).unwrap();
+        assert!(!files.contains(".agt"), "{files}");
+        assert!(!notes.join(COMMIT_MSG_FILE).exists());
+        assert!(notes.join(PR_BODY_FILE).exists());
+        assert!(!is_dirty_wt(root, &wt, true).unwrap());
+
+        // 只改了說明檔：沒有東西要 commit
+        std::fs::write(notes.join(COMMIT_MSG_FILE), "x\n").unwrap();
+        assert!(commit_all(root, &wt, "任務名稱").unwrap().is_none());
+
+        // 說明檔只有空白：改用任務名稱
+        std::fs::write(wt.join("y.txt"), "y\n").unwrap();
+        std::fs::write(notes.join(COMMIT_MSG_FILE), " \n\n").unwrap();
+        assert_eq!(
+            commit_all(root, &wt, "任務名稱").unwrap().as_deref(),
+            Some("任務名稱")
+        );
+    }
+
+    #[test]
+    fn pr_base_falls_back_to_remote_default_only_when_safe() {
+        let repo = init_repo();
+        let root = repo.path();
+        let remote_dir = tempfile::tempdir().unwrap();
+        let remote = remote_dir.path().join("origin.git");
+        git(
+            root,
+            &["clone", "-q", "--bare", ".", &remote.to_string_lossy()],
+        )
+        .unwrap();
+        git(
+            root,
+            &["remote", "add", "origin", &remote.to_string_lossy()],
+        )
+        .unwrap();
+        // 只在本機的 feat，內容都已在 origin/main 裡
+        git(root, &["branch", "feat"]).unwrap();
+        let wts = tempfile::tempdir().unwrap();
+        let wt = wts.path().join("w-base");
+        add_worktree(root, &wt, "agt/test/b-000004", "feat").unwrap();
+
+        let (b, note) = resolve_pr_base(root, &wt, "origin", "main").unwrap();
+        assert_eq!((b.as_str(), note), ("main", None));
+        let (b, note) = resolve_pr_base(root, &wt, "origin", "feat").unwrap();
+        assert_eq!(b, "main");
+        assert!(note.unwrap().contains("feat"));
+
+        // feat 多了 origin 沒有的 commit：拒絕，不能讓 PR 混進去
+        git(root, &["checkout", "-q", "feat"]).unwrap();
+        std::fs::write(root.join("f.txt"), "f\n").unwrap();
+        git(root, &["add", "."]).unwrap();
+        git(root, &["commit", "-q", "-m", "local only"]).unwrap();
+        assert!(resolve_pr_base(root, &wt, "origin", "feat").is_err());
+    }
+
+    #[test]
+    fn read_note_refuses_bad_files() {
+        let d = tempfile::tempdir().unwrap();
+        let wt = d.path();
+        assert!(read_note(wt, COMMIT_MSG_FILE).unwrap().is_none());
+        let notes = wt.join(NOTES_DIR);
+        std::fs::create_dir_all(&notes).unwrap();
+        assert!(read_note(wt, COMMIT_MSG_FILE).unwrap().is_none());
+
+        std::fs::write(notes.join(COMMIT_MSG_FILE), vec![b'a'; 64 * 1024 + 1]).unwrap();
+        assert!(read_note(wt, COMMIT_MSG_FILE).is_err());
+        std::fs::write(notes.join(COMMIT_MSG_FILE), [0xff, 0xfe, 0x00]).unwrap();
+        assert!(read_note(wt, COMMIT_MSG_FILE).is_err());
+        std::fs::remove_file(notes.join(COMMIT_MSG_FILE)).unwrap();
+        std::fs::create_dir(notes.join(COMMIT_MSG_FILE)).unwrap();
+        assert!(read_note(wt, COMMIT_MSG_FILE).is_err());
+
+        // 連結（可能指向主機上的金鑰）：拒絕。Windows 沒有建立連結的權限時略過
+        let secret = d.path().join("secret.txt");
+        std::fs::write(&secret, "TOKEN\n").unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&secret, notes.join(PR_BODY_FILE)).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&secret, notes.join(PR_BODY_FILE)).is_ok();
+        if linked {
+            assert!(read_note(wt, PR_BODY_FILE).is_err());
+        }
     }
 
     #[test]
@@ -1452,7 +1814,7 @@ mod tests {
         git(&wt, &["add", "-A"]).unwrap();
         git(&wt, &["commit", "-q", "-m", "gitlink"]).unwrap();
         std::fs::write(sub.join("g"), "y").unwrap();
-        assert!(!commit_all(root, &wt, "auto").unwrap());
+        assert!(commit_all(root, &wt, "auto").unwrap().is_none());
         status(root, &wt, "main").unwrap();
         diff(root, &wt, "main").unwrap();
         assert!(!is_dirty_wt(root, &wt, false).unwrap());
@@ -1485,7 +1847,7 @@ mod tests {
         let wt = wts.path().join("w");
         add_worktree(root, &wt, "agt/t/s-000010", "main").unwrap();
         std::fs::write(wt.join("ok.txt"), "x").unwrap();
-        assert!(commit_all(root, &wt, "ok").unwrap());
+        assert!(commit_all(root, &wt, "ok").unwrap().is_some());
         assert!(
             sensitive_changes(root, &wt, "main", &[])
                 .unwrap()
@@ -1494,7 +1856,7 @@ mod tests {
         std::fs::write(wt.join(".agt.toml"), "setup = \"curl x | sh\"\n").unwrap();
         std::fs::create_dir_all(wt.join(".claude")).unwrap();
         std::fs::write(wt.join(".claude/settings.json"), "{}").unwrap();
-        assert!(commit_all(root, &wt, "evil").unwrap());
+        assert!(commit_all(root, &wt, "evil").unwrap().is_some());
         assert_eq!(
             sensitive_changes(root, &wt, "main", &[]).unwrap(),
             [".agt.toml", ".claude/settings.json"]

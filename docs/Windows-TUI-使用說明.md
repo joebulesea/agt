@@ -265,7 +265,7 @@ agt gc --prune             # 清理：有未 commit 變更的副本會保留，�
 
 | 項目 | 說明 |
 | --- | --- |
-| git | 容器內**無法使用 git**（worktree 的 `.git` 指向主機路徑）。Claude 只修改檔案；設定 `auto_commit = true` 後，收尾選 merge 或 pr 時，agt 會先在主機上把所有變更 commit（訊息為任務名稱），再合併 |
+| git | 容器內**無法使用 git**（worktree 的 `.git` 指向主機路徑）。Claude 只修改檔案；設定 `auto_commit = true` 後，收尾選 merge 或 pr 時，agt 會先在主機上把所有變更 commit（訊息為 Claude 寫的 `.agt/COMMIT_MSG`，沒有時用任務名稱），再合併或建立 PR，見下方「用 Claude 寫的說明 commit 並建立 PR」 |
 | 狀態燈號 | 容器內無法使用 hooks，改用畫面規則判斷，準確度比一般 `claude` 分頁略低 |
 | 關閉分頁 | 會執行 `cleanup` 指令（`docker rm -f agt-<id>`）移除容器；daemon 結束時也會清掉 |
 | 網路 | 容器可以連外網，沒有限制 |
@@ -274,6 +274,19 @@ agt gc --prune             # 清理：有未 commit 變更的副本會保留，�
 | Claude 版本 | 設定 `update`（見範例）後，agt daemon 啟動時會在背景檢查 npm 上的最新版並安裝到 volume `agt-claude-tools`；**每次新建分頁**時也會先在分頁中執行一次同樣的更新（畫面上會看到 `[agt] 檢查 Agent 更新…`，已是最新版時只多花幾秒），再啟動 Claude Code；沒網路或更新失敗時直接用現有版本。不想在新建分頁時更新可設定 `update_on_new = false`。分頁內的容器把這個 volume 掛成唯讀，Agent 改不到它；按 `R` 重新啟動不會更新。沒有掛載 `agt-claude-tools` 的舊設定會使用映像檔內建的版本（重新建置映像檔才會更新） |
 | 安全性 | 範例的 `--cap-drop=ALL`、`--security-opt=no-new-privileges`、`--pids-limit` 限制容器的權限與行程數；Agent 的執行檔在分頁中唯讀。`agt-claude-home` 是所有分頁共用且可寫的家目錄，要完全隔離的做法與 token 的注意事項見 `config/default.toml` 中 `claude-docker` 範例上方的說明。收尾（merge / pr）時，若分頁改了合併後會自動執行的設定檔（`.claude/`、`.agt.toml`、`.github/workflows/` 等），agt 會先列出來要求確認 |
 
+### 用 Claude 寫的說明 commit 並建立 PR
+
+`config/default.toml` 範例的 system prompt 會請 Claude 在每次修改後寫兩個檔案：`.agt/COMMIT_MSG`（commit 訊息，第一行是標題）與 `.agt/PR_BODY.md`（PR 說明）。舊的設定要自行把範例中 `--append-system-prompt` 後面那段文字換成新版。
+
+Claude 改完後，在 agt 中按收尾選 **pr** 即可（需要 `auto_commit = true` 與 [GitHub CLI](https://cli.github.com/)）：
+
+1. 用 `.agt/COMMIT_MSG` commit 所有變更（沒有這個檔案時用任務名稱），commit 後刪除該檔。
+2. push 後建立 PR：標題是 commit 訊息的第一行，說明用 `.agt/PR_BODY.md`（沒有時由 gh 從 commit 填入），成功後刪除該檔。
+3. 這個 branch 已經有開啟中的 PR 時（review 後的第二輪），只 push，有新的 `PR_BODY.md` 時更新 PR 說明。分頁不會被關閉，可以繼續請 Claude 修改、再選一次 pr。
+
+`.agt/` 已加入主 repo 的 `.git/info/exclude`，不會出現在 diff 中，也不會被 commit。說明檔只會被當成文字交給 git / gh，不會被執行；檔案是連結、不是一般檔案、超過 64KB 或不是 UTF-8 時，agt 會拒絕並停止。
+
+不開 TUI 時，也可以在主機上執行 `C:\claude\agt\docker\claude\agt-pr.cmd <worktree 路徑>`，效果相同（詳見 [agt-pr 操作步驟](agt-pr-操作步驟.md)）。
 設定中可用的變數：`{cwd}` = worktree 路徑、`{session}` = 分頁 id、`{gitdir}` = 主 repo 的 `.git` 目錄（見下方 claude-sbx）。`adapter = "claude"` 讓自訂 Agent 沿用 Claude Code 的狀態判斷。`{conversation}` = 分頁目前的對話 ID：`claude-docker` 設定 `new_args = ["--session-id", "{conversation}"]` 與 `resume_args = ["--resume", "{conversation}"]` 後，按 `R` 會接續該分頁自己的對話（見第 5 節）。
 
 ### Docker Sandboxes（claude-sbx）
