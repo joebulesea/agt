@@ -1,0 +1,71 @@
+name: Docker images
+
+# Dockerfile 與安裝腳本有改動時建置並做冒煙測試；每週再跑一次：
+# Agent 的版本預設是 latest（npm 套件、安裝腳本），上游改版可能讓映像檔悄悄壞掉，要在使用者遇到之前發現。
+on:
+  pull_request:
+    paths:
+      - "docker/**"
+      - "scripts/**"
+      - ".github/workflows/docker.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docker/**"
+      - "scripts/**"
+      - ".github/workflows/docker.yml"
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: claude,  dir: docker/claude,  check: "claude --version" }
+          - { name: copilot, dir: docker/copilot, check: "copilot --version" }
+          - { name: codex,   dir: docker/codex,   check: "codex --version" }
+          # agy 沒有公布版本化的下載位置與雜湊（見 docs/TODO-安全性強化.md），安裝腳本壞掉時這裡會先發現
+          - { name: agy,     dir: docker/agy,     check: "agy --version" }
+          - { name: dev,     dir: docker,         check: "cargo --version && x86_64-w64-mingw32-gcc --version" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 建置
+        run: docker build -t "agt-${{ matrix.name }}" "${{ matrix.dir }}"
+      - name: 冒煙測試：Agent 可執行
+        # 跳過 entrypoint（它會連網更新 Agent），直接確認執行檔存在
+        run: docker run --rm --entrypoint sh "agt-${{ matrix.name }}" -c '${{ matrix.check }}'
+      - name: 冒煙測試：非 root 身分、entrypoint 存在
+        if: matrix.name != 'dev'
+        run: |
+          uid=$(docker run --rm --entrypoint id "agt-${{ matrix.name }}" -u)
+          echo "uid=$uid"
+          [ "$uid" != 0 ] || { echo "::error::映像檔以 root 執行（--dangerously-skip-permissions 不允許 root）"; exit 1; }
+          docker run --rm --entrypoint sh "agt-${{ matrix.name }}" -c 'test -x /usr/local/bin/agt-entrypoint && sh -n /usr/local/bin/agt-entrypoint'
+      - name: 冒煙測試：git 可用（分頁內需要唯讀使用 git）
+        if: matrix.name != 'dev'
+        run: docker run --rm --entrypoint sh "agt-${{ matrix.name }}" -c 'git --version'
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shell 腳本語法檢查
+        run: |
+          for f in docker/*/entrypoint.sh docker/*.sh scripts/*.sh; do
+            echo "sh -n $f"
+            sh -n "$f"
+          done
+      - name: ShellCheck（只看警告以上）
+        run: shellcheck --severity=warning docker/*/entrypoint.sh docker/*.sh scripts/install.sh

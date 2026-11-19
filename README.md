@@ -24,6 +24,18 @@ docker\publish.cmd [--restart]  # 同上，在 cmd 執行或雙擊（會自動�
 
 TUI 冒煙測試（在容器中以 pty + pyte 驅動 TUI 並截取畫面）：`python3 tests/tui_smoke.py <bin 目錄>`。
 
+## 安裝（發布版）
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.sh | sh     # Linux x64
+```
+
+```powershell
+irm https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.ps1 | iex           # Windows x64
+```
+
+腳本會下載最新 Release、用 `SHA256SUMS` 核對後安裝（Linux：`~/.local/bin`；Windows：`%APPDATA%\agt`，加入使用者 PATH），最後執行 `agt setup`。用環境變數 `AGT_REPO`（`<owner>/<repo>`，預設 `joebulesea/agt`；fork 要測試時改成自己的）、`AGT_VERSION`、`AGT_NO_SETUP=1` 調整。之後用 `agt update` 自我更新（需要系統有 `curl` 與 `tar`；Windows 10 以後內建）。發布方式：把 `Cargo.toml` 的版號改好，打 tag `vX.Y.Z` 並推送，`.github/workflows/release.yml` 會建置各平台壓縮檔與 `SHA256SUMS` 並發布。
+
 ## 使用
 
 ```sh
@@ -38,6 +50,10 @@ agt kill <id> [--cleanup]
 agt restart <id> [--fresh]             # daemon 重啟後，在同一個 worktree 重新啟動 Agent（接續上次的對話；--fresh 開新對話）
 agt gc [--prune]                       # 比對 git worktree 與資料庫，列出 / 清理留下的 worktree 副本
 agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docker Sandboxes，加入 Agent（第一次執行 agt 時自動執行）
+agt doctor                             # 檢查執行環境（daemon、設定檔、git、Docker、gh…）並說明下一步；有失敗項目時 exit 1
+agt config check [--file F] [--repo DIR]   # 檢查設定檔（不需要 daemon）：錯誤含行號，另列出找不到的指令、拼錯的變數等警告
+agt update [--check] [--version 0.3.0] [-y]   # 從 GitHub Release 更新 agt / agtd（核對 SHA256、重新啟動 daemon）
+agt uninstall [--dry-run] [--purge] [--worktrees] [-y]   # 解除安裝（預設保留設定、資料與 worktree）
 agt daemon start|stop|restart|status
 ```
 

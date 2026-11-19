@@ -160,12 +160,20 @@ pub fn update_script(cmd: &[String]) -> Option<String> {
         return None;
     }
     Some(if cfg!(windows) {
-        let line = cmd.iter().map(|a| ps_quote(a)).collect::<Vec<_>>().join(" ");
+        let line = cmd
+            .iter()
+            .map(|a| ps_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
             "Write-Host '[agt] 檢查 Agent 更新…'\n& {line}\nif (-not $?) {{ Write-Host '[agt] 更新指令失敗，使用現有版本' }}\n$null = 0"
         )
     } else {
-        let line = cmd.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ");
+        let line = cmd
+            .iter()
+            .map(|a| sh_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
             "echo '[agt] 檢查 Agent 更新…'\n{line} || echo \"[agt] 更新指令失敗（exit $?），使用現有版本\""
         )

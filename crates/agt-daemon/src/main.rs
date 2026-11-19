@@ -1,5 +1,6 @@
 //! agtd：持有所有 PTY 與畫面狀態；TUI 只是一個可以隨時關閉、重新連線的顯示端。
 
+mod check;
 mod config;
 mod server;
 mod state;
@@ -17,6 +18,11 @@ use std::time::Duration;
 const MAX_CONNECTIONS: usize = 64;
 
 fn main() -> anyhow::Result<()> {
+    // `agtd --check-config`：只檢查設定檔，不取得 lock、不啟動 daemon（`agt config check` 呼叫它）
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--check-config") {
+        std::process::exit(check::run(&args[1..]));
+    }
     let foreground = std::env::args().any(|a| a == "--foreground");
     let mut paths = Paths::detect();
     // 舊版把資料放在 %LOCALAPPDATA%\agt：第一次用新版啟動時搬到 %APPDATA%\agt\data

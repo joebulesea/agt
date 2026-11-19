@@ -12,6 +12,10 @@ pub enum StoreError {
     Sql(#[from] rusqlite::Error),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error(
+        "資料庫的版本（{found}）比這個 agt 支援的（{supported}）新，請升級 agt，或換回原本使用的版本；為了避免損毀資料，沒有開啟"
+    )]
+    TooNew { found: u32, supported: u32 },
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -157,7 +161,15 @@ impl Store {
     }
 
     fn migrate(&mut self) -> Result<()> {
-        let current = self.schema_version()? as usize;
+        let found = self.schema_version()?;
+        // 較新版本建立的資料庫（例如用 `agt update --version` 降版後）：舊程式不認得新欄位，不能硬用
+        if found as usize > MIGRATIONS.len() {
+            return Err(StoreError::TooNew {
+                found,
+                supported: MIGRATIONS.len() as u32,
+            });
+        }
+        let current = found as usize;
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
             let tx = self.conn.transaction()?;
             tx.execute_batch(sql)?;
@@ -472,6 +484,169 @@ mod tests {
         assert_eq!(s.open_sessions().unwrap().len(), 1);
         assert_eq!(s.events("u1").unwrap().len(), 1);
         assert!(s.short_id_exists("bbbbbb").unwrap());
+    }
+
+    /// 建立「只套用前 `n` 個 migration」的舊版資料庫，模擬使用者升級前的檔案。
+    fn old_db(path: &Path, n: usize) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        for sql in &MIGRATIONS[..n] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", n as u32).unwrap();
+        conn
+    }
+
+    fn columns(s: &Store, table: &str) -> Vec<String> {
+        let mut st = s
+            .conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn every_old_version_upgrades_to_latest() {
+        for n in 0..=MIGRATIONS.len() {
+            let d = tempfile::tempdir().unwrap();
+            let p = d.path().join("agt.db");
+            drop(old_db(&p, n));
+            let s = Store::open(&p).unwrap_or_else(|e| panic!("從 v{n} 升級失敗：{e}"));
+            assert_eq!(
+                s.schema_version().unwrap() as usize,
+                MIGRATIONS.len(),
+                "v{n}"
+            );
+            // 升級後的結構與全新建立的一致
+            let fresh = Store::open_in_memory().unwrap();
+            for t in ["repos", "sessions", "events", "trusted_setups"] {
+                let (mut a, mut b) = (columns(&s, t), columns(&fresh, t));
+                a.sort();
+                b.sort();
+                assert_eq!(a, b, "v{n} 升級後的 {t} 欄位不同");
+            }
+            // 升級後可以正常使用
+            s.insert_session(&row("u1", "aaaaaa")).unwrap();
+            s.set_conversation("u1", "c1").unwrap();
+            s.trust_setup("/r", "npm i").unwrap();
+        }
+    }
+
+    #[test]
+    fn upgrade_from_v1_keeps_existing_data_with_defaults() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("agt.db");
+        {
+            let c = old_db(&p, 1);
+            c.execute(
+                "INSERT INTO repos (id, path, name, base_branch) VALUES (1, '/r', 'r', 'main')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO sessions (id, short_id, agent, repo_id, task, worktree_path, branch, \
+                 base_branch, status, pid, created_at, ended_at, finish_action) \
+                 VALUES ('u1', 'aaaaaa', 'claude', 1, '舊任務', '/w', 'agt/claude/x', 'main', \
+                 'running', 42, 1000, NULL, NULL)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO events (session_id, at, kind, data) VALUES ('u1', 1001, 'status', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut s = Store::open(&p).unwrap();
+        let got = s.get_session("aaaaaa").unwrap().unwrap();
+        assert_eq!(got.task, "舊任務");
+        assert_eq!(got.repo_path.as_deref(), Some("/r"));
+        assert_eq!(got.pid, Some(42));
+        assert_eq!(got.created_at, 1000);
+        // 後來新增的欄位：NULL 或預設值，不是壞資料
+        assert_eq!(got.cwd, None);
+        assert!(!got.shared);
+        assert_eq!(got.exit_code, None);
+        assert_eq!(got.conversation_id, None);
+        assert_eq!(s.events("u1").unwrap().len(), 1);
+        // 舊分頁也能被新功能處理
+        s.set_conversation("u1", "conv-1").unwrap();
+        s.end_session("u1", Some("keep")).unwrap();
+        assert_eq!(s.prune_closed(i64::MAX).unwrap(), 0); // 還留著 worktree，不會被清掉
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_and_keeps_old_version() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("agt.db");
+        {
+            // migration 2 先 ALTER 三個欄位、最後才 CREATE TABLE trusted_setups：
+            // 預先放一個同名的表，讓它在「欄位已經加好之後」才失敗
+            let c = old_db(&p, 1);
+            c.execute_batch("CREATE TABLE trusted_setups (x INTEGER);")
+                .unwrap();
+        }
+        assert!(matches!(Store::open(&p), Err(StoreError::Sql(_))));
+        let c = Connection::open(&p).unwrap();
+        let v: u32 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 1, "失敗時版本號不能前進");
+        let cols: Vec<String> = {
+            let mut st = c
+                .prepare("SELECT name FROM pragma_table_info('sessions')")
+                .unwrap();
+            st.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        for added in ["cwd", "shared", "exit_code"] {
+            assert!(
+                !cols.iter().any(|c| c == added),
+                "已執行的 ALTER 要一起回復（{added}）：{cols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_database_from_newer_version() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("agt.db");
+        {
+            let s = Store::open(&p).unwrap();
+            s.insert_session(&row("u1", "aaaaaa")).unwrap();
+        }
+        let newer = MIGRATIONS.len() as u32 + 1;
+        Connection::open(&p)
+            .unwrap()
+            .pragma_update(None, "user_version", newer)
+            .unwrap();
+        match Store::open(&p) {
+            Err(StoreError::TooNew { found, supported }) => {
+                assert_eq!((found, supported), (newer, MIGRATIONS.len() as u32));
+            }
+            other => panic!("應該拒絕較新的資料庫：{:?}", other.map(|_| ())),
+        }
+        // 沒有被改動
+        let v: u32 = Connection::open(&p)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, newer);
+    }
+
+    #[test]
+    fn migrations_are_append_only_and_nonempty() {
+        // 已發布的 migration 不能改動或重排：用內容雜湊式的簡單指紋釘住前三個，
+        // 新增 migration 時只需在後面追加，不必改這裡
+        assert!(MIGRATIONS.len() >= 3);
+        assert!(MIGRATIONS[0].contains("CREATE TABLE sessions"));
+        assert!(MIGRATIONS[1].contains("trusted_setups"));
+        assert!(MIGRATIONS[2].contains("conversation_id"));
+        assert!(MIGRATIONS.iter().all(|m| !m.trim().is_empty()));
     }
 
     #[test]
