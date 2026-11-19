@@ -1,4 +1,4 @@
-//! 以輸出規則判斷狀態的通用 Adapter（Antigravity CLI、GitHub Copilot CLI 與自訂 Agent）。
+//! 以輸出規則判斷狀態的通用 Adapter（Antigravity CLI、GitHub Copilot CLI、OpenAI Codex CLI 與自訂 Agent）。
 //!
 //! - 符合 `waiting_patterns` 且輸出已靜止 500 ms → WaitingInput（規格 6.5）
 //! - 超過 `idle_timeout_secs` 沒有輸出且未符合任何規則 → Idle
@@ -15,6 +15,12 @@ const ANTIGRAVITY_PATTERNS: &[&str] = &[r"\(y/n\)", r"Allow\?"];
 /// GitHub Copilot CLI 的預設等待規則：工具核准選單（「Do you want to run this command?」
 /// 下方的「No, and tell Copilot what to do differently」）與資料夾信任詢問。
 const COPILOT_PATTERNS: &[&str] = &[r"No, and tell Copilot", r"Do you trust the files"];
+/// OpenAI Codex CLI 的預設等待規則：指令／修改核准選單與資料夾信任詢問。
+const CODEX_PATTERNS: &[&str] = &[
+    r"Would you like to run the following command",
+    r"Would you like to make the following edits",
+    r"Do you trust the contents of this directory",
+];
 
 pub struct PatternAdapter {
     id: &'static str,
@@ -28,6 +34,7 @@ impl PatternAdapter {
         let (command, patterns): (&str, &[&str]) = match id {
             "antigravity" => ("agy", ANTIGRAVITY_PATTERNS),
             "copilot" => ("copilot", COPILOT_PATTERNS),
+            "codex" => ("codex", CODEX_PATTERNS),
             _ => ("", &[]),
         };
         if settings.command.is_empty() {

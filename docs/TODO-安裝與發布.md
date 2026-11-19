@@ -25,7 +25,7 @@ agt update                                    # 之後自我更新
 | --- | --- |
 | 執行檔（`agt.exe`、`agtd.exe`） | `%APPDATA%\agt\`（已在使用；開發時用 `docker/publish.sh` 安裝） |
 | 設定檔 | `%APPDATA%\agt\config.toml` |
-| Dockerfile（`agt setup` 產生） | `%APPDATA%\agt\docker\<claude\|agy\|copilot>\` |
+| Dockerfile（`agt setup` 產生） | `%APPDATA%\agt\docker\<claude\|agy\|copilot\|codex>\` |
 | 「不要再提醒」清單 | `%APPDATA%\agt\setup-skip.txt` |
 | 資料庫、終端機紀錄、daemon 日誌 | `%APPDATA%\agt\data\`（已實作；舊版的 `%LOCALAPPDATA%\agt` 會自動搬移） |
 | worktree | `%USERPROFILE%\.agt\worktrees\`（不變） |

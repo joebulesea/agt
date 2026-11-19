@@ -69,6 +69,7 @@ pub enum Dep {
     Sbx,
     Claude,
     Copilot,
+    Codex,
     Agy,
 }
 
@@ -121,6 +122,14 @@ pub const REQUIREMENTS: &[Requirement] = &[
         url: "https://github.com/github/copilot-cli",
     },
     Requirement {
+        dep: Dep::Codex,
+        name: "OpenAI Codex CLI",
+        level: Level::Optional,
+        // 需要 npm，只顯示指令
+        winget: None,
+        url: "https://github.com/openai/codex",
+    },
+    Requirement {
         dep: Dep::Agy,
         name: "Antigravity CLI（agy）",
         level: Level::Optional,
@@ -154,6 +163,7 @@ pub fn manual(dep: Dep, os: Os) -> &'static str {
         (Dep::Claude, Os::Windows) => "irm https://claude.ai/install.ps1 | iex（PowerShell）",
         (Dep::Claude, _) => "curl -fsSL https://claude.ai/install.sh | bash",
         (Dep::Copilot, _) => "npm install -g @github/copilot",
+        (Dep::Codex, _) => "npm install -g @openai/codex",
         (Dep::Agy, _) => "依照 https://antigravity.google/ 安裝",
     }
 }
@@ -310,6 +320,9 @@ pub fn plan(env: &Env, os: Os) -> Vec<Task> {
     }
     if !env.copilot {
         add(Dep::Copilot, Problem::Missing);
+    }
+    if !env.codex {
+        add(Dep::Codex, Problem::Missing);
     }
     if !env.agy {
         add(Dep::Agy, Problem::Missing);
@@ -728,6 +741,7 @@ mod tests {
             claude: true,
             agy: true,
             copilot: true,
+            codex: true,
             docker: Docker::Running("29".into()),
             sbx: Sbx::Ready("v0.53.0".into(), true),
             wsl: Some(true),
@@ -747,6 +761,7 @@ mod tests {
             claude: false,
             agy: false,
             copilot: false,
+            codex: false,
             docker: Docker::Missing,
             sbx: Sbx::Missing,
             ..env()
@@ -761,6 +776,7 @@ mod tests {
                 Dep::Sbx,
                 Dep::Claude,
                 Dep::Copilot,
+                Dep::Codex,
                 Dep::Agy
             ]
         );
