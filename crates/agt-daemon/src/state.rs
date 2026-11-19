@@ -1035,8 +1035,28 @@ impl Daemon {
         self.remove_entry(&id, if cleanup { Some("discard") } else { None })
     }
 
-    /// 收尾動作（規格 7.3）。
+    /// 收尾動作（規格 7.3）。失敗時寫進 agtd.log 與該分頁的 events（kind = "git"、ok = false），
+    /// 錯誤視窗關掉後也查得到原因；要求選擇策略 / 確認（NEED_STRATEGY、NEEDS_CONFIRM）不算失敗。
     pub fn finish(&self, id: &str, action: FinishAction, force: bool) -> OpResult<String> {
+        let name = action.name();
+        let r = self.finish_inner(id, action, force);
+        if let Err(e) = &r
+            && e.code != codes::NEED_STRATEGY
+            && e.code != codes::NEEDS_CONFIRM
+        {
+            tracing::warn!("{id}：收尾 {name} 失敗（{}）：{}", e.code, e.message);
+            if let Ok(full) = self.resolve(id) {
+                self.record(
+                    &full,
+                    "git",
+                    json!({"action": name, "ok": false, "code": e.code, "error": e.message}),
+                );
+            }
+        }
+        r
+    }
+
+    fn finish_inner(&self, id: &str, action: FinishAction, force: bool) -> OpResult<String> {
         let id = self.resolve(id)?;
         let info = self.get(&id)?;
         match action {

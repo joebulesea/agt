@@ -1467,7 +1467,7 @@ fn edit_text(s: &mut String, k: &KeyEvent) {
     }
 }
 
-fn expand_home(p: &str) -> String {
+pub(crate) fn expand_home(p: &str) -> String {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();

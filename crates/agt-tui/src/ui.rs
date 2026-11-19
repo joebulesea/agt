@@ -968,6 +968,14 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ])
             };
             let agent = form.agents.get(form.agent).cloned().unwrap_or_default();
+            // Base 留空時實際會用哪個 branch：主 repo 不在預設 branch 上時，PR 與 merge 的目標會跟著它
+            let (base_hint, base_warn) = if form.base.trim().is_empty() {
+                let repo = crate::app::expand_home(form.repo.trim());
+                let head = crate::repohead::read(std::path::Path::new(&repo));
+                crate::repohead::base_hint(head.as_ref())
+            } else {
+                (String::new(), None)
+            };
             let mut lines = vec![
                 Line::raw(""),
                 field(0, "Agent", format!("◀ {agent} ▶")),
@@ -982,12 +990,19 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                     3,
                     "Base",
                     if form.base.is_empty() && form.field != 3 {
-                        "（預設：目前的 HEAD branch）".into()
+                        base_hint
                     } else {
                         form.base.clone()
                     },
                 ),
-                Line::raw(""),
+                // 平常是空行；Base 不是預設 branch 時改成警告（框的高度不變）
+                match base_warn {
+                    Some(w) => Line::styled(
+                        format!("  {}", truncate(&w, (r.width as usize).saturating_sub(4))),
+                        Style::new().fg(Color::Yellow),
+                    ),
+                    None => Line::raw(""),
+                },
             ];
             let ok = " 建立 (Enter) ";
             let cancel = " 取消 (Esc) ";

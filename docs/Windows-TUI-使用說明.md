@@ -183,7 +183,7 @@ diff 視窗打開時，滾輪會捲動 diff 內容（一次 3 行）。diff 視�
 | Agent | 用 `←` / `→` 切換；預設為目前分頁的 Agent |
 | Repo | repo 或任意目錄；不是 git repo 時不建立 worktree |
 | 任務 | 任務名稱，會顯示在左側欄並用於 branch 名稱 |
-| Base | base branch，留空時使用目前的 HEAD branch |
+| Base | base branch，留空時使用目前的 HEAD branch（欄位中會顯示是哪一個；主 repo 不在 remote 的預設 branch 上時，下方以黃字提醒 PR / merge 的目標會是它） |
 
 `Tab` 或 `↑` / `↓` 切換欄位，`Enter` 建立，`Esc` 取消。
 
