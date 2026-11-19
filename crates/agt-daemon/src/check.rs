@@ -115,7 +115,7 @@ pub fn lint(
     }
     for (key, r) in &cfg.repos {
         for f in &r.copy_files {
-            if Path::new(f).is_absolute() || f.split(['/', '\\']).any(|c| c == "..") {
+            if escapes_repo(f) {
                 w.push(format!(
                     "repos.{key:?}.copy_files：{f:?} 必須是 repo 內的相對路徑（不能是絕對路徑或含 ..）"
                 ));
@@ -123,6 +123,19 @@ pub fn lint(
         }
     }
     w
+}
+
+/// `copy_files` 的項目是否可能指到 repo 外面：絕對路徑、以分隔符號開頭、帶磁碟機代號（Windows）或含 `..`。
+/// 不能只用 `is_absolute()`：Windows 上 `/etc/passwd` 沒有磁碟機代號，不算絕對路徑，
+/// 但接到 repo 路徑後面仍會被解析成目前磁碟機的根目錄。
+fn escapes_repo(f: &str) -> bool {
+    use std::path::Component;
+    let p = Path::new(f);
+    p.is_absolute()
+        || f.starts_with(['/', '\\'])
+        || p.components()
+            .any(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+        || f.split(['/', '\\']).any(|c| c == "..")
 }
 
 /// 使用者設定檔裡 `[agents.<名稱>]` 的名稱。
@@ -177,7 +190,7 @@ pub fn run(args: &[String]) -> i32 {
         match cfg.repo(&paths, &root) {
             Ok(r) => {
                 for f in &r.copy_files {
-                    if Path::new(f).is_absolute() || f.split(['/', '\\']).any(|c| c == "..") {
+                    if escapes_repo(f) {
                         warnings.push(format!("copy_files：{f:?} 必須是 repo 內的相對路徑"));
                     }
                 }
@@ -301,6 +314,22 @@ resume_args = ["--session", "{conversation}"]
         let all = lint(&c, &mine, &paths(), &|_| true).join("\n");
         assert!(all.contains("status_source"), "{all}");
         assert!(all.contains("resume_args"), "{all}");
+    }
+
+    #[test]
+    fn escapes_repo_rules() {
+        for ok in [".env", "config/local.toml", "a..b", "dir/.hidden"] {
+            assert!(!escapes_repo(ok), "{ok}");
+        }
+        for bad in ["/etc/passwd", "\\x", "../x", "a/../../x", "a\\..\\x"] {
+            assert!(escapes_repo(bad), "{bad}");
+        }
+        // 帶磁碟機代號的路徑只在 Windows 上才有意義（Linux 上 `C:` 只是檔名的一部分）
+        if cfg!(windows) {
+            for bad in ["C:\\Windows", "C:foo", "\\\\server\\share"] {
+                assert!(escapes_repo(bad), "{bad}");
+            }
+        }
     }
 
     #[test]
