@@ -1,21 +1,21 @@
 #!/bin/sh
 # agt 安裝腳本（Linux x86_64）
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.sh | sh
 #
 # 環境變數：
-#   AGT_REPO        GitHub repo（預設 OWNER/agt，發布前請改成實際值）
+#   AGT_REPO        GitHub repo（預設 joebulesea/agt）
 #   AGT_VERSION     指定版本（例如 v0.3.0），預設最新版
 #   AGT_INSTALL_DIR 安裝位置，預設 ~/.local/bin
 #   AGT_NO_SETUP=1  安裝後不執行 agt setup
 set -eu
 
-REPO=${AGT_REPO:-OWNER/agt}
+REPO=${AGT_REPO:-joebulesea/agt}
 DIR=${AGT_INSTALL_DIR:-$HOME/.local/bin}
 
 die() { echo "錯誤：$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "需要 $1"; }
 need curl; need tar; need uname
-case $REPO in OWNER/*) die "請設定 AGT_REPO=<owner>/<repo>" ;; esac
+case $REPO in */*/*|*/|/*|"") die "AGT_REPO 必須是 <owner>/<repo>（目前是 $REPO）" ;; */*) ;; *) die "AGT_REPO 必須是 <owner>/<repo>（目前是 $REPO）" ;; esac
 
 os=$(uname -s); arch=$(uname -m)
 [ "$os" = Linux ] || die "目前只提供 Linux 與 Windows 版（偵測到 $os）"

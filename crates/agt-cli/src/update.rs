@@ -17,7 +17,7 @@ fn repo() -> anyhow::Result<String> {
         .filter(|s| !s.is_empty())
         .or_else(|| option_env!("AGT_REPO").map(str::to_string))
         .unwrap_or_default();
-    if r.is_empty() || r.starts_with("OWNER/") || r.matches('/').count() != 1 {
+    if r.is_empty() || r.matches('/').count() != 1 {
         bail!("不知道要從哪個 GitHub repo 更新：請設定環境變數 AGT_REPO=<owner>/<repo>");
     }
     Ok(r)

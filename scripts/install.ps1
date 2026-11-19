@@ -1,9 +1,9 @@
 <#
 agt 安裝腳本（Windows x64，不需要系統管理員）
-  irm https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.ps1 | iex
+  irm https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.ps1 | iex
 
 先設定環境變數可調整行為（因為用 iex 執行，沒有參數可傳）：
-  $env:AGT_REPO        GitHub repo（預設 OWNER/agt，發布前請改成實際值）
+  $env:AGT_REPO        GitHub repo（預設 joebulesea/agt）
   $env:AGT_VERSION     指定版本（例如 v0.3.0），預設最新版
   $env:AGT_NO_SETUP=1  安裝後不執行 agt setup
 #>
@@ -16,9 +16,9 @@ function Install-Agt {
 
     function Fail($msg) { throw "agt 安裝失敗：$msg" }
 
-    $repo = if ($env:AGT_REPO) { $env:AGT_REPO } else { 'OWNER/agt' }
-    if ($repo -notmatch '^[\w.-]+/[\w.-]+$' -or $repo -like 'OWNER/*') {
-        Fail '請設定 $env:AGT_REPO = "<owner>/<repo>"'
+    $repo = if ($env:AGT_REPO) { $env:AGT_REPO } else { 'joebulesea/agt' }
+    if ($repo -notmatch '^[\w.-]+/[\w.-]+$') {
+        Fail "AGT_REPO 必須是 <owner>/<repo>（目前是 $repo）"
     }
     if (-not [Environment]::Is64BitOperatingSystem) { Fail '目前只提供 x64 版本' }
     if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {

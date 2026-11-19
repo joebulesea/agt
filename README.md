@@ -27,14 +27,14 @@ TUI 冒煙測試（在容器中以 pty + pyte 驅動 TUI 並截取畫面）：`p
 ## 安裝（發布版）
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.sh | sh     # Linux x64
+curl -fsSL https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.sh | sh     # Linux x64
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/install.ps1 | iex           # Windows x64
+irm https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.ps1 | iex           # Windows x64
 ```
 
-腳本會下載最新 Release、用 `SHA256SUMS` 核對後安裝（Linux：`~/.local/bin`；Windows：`%APPDATA%\agt`，加入使用者 PATH），最後執行 `agt setup`。用環境變數 `AGT_REPO`（`<owner>/<repo>`，發布前需把腳本內的預設值 `OWNER/agt` 改掉）、`AGT_VERSION`、`AGT_NO_SETUP=1` 調整。之後用 `agt update` 自我更新（需要系統有 `curl` 與 `tar`；Windows 10 以後內建）。發布方式：把 `Cargo.toml` 的版號改好，打 tag `vX.Y.Z` 並推送，`.github/workflows/release.yml` 會建置各平台壓縮檔與 `SHA256SUMS` 並發布。
+腳本會下載最新 Release、用 `SHA256SUMS` 核對後安裝（Linux：`~/.local/bin`；Windows：`%APPDATA%\agt`，加入使用者 PATH），最後執行 `agt setup`。用環境變數 `AGT_REPO`（`<owner>/<repo>`，預設 `joebulesea/agt`；fork 要測試時改成自己的）、`AGT_VERSION`、`AGT_NO_SETUP=1` 調整。之後用 `agt update` 自我更新（需要系統有 `curl` 與 `tar`；Windows 10 以後內建）。發布方式：把 `Cargo.toml` 的版號改好，打 tag `vX.Y.Z` 並推送，`.github/workflows/release.yml` 會建置各平台壓縮檔與 `SHA256SUMS` 並發布。
 
 ## 使用
 
