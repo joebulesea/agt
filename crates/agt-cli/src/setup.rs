@@ -96,6 +96,9 @@ struct Candidate {
     /// 需要的 Docker 映像檔：(映像檔名稱, 內嵌檔案的子目錄)
     image: Option<(&'static str, &'static str)>,
     default_on: bool,
+    /// 範例用 `extends` 沿用的 Agent（例如 advisor 版的 `claude-sbx`）。
+    /// 它不在設定檔中時會一併加入，見 [`with_bases`]。
+    extends: Option<&'static str>,
 }
 
 /// 設定檔位置；與 daemon 的規則相同（`AGT_HOME` 優先）。
@@ -371,6 +374,7 @@ fn candidates(env: &Env) -> Vec<Candidate> {
             desc: "Docker Sandboxes（microVM）中的 Claude Code，隔離最完整，建議",
             image: None,
             default_on: true,
+            extends: None,
         });
     }
     if env.docker != Docker::Missing {
@@ -379,21 +383,90 @@ fn candidates(env: &Env) -> Vec<Candidate> {
             desc: "Docker 容器中的 Claude Code",
             image: Some(("agt-claude", "claude")),
             default_on: env.sbx == Sbx::Missing,
+            extends: None,
         });
         list.push(Candidate {
             name: "agy-docker",
             desc: "Docker 容器中的 Antigravity CLI",
             image: Some(("agt-agy", "agy")),
             default_on: false,
+            extends: None,
         });
         list.push(Candidate {
             name: "copilot-docker",
             desc: "Docker 容器中的 GitHub Copilot CLI",
             image: Some(("agt-copilot", "copilot")),
             default_on: false,
+            extends: None,
+        });
+    }
+    // advisor 版：Sonnet 執行、Opus 擔任顧問。預設不勾選（需要支援 --advisor 的 Claude Code）
+    if env.claude {
+        list.push(Candidate {
+            name: "claude-advisor",
+            desc: "主機上的 Claude Code，Sonnet 執行、Opus 擔任顧問（--advisor）",
+            image: None,
+            default_on: false,
+            extends: Some("claude"),
+        });
+    }
+    if env.sbx != Sbx::Missing {
+        list.push(Candidate {
+            name: "claude-sbx-advisor",
+            desc: "claude-sbx，Sonnet 執行、Opus 擔任顧問（--advisor）",
+            image: None,
+            default_on: false,
+            extends: Some("claude-sbx"),
+        });
+    }
+    if env.docker != Docker::Missing {
+        list.push(Candidate {
+            name: "claude-docker-advisor",
+            desc: "claude-docker，Sonnet 執行、Opus 擔任顧問（--advisor，使用 agt-claude 映像檔）",
+            image: None,
+            default_on: false,
+            extends: Some("claude-docker"),
         });
     }
     list
+}
+
+/// [`with_bases`] 並顯示一併加入了哪些 Agent。
+fn add_bases<'a>(
+    all: &'a [Candidate],
+    chosen: Vec<&'a Candidate>,
+    existing: &str,
+) -> Vec<&'a Candidate> {
+    let picked: Vec<&str> = chosen.iter().map(|c| c.name).collect();
+    let out = with_bases(all, chosen, existing);
+    for c in out.iter().filter(|c| !picked.contains(&c.name)) {
+        prompt::status('✓', &format!("{}：advisor 版需要，一併加入", c.name));
+    }
+    out
+}
+
+/// 選到的 Agent 用 `extends` 沿用的 Agent 不在設定檔中、也沒有選到時，一併加入（放在它前面），
+/// 否則 daemon 載入設定時會因為找不到被繼承的 Agent 而失敗。
+/// 內建的 Agent（例如 `claude`）不在候選清單中，不需要加入。
+fn with_bases<'a>(
+    all: &'a [Candidate],
+    chosen: Vec<&'a Candidate>,
+    existing: &str,
+) -> Vec<&'a Candidate> {
+    let mut out: Vec<&'a Candidate> = vec![];
+    for c in chosen {
+        if let Some(base) = c.extends
+            && !has_agent(existing, base)
+            && !out.iter().any(|o| o.name == base)
+            && let Some(b) = all.iter().find(|b| b.name == base)
+        {
+            out.push(b);
+        }
+        if !out.iter().any(|o| o.name == c.name) {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// 把選到的 Agent 範例附加到設定檔（沒有設定檔時新建）。
@@ -504,6 +577,7 @@ pub fn run(opts: Options) -> anyhow::Result<()> {
     } else {
         fresh.into_iter().filter(|c| c.default_on).collect()
     };
+    let chosen = add_bases(&all, chosen, &existing);
     write_config(&path, &existing, &chosen)?;
     if !chosen.is_empty() {
         let names: Vec<&str> = chosen.iter().map(|c| c.name).collect();
@@ -676,13 +750,22 @@ fn skipped() -> Vec<String> {
 }
 
 /// 只看 PATH（不執行任何程式），哪些 Agent 可能可以使用。每次啟動都會呼叫，必須很快。
+/// 包含 advisor 版：沒加入的話開啟 agt 時會提醒一次（選「不要再提醒」後不再詢問）。
 fn quick_available() -> Vec<&'static str> {
     let mut v = vec![];
+    if on_path("claude") {
+        v.push("claude-advisor");
+    }
     if on_path("sbx") {
-        v.push("claude-sbx");
+        v.extend(["claude-sbx", "claude-sbx-advisor"]);
     }
     if on_path("docker") {
-        v.extend(["claude-docker", "agy-docker", "copilot-docker"]);
+        v.extend([
+            "claude-docker",
+            "agy-docker",
+            "copilot-docker",
+            "claude-docker-advisor",
+        ]);
     }
     v
 }
@@ -768,6 +851,7 @@ pub fn offer_new_agents() -> anyhow::Result<()> {
         println!();
         return Ok(());
     }
+    let chosen = add_bases(&all, chosen, &existing);
     write_config(&path, &existing, &chosen)?;
     let names: Vec<&str> = chosen.iter().map(|c| c.name).collect();
     prompt::status('✓', &format!("已寫入設定檔：{}", names.join("、")));
@@ -804,6 +888,64 @@ mod tests {
                 .contains("任何 Agent")
         );
         assert!(example_block("nope").is_none());
+        // advisor 版：只有 extends 與 extra_args，後面的範例不能被收進來
+        for name in [
+            "claude-advisor",
+            "claude-sbx-advisor",
+            "claude-docker-advisor",
+        ] {
+            let block = example_block(name).unwrap_or_else(|| panic!("找不到 {name}"));
+            let v: toml::Value =
+                toml::from_str(&block).unwrap_or_else(|e| panic!("{name}: {e}\n{block}"));
+            let a = v["agents"][name].as_table().unwrap();
+            assert_eq!(a.len(), 2, "{block}");
+            assert!(a["extends"].is_str());
+            assert!(a["extra_args"].as_array().unwrap().len() >= 2);
+        }
+    }
+
+    #[test]
+    fn advisor_adds_missing_base() {
+        let env = Env {
+            git: Some("2.44".into()),
+            claude: true,
+            agy: false,
+            copilot: false,
+            docker: Docker::Running("29".into()),
+            sbx: Sbx::Ready("v0.53.0".into(), true),
+            wsl: None,
+            winget: false,
+        };
+        let all = candidates(&env);
+        let names = |v: &[&Candidate]| v.iter().map(|c| c.name).collect::<Vec<_>>();
+        let pick = |ns: &[&str]| -> Vec<&Candidate> {
+            ns.iter()
+                .map(|n| all.iter().find(|c| c.name == *n).unwrap())
+                .collect()
+        };
+        // 只選 advisor：被繼承的 claude-sbx 一併加入，放在前面
+        let out = with_bases(&all, pick(&["claude-sbx-advisor"]), "");
+        assert_eq!(names(&out), ["claude-sbx", "claude-sbx-advisor"]);
+        // 兩個都選：不重複
+        let out = with_bases(&all, pick(&["claude-sbx", "claude-sbx-advisor"]), "");
+        assert_eq!(names(&out), ["claude-sbx", "claude-sbx-advisor"]);
+        // 設定檔中已有 claude-docker：不再加入
+        let existing = "[agents.claude-docker]\ncommand = \"docker\"\n";
+        let out = with_bases(&all, pick(&["claude-docker-advisor"]), existing);
+        assert_eq!(names(&out), ["claude-docker-advisor"]);
+        // 繼承內建的 claude：不需要加入任何東西
+        let out = with_bases(&all, pick(&["claude-advisor"]), "");
+        assert_eq!(names(&out), ["claude-advisor"]);
+        // 寫入的設定檔是合法的 TOML
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("config.toml");
+        let out = with_bases(&all, pick(&["claude-sbx-advisor", "claude-advisor"]), "");
+        write_config(&path, "", &out).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let v: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(v["agents"]["claude-sbx-advisor"]["extends"].as_str(), Some("claude-sbx"));
+        assert!(v["agents"]["claude-sbx"]["args"].is_array());
+        assert_eq!(v["agents"]["claude-advisor"]["extends"].as_str(), Some("claude"));
     }
 
     #[test]

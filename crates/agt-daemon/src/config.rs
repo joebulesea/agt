@@ -2,7 +2,7 @@
 
 use agt_agents::AgentSettings;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_TOML: &str = include_str!("../../../config/default.toml");
@@ -271,6 +271,74 @@ fn merge(base: &mut toml::Value, over: toml::Value) {
     }
 }
 
+/// 依名稱決定狀態判斷方式的內建 Agent。`extends` 這些 Agent 又沒寫 `adapter` 時，
+/// 自動設成同名的 adapter；否則名稱不同（例如 `claude-advisor`）會被當成一般的自訂 Agent。
+const NAMED_ADAPTERS: &[&str] = &["claude", "antigravity", "copilot", "shell"];
+
+/// 展開 `extends`：沒寫的欄位沿用被繼承的 Agent（可以多層，不可循環）。
+/// 必須在 [`inherit_adapter_args`] 之前執行。
+fn resolve_extends(value: &mut toml::Value) -> Result<(), String> {
+    let Some(agents) = value.get_mut("agents").and_then(|a| a.as_table_mut()) else {
+        return Ok(());
+    };
+    let names: Vec<String> = agents.keys().cloned().collect();
+    let mut done = BTreeSet::new();
+    for name in names {
+        resolve_one(agents, &name, &mut Vec::new(), &mut done)?;
+    }
+    Ok(())
+}
+
+fn resolve_one(
+    agents: &mut toml::map::Map<String, toml::Value>,
+    name: &str,
+    chain: &mut Vec<String>,
+    done: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if done.contains(name) {
+        return Ok(());
+    }
+    if chain.iter().any(|n| n == name) {
+        chain.push(name.to_string());
+        return Err(format!(
+            "agents.{}.extends 形成循環：{}",
+            chain[0],
+            chain.join(" → ")
+        ));
+    }
+    let base = agents
+        .get(name)
+        .and_then(|a| a.get("extends"))
+        .and_then(|e| e.as_str())
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
+    if let Some(base) = base {
+        if !agents.contains_key(&base) {
+            return Err(format!("agents.{name}.extends 指向不存在的 Agent {base:?}"));
+        }
+        chain.push(name.to_string());
+        resolve_one(agents, &base, chain, done)?;
+        chain.pop();
+        let inherited = agents
+            .get(&base)
+            .and_then(|a| a.as_table())
+            .cloned()
+            .unwrap_or_default();
+        if let Some(t) = agents.get_mut(name).and_then(|a| a.as_table_mut()) {
+            for (k, v) in inherited {
+                if k != "extends" && !t.contains_key(&k) {
+                    t.insert(k, v);
+                }
+            }
+            if !t.contains_key("adapter") && NAMED_ADAPTERS.contains(&base.as_str()) {
+                t.insert("adapter".into(), toml::Value::String(base));
+            }
+        }
+    }
+    done.insert(name.to_string());
+    Ok(())
+}
+
 /// 設定了 `adapter` 的 Agent（例如 `claude-docker` 沿用 `claude`）沒寫 `new_args` / `resume_args` 時，
 /// 沿用該 adapter 對應 Agent 的值；否則每次重新啟動都會開新對話、無法接續。
 /// 要關閉接續功能可明確寫 `resume_args = []`。
@@ -331,6 +399,7 @@ impl Config {
             let user: toml::Value = toml::from_str(&text).map_err(|e| toml_err(file, &text, &e))?;
             merge(&mut value, user);
         }
+        resolve_extends(&mut value).map_err(|e| format!("{}：{e}", file.display()))?;
         inherit_adapter_args(&mut value);
         let cfg: Config = value
             .try_into()
@@ -574,6 +643,82 @@ mod tests {
         assert_eq!(c.agents["claude-docker"].new_args.len(), 2);
         std::fs::write(&f, "[agents.x]\nadapter = \"nope\"\n").unwrap();
         assert!(Config::load(&f).unwrap_err().contains("adapter"));
+    }
+
+    #[test]
+    fn extends_reuses_base_agent() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        std::fs::write(
+            &f,
+            r#"
+[agents.claude-sbx]
+command = "sbx"
+adapter = "claude"
+status_source = "pattern"
+args = ["run", "--name", "agt-{session}", "claude", "{cwd}", "--"]
+restart_args = ["run", "--name", "agt-{session}", "--"]
+on_close = ["sbx", "rm", "-f", "agt-{session}"]
+auto_commit = true
+
+[agents.claude-sbx-advisor]
+extends = "claude-sbx"
+extra_args = ["--model", "sonnet", "--advisor", "opus"]
+
+[agents.claude-advisor]
+extends = "claude"
+extra_args = ["--model", "sonnet", "--advisor", "opus"]
+
+[agents.deep]
+extends = "claude-sbx-advisor"
+auto_commit = false
+"#,
+        )
+        .unwrap();
+        let c = Config::load(&f).unwrap();
+        let base = &c.agents["claude-sbx"];
+        let a = &c.agents["claude-sbx-advisor"];
+        assert_eq!(a.command, "sbx");
+        assert_eq!(a.args, base.args);
+        assert_eq!(a.restart_args, base.restart_args);
+        assert_eq!(a.on_close, base.on_close);
+        assert!(a.auto_commit);
+        assert_eq!(a.adapter, "claude");
+        assert_eq!(a.extra_args, ["--model", "sonnet", "--advisor", "opus"]);
+        // adapter 的 new_args / resume_args 也一路沿用下來
+        assert_eq!(a.resume_args, ["--resume", "{conversation}"]);
+        assert!(base.extra_args.is_empty(), "不能反過來改到被繼承的 Agent");
+
+        // 繼承內建的 claude：沒寫 adapter 也要沿用 Claude 的 hooks 與狀態判斷
+        let h = &c.agents["claude-advisor"];
+        assert_eq!(h.command, "claude");
+        assert_eq!(h.adapter, "claude");
+        assert_eq!(h.status_source, "hooks");
+        assert_eq!(h.new_args, ["--session-id", "{conversation}"]);
+
+        // 多層：自己寫的欄位優先
+        let deep = &c.agents["deep"];
+        assert_eq!(deep.args, base.args);
+        assert_eq!(deep.extra_args, a.extra_args);
+        assert!(!deep.auto_commit);
+        assert!(c.ui().agents.contains(&"claude-sbx-advisor".to_string()));
+    }
+
+    #[test]
+    fn extends_errors() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        std::fs::write(&f, "[agents.a]\nextends = \"nope\"\n").unwrap();
+        let e = Config::load(&f).unwrap_err();
+        assert!(e.contains("agents.a.extends") && e.contains("nope"), "{e}");
+        std::fs::write(
+            &f,
+            "[agents.a]\nextends = \"b\"\n[agents.b]\nextends = \"a\"\n",
+        )
+        .unwrap();
+        assert!(Config::load(&f).unwrap_err().contains("循環"));
+        std::fs::write(&f, "[agents.a]\nextends = \"a\"\n").unwrap();
+        assert!(Config::load(&f).unwrap_err().contains("循環"));
     }
 
     #[test]
