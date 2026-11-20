@@ -1,9 +1,0 @@
-修正貼上多行被誤送出；顯示 auto_commit 狀態
-
-貼上：on_paste 原本依畫面快照有無 BRACKETED_PASTE 旗標決定包裝方式，
-沒有旗標時會把 \n 換成 \r，貼上的每一行都等於按一次 Enter 而被執行。
-改為一律用 bracketed paste 包起來，抽出 paste_bytes() 並移除內容中
-夾帶的結束標記，補 3 個單元測試。
-
-auto_commit：UiConfig 新增 auto_commit_agents，新增分頁表單的 Agent 欄位
-會標出 auto_commit；agt config check 列出每個 Agent 展開 extends 後的值。
