@@ -188,6 +188,9 @@ pub struct UiConfig {
     pub osc52: String,
     #[serde(default)]
     pub agents: Vec<String>,
+    /// 設了 `auto_commit` 的 Agent（`extends` 展開後）。新增分頁時用來提示收尾會自動 commit。
+    #[serde(default)]
+    pub auto_commit_agents: Vec<String>,
 }
 
 fn default_osc52() -> String {
@@ -208,6 +211,7 @@ impl Default for UiConfig {
                 "codex".into(),
                 "shell".into(),
             ],
+            auto_commit_agents: Vec::new(),
         }
     }
 }

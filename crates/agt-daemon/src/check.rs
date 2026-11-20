@@ -209,6 +209,11 @@ pub fn run(args: &[String]) -> i32 {
         "Agent：{}",
         cfg.agents.keys().cloned().collect::<Vec<_>>().join("、")
     );
+    // `extends` 展開後的實際值，auto_commit 沒有生效時從這裡看得出來
+    println!("auto_commit（收尾前自動 commit）：");
+    for line in auto_commit_lines(&cfg) {
+        println!("  {line}");
+    }
     if warnings.is_empty() {
         println!("沒有發現問題");
     } else {
@@ -218,6 +223,17 @@ pub fn run(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// 每個 Agent 的 `auto_commit`（`extends` 展開後），例如 `claude-docker  on`。
+fn auto_commit_lines(cfg: &Config) -> Vec<String> {
+    let w = cfg.agents.keys().map(|n| n.chars().count()).max().unwrap_or(0);
+    cfg.agents
+        .iter()
+        .map(|(n, a)| {
+            format!("{n:<w$}  {}", if a.auto_commit { "on" } else { "off" })
+        })
+        .collect()
 }
 
 fn usage(msg: &str) -> i32 {
@@ -314,6 +330,30 @@ resume_args = ["--session", "{conversation}"]
         let all = lint(&c, &mine, &paths(), &|_| true).join("\n");
         assert!(all.contains("status_source"), "{all}");
         assert!(all.contains("resume_args"), "{all}");
+    }
+
+    #[test]
+    fn auto_commit_lines_follow_extends() {
+        let (c, _) = load(
+            r#"
+[agents.base]
+command = "x"
+auto_commit = true
+
+[agents.child]
+extends = "base"
+
+[agents.off]
+command = "y"
+"#,
+        );
+        let lines = auto_commit_lines(&c);
+        let find = |n: &str| lines.iter().find(|l| l.starts_with(n)).cloned().unwrap();
+        assert!(find("base").ends_with("on"), "{lines:?}");
+        assert!(find("child").ends_with("on"), "extends 要沿用：{lines:?}");
+        assert!(find("off").ends_with("off"), "{lines:?}");
+        assert!(c.ui().auto_commit_agents.contains(&"child".to_string()));
+        assert!(!c.ui().auto_commit_agents.contains(&"off".to_string()));
     }
 
     #[test]
