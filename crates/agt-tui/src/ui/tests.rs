@@ -147,3 +147,85 @@ fn truncate_cjk() {
     assert_eq!(pad("ab", 4), "ab  ");
     assert_eq!(rgb_to_256(255, 0, 0), 196);
 }
+
+/// diff 視窗：頂端有分頁列（目前頁反白）；內容比視窗高時右側畫出捲軸。
+#[test]
+fn diff_popup_renders_tab_bar_and_scrollbar() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let (client, _sent) = agt_proto::client::Client::detached();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(client, Default::default(), None, ".".into(), tx);
+    let first: Vec<String> = (0..60).map(|i| format!("+line{i}")).collect();
+    let tabs = vec![
+        ("已 commit（main...HEAD）".to_string(), first.clone()),
+        ("未 commit 的變更".to_string(), vec!["（無）".to_string()]),
+    ];
+    app.popup = Some(Popup::Text {
+        title: "diff".into(),
+        lines: first,
+        scroll: 0,
+        diff: true,
+        tabs,
+        tab: 0,
+    });
+    let (w, h) = (80u16, 20u16);
+    let render = |app: &App| {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| {
+            draw_popup(f, app);
+        })
+        .unwrap();
+        t.backend().buffer().clone()
+    };
+    let text = |b: &ratatui::buffer::Buffer, y: u16| {
+        (0..w)
+            .map(|x| b[(x, y)].symbol().to_string())
+            .collect::<String>()
+    };
+    let compact = |b: &ratatui::buffer::Buffer| -> String {
+        // 全形字後面的格子是空白，比對前先去掉空白
+        (0..h)
+            .map(|y| text(b, y))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let has_bar = |b: &ratatui::buffer::Buffer| {
+        (0..h).any(|y| (0..w).any(|x| matches!(b[(x, y)].symbol(), "█" | "▲" | "▼")))
+    };
+    let buf = render(&app);
+    let all = compact(&buf);
+    assert!(all.contains("1已commit（main...HEAD）"), "{all}");
+    assert!(all.contains("2未commit的變更"), "{all}");
+    assert!(all.contains("Tab/←→/1-9切換分頁"), "{all}");
+    assert!(all.contains("+line0"), "{all}");
+    assert!(!all.contains("###"), "{all}");
+    // 目前頁（第 1 頁）反白：分頁列的底色是 Cyan
+    let bar_y = (0..h)
+        .find(|y| text(&buf, *y).contains("commit（"))
+        .unwrap();
+    assert!((0..w).any(|x| buf[(x, bar_y)].bg == Color::Cyan && buf[(x, bar_y)].symbol() == "1"));
+    // 內容超出高度：畫出捲軸
+    assert!(has_bar(&buf), "內容比視窗高，應該有捲軸");
+
+    // 切到只有一行的第 2 頁：沒有捲軸，內容換成該頁
+    if let Some(Popup::Text {
+        tabs,
+        tab,
+        lines,
+        scroll,
+        ..
+    }) = app.popup.as_mut()
+    {
+        *tab = 1;
+        *lines = tabs[1].1.clone();
+        *scroll = 0;
+    }
+    let buf = render(&app);
+    let all = compact(&buf);
+    assert!(all.contains("（無）") && !all.contains("+line0"), "{all}");
+    assert!(!has_bar(&buf), "內容放得下時不應有捲軸");
+}

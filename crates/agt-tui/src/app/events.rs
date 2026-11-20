@@ -191,15 +191,29 @@ impl App {
     }
 
     pub(super) fn show_text(&mut self, title: &str, text: &str, diff: bool) {
+        // diff、錯誤訊息可能含有檔案內容裡的控制序列：ratatui 會原樣寫到終端機，先換成可見的符號
+        let lines: Vec<String> = agt_proto::text::printable(text)
+            .lines()
+            .map(|l| l.replace('\t', "    "))
+            .collect();
+        let mut tabs: Vec<(String, Vec<String>)> = vec![];
+        if diff {
+            for l in &lines {
+                if let Some(name) = l.strip_prefix("### ") {
+                    tabs.push((name.to_string(), vec![]));
+                } else if let Some((_, body)) = tabs.last_mut() {
+                    body.push(l.clone());
+                }
+            }
+        }
+        let first = tabs.first().map(|t| t.1.clone());
         self.popup = Some(Popup::Text {
             title: title.into(),
-            // diff、錯誤訊息可能含有檔案內容裡的控制序列：ratatui 會原樣寫到終端機，先換成可見的符號
-            lines: agt_proto::text::printable(text)
-                .lines()
-                .map(|l| l.replace('\t', "    "))
-                .collect(),
+            lines: first.unwrap_or(lines),
             scroll: 0,
             diff,
+            tabs,
+            tab: 0,
         });
     }
 }

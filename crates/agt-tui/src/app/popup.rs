@@ -20,8 +20,30 @@ impl App {
                 lines,
                 scroll,
                 diff,
+                tabs,
+                tab,
                 ..
             } => {
+                let n = tabs.len();
+                let switch = match k.code {
+                    KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') if n > 1 => {
+                        Some((*tab + 1) % n)
+                    }
+                    KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') if n > 1 => {
+                        Some((*tab + n - 1) % n)
+                    }
+                    KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < n => {
+                        Some(c as usize - '1' as usize)
+                    }
+                    _ => None,
+                };
+                if let Some(t) = switch {
+                    *tab = t;
+                    *lines = tabs[t].1.clone();
+                    *scroll = 0;
+                    self.popup = Some(popup);
+                    return;
+                }
                 let page = self.main_area.height.saturating_sub(4).max(1) as usize;
                 let max = crate::ui::text_rows(lines, *diff, self.screen_area.width)
                     .len()
