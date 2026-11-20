@@ -241,6 +241,18 @@ fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapsed: bool) {
             button_style(),
             Click::Command('n'),
         );
+        // 展開按鈕（與 b 鍵相同）
+        if area.width >= 4 {
+            button(
+                buf,
+                &mut app.click_hits,
+                area.x + 3,
+                y,
+                "»",
+                button_style(),
+                Click::Command('b'),
+            );
+        }
         y += 1;
     } else {
         buf.set_string(
@@ -251,7 +263,21 @@ fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapsed: bool) {
         );
         let label = " + 新增 ";
         let bw = label.width() as u16;
-        if area.width >= bw + 6 {
+        // 收合按鈕（與 b 鍵相同），放在標題右側；空間不足時不顯示以免蓋到「新增」
+        let new_visible = area.width >= bw + 6;
+        let new_x = area.x + area.width.saturating_sub(bw + 1);
+        if area.width >= 8 && (!new_visible || new_x >= area.x + 8) {
+            button(
+                buf,
+                &mut app.click_hits,
+                area.x + 5,
+                y,
+                " « ",
+                button_style(),
+                Click::Command('b'),
+            );
+        }
+        if new_visible {
             button(
                 buf,
                 &mut app.click_hits,
@@ -344,8 +370,10 @@ fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapsed: bool) {
             );
         }
         y += 1;
-        // 第二行：branch +N 或「無 worktree」
+        // 第二行：branch +N 或「無 worktree」；有 auto_commit 的 Agent 在行尾加「auto」
         if y < bottom {
+            let auto = app.ui.auto_commit_agents.contains(&s.agent);
+            let auto_tag = if auto { " auto" } else { "" };
             let detail = match &s.branch {
                 Some(b) => {
                     let ahead = if s.ahead > 0 {
@@ -353,7 +381,7 @@ fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapsed: bool) {
                     } else {
                         String::new()
                     };
-                    let room = w.saturating_sub(6 + ahead.width());
+                    let room = w.saturating_sub(6 + ahead.width() + auto_tag.width());
                     format!("{}{ahead}", truncate(b, room))
                 }
                 None if s.agent == "shell" => String::new(),
@@ -364,9 +392,17 @@ fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapsed: bool) {
                 buf.set_string(
                     area.x + 6,
                     y,
-                    truncate(&detail, w.saturating_sub(6)),
+                    truncate(&detail, w.saturating_sub(6 + auto_tag.width())),
                     Style::new().fg(Color::DarkGray).patch(row_style),
                 );
+                if auto && w > 6 + auto_tag.width() {
+                    buf.set_string(
+                        area.x + (w - auto_tag.width()) as u16,
+                        y,
+                        auto_tag,
+                        Style::new().fg(Color::Green).patch(row_style),
+                    );
+                }
                 y += 1;
             }
         }
@@ -387,6 +423,9 @@ fn draw_title(buf: &mut Buffer, app: &mut App, area: Rect) {
     let mut title = format!(" {} ", parts.join(" · "));
     if s.shared {
         title.push_str("[共用] ");
+    }
+    if app.ui.auto_commit_agents.contains(&s.agent) {
+        title.push_str("[auto_commit] ");
     }
     if let Some(sc) = &app.screen
         && (sc.display_offset > 0 || app.scroll.is_some())
@@ -968,6 +1007,12 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ])
             };
             let agent = form.agents.get(form.agent).cloned().unwrap_or_default();
+            // 收尾（merge / pr）前會自動 commit 的 Agent，在欄位上標出來
+            let agent_label = if app.ui.auto_commit_agents.contains(&agent) {
+                format!("◀ {agent} ▶  auto_commit")
+            } else {
+                format!("◀ {agent} ▶")
+            };
             // Base 留空時實際會用哪個 branch：主 repo 不在預設 branch 上時，PR 與 merge 的目標會跟著它
             let (base_hint, base_warn) = if form.base.trim().is_empty() {
                 let repo = crate::app::expand_home(form.repo.trim());
@@ -978,7 +1023,7 @@ fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             };
             let mut lines = vec![
                 Line::raw(""),
-                field(0, "Agent", format!("◀ {agent} ▶")),
+                field(0, "Agent", agent_label),
                 field(
                     1,
                     "Repo",

@@ -740,18 +740,9 @@ impl App {
             }
             return;
         }
-        let bracketed = self
-            .screen
-            .as_ref()
-            .is_some_and(|s| s.has_mode(modes::BRACKETED_PASTE));
-        if bracketed {
-            let mut b = b"\x1b[200~".to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b.extend_from_slice(b"\x1b[201~");
-            self.input(&b);
-        } else {
-            self.input(s.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
-        }
+        // 一律用 bracketed paste 包起來：即使 daemon 傳來的畫面快照還沒帶到
+        // BRACKETED_PASTE 旗標，也不會把貼上內容的換行當成 Enter 而誤送出。
+        self.input(&paste_bytes(s));
     }
 
     fn on_key(&mut self, k: KeyEvent) {
@@ -1508,4 +1499,39 @@ fn leftovers_text(items: &[GcItem]) -> String {
         "\n\n要刪除這些副本嗎？有未 commit 變更的副本會保留，已合併的 branch 一併刪除。(y/n)",
     );
     t
+}
+
+/// 把貼上的文字包成 bracketed paste 序列。內容中若夾帶結束標記會先移除，
+/// 避免貼上的文字提早結束貼上、讓後面的換行被當成按鍵執行。
+fn paste_bytes(s: &str) -> Vec<u8> {
+    const START: &[u8] = b"\x1b[200~";
+    const END: &[u8] = b"\x1b[201~";
+    let clean = s.replace("\x1b[201~", "");
+    let mut b = START.to_vec();
+    b.extend_from_slice(clean.as_bytes());
+    b.extend_from_slice(END);
+    b
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::paste_bytes;
+
+    #[test]
+    fn multiline_paste_is_wrapped_not_executed() {
+        let b = paste_bytes("a\nb\r\nc");
+        assert_eq!(b, b"\x1b[200~a\nb\r\nc\x1b[201~");
+    }
+
+    #[test]
+    fn embedded_end_marker_is_stripped() {
+        let b = paste_bytes("x\x1b[201~\nrm -rf /");
+        assert_eq!(b, b"\x1b[200~x\nrm -rf /\x1b[201~");
+        assert_eq!(b.windows(6).filter(|w| *w == b"\x1b[201~").count(), 1);
+    }
+
+    #[test]
+    fn empty_paste_still_wrapped() {
+        assert_eq!(paste_bytes(""), b"\x1b[200~\x1b[201~");
+    }
 }

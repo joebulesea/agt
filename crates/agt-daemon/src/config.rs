@@ -447,6 +447,12 @@ impl Config {
             merge_strategy: self.general.merge_strategy.clone(),
             osc52: self.general.osc52.clone(),
             agents: self.agents.keys().cloned().collect(),
+            auto_commit_agents: self
+                .agents
+                .iter()
+                .filter(|(_, a)| a.auto_commit)
+                .map(|(n, _)| n.clone())
+                .collect(),
         }
     }
 

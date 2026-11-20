@@ -11,6 +11,8 @@
 
 ### 新增
 
+- 新增分頁表單的 Agent 欄位、左側欄分頁清單（第二行行尾的 `auto`）與標題列（`[auto_commit]`）會標出 `auto_commit`（該 Agent 收尾前會自動 commit）；`agt config check` 也列出每個 Agent 展開 `extends` 後的 `auto_commit` 值
+- 左側欄標題列加上可點的「«」收合按鈕，收合後顯示「»」展開按鈕（與 `b` 鍵相同）；空間太窄時「«」會隱藏
 - `agt doctor`：一次檢查執行環境，每個問題附上下一步。項目：agt 與 agtd 是否在同一個資料夾、daemon 狀態（版本與通訊協定是否一致、是否因設定檔錯誤而使用預設值）、設定檔（沿用 `agt config check`）、資料目錄可否寫入與 `agtd.log` 最近的錯誤、git（版本、`user.name` / `user.email`）、GitHub CLI 登入、Docker / Docker Sandboxes、`curl` 與 `tar`（`agt update` 需要）。只讀取不修改；有失敗項目時 exit 1，選用工具沒安裝只列為資訊
 - `agt config check [--file F] [--repo DIR]`：不啟動 daemon 就檢查設定檔。語法與欄位錯誤顯示檔名與行號（exit 1）；合法但可疑的項目列為警告（exit 0）：Agent 的 `command` 不在 PATH 中、拼錯的 `{變數}`（`update` 不支援變數）、`status_source = "hooks"` 但不是 claude、`resume_args` 用了 `{conversation}` 卻沒有 `new_args`、`[repos]` 的目錄不存在、`copy_files` 不是 repo 內的相對路徑；`--repo` 一併檢查該 repo 的 `.agt.toml`。只檢查使用者設定檔裡寫到的 Agent，沒安裝的內建 Agent 不會一直警告
 - `agt uninstall`：停止 daemon、移除 agt 的 Docker 容器（`label=agt=1`）與沙箱（`agt-*`）、刪除 `agt` / `agtd`、從 Windows 使用者 PATH 移除安裝位置。設定與資料（`--purge`）、worktree（`--worktrees`）預設不刪，互動模式會另外詢問；`--dry-run` 只列出會做什麼，`-y` 略過確認。Docker 映像檔與 volume、repo 裡的 `agt/*` branch 不會動
