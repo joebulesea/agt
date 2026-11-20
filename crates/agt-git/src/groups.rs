@@ -460,10 +460,14 @@ pub fn finish_preview(
             .unwrap_or_else(|| task.to_string());
         if merge {
             // 分支上已有的 commit，加上收尾時會自動 commit 的未提交變更
-            let ahead: usize = git_wt(repo, worktree, &["rev-list", "--count", &format!("{base}..HEAD")])?
-                .trim()
-                .parse()
-                .unwrap_or(0);
+            let ahead: usize = git_wt(
+                repo,
+                worktree,
+                &["rev-list", "--count", &format!("{base}..HEAD")],
+            )?
+            .trim()
+            .parse()
+            .unwrap_or(0);
             let pending = usize::from(auto_commit && is_dirty_wt(repo, worktree, true)?);
             let n = ahead + pending;
             let (count, note) = match strategy {
@@ -472,7 +476,9 @@ pub fn finish_preview(
                 "merge" => (n + 1, format!("merge，{n} 個 commit 加 1 個 merge commit")),
                 _ => (n, format!("策略稍後選擇，分支有 {n} 個 commit")),
             };
-            out.push(format!("合併進 {base}：預計 {count} 個 commit（{note}）；不開 PR"));
+            out.push(format!(
+                "合併進 {base}：預計 {count} 個 commit（{note}）；不開 PR"
+            ));
         } else {
             out.push("1 個 commit、1 個 PR".to_string());
         }
@@ -480,7 +486,11 @@ pub fn finish_preview(
         if let Some(m) = &msg {
             // 第一個非空白行是標題，其餘是內文
             let body = m.trim_start().split_once('\n').map_or("", |x| x.1);
-            out.extend(preview_lines(body, 4).into_iter().map(|l| format!("    {l}")));
+            out.extend(
+                preview_lines(body, 4)
+                    .into_iter()
+                    .map(|l| format!("    {l}")),
+            );
         }
         if !merge && let Some(b) = read_note(worktree, PR_BODY_FILE)? {
             out.push("  PR 說明：".into());

@@ -955,7 +955,9 @@ fn preview_merge_counts_commits_per_strategy() {
     // 分支上有 2 個 commit，乾淨：沒有待自動 commit 的變更
     let n = |s: &str, auto: bool| preview(repo.path(), &wt, true, s, auto);
     assert!(n("rebase", true).contains("預計 2 個 commit"));
-    assert!(n("merge", true).contains("預計 3 個 commit（merge，2 個 commit 加 1 個 merge commit）"));
+    assert!(
+        n("merge", true).contains("預計 3 個 commit（merge，2 個 commit 加 1 個 merge commit）")
+    );
     assert!(n("squash", true).contains("預計 1 個 commit（squash"));
     assert!(n("ask", true).contains("分支有 2 個 commit"));
 

@@ -407,7 +407,9 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 1 => &preview[1],
                 _ => &none,
             };
-            let max_preview = (area.height as usize).saturating_sub(lines.len() + 8).max(2);
+            let max_preview = (area.height as usize)
+                .saturating_sub(lines.len() + 8)
+                .max(2);
             for (i, l) in preview.iter().enumerate() {
                 if i == max_preview {
                     lines.push(Line::styled("  …", Style::new().fg(Color::DarkGray)));
