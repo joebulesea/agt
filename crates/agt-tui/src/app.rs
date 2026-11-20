@@ -23,6 +23,8 @@ pub enum AppEvent {
     CreateFailed(Box<(ClientError, CreateSession)>),
     Finished(FinishAction, Result<String, ClientError>),
     Diff(Result<String, ClientError>),
+    /// 收尾視窗的預覽（分頁 id, 內容）。
+    FinishPreview(String, &'static str, Result<String, ClientError>),
     Searched(bool),
     Closed(Result<(), ClientError>),
     /// 開啟 TUI 時找到的、留下來的 worktree 副本（`agt gc`）。
@@ -142,6 +144,8 @@ pub enum Popup {
     New(NewForm),
     Finish {
         selected: usize,
+        /// 預計產生的 commit / PR 摘要，[merge, pr]；載入中或失敗時是一行說明。
+        preview: [Vec<String>; 2],
     },
     /// 關閉有 worktree 的分頁：選擇刪除或保留副本。
     Close {

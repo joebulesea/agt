@@ -169,6 +169,24 @@ impl App {
                 _ => self.show_text(&format!("{} 失敗", action.name()), &e.to_string(), false),
             },
             AppEvent::Diff(Ok(text)) => self.show_text("diff", &text, true),
+            AppEvent::FinishPreview(id, action, r) => {
+                if self.active.as_deref() == Some(id.as_str())
+                    && let Some(Popup::Finish { preview, .. }) = self.popup.as_mut()
+                {
+                    preview[usize::from(action == "pr")] = match r {
+                        // 預覽內容來自 Agent 寫的說明檔：控制字元換成可見符號，避免寫進終端機
+                        Ok(t) => t
+                            .lines()
+                            .map(|l| {
+                                l.chars()
+                                    .map(|c| if c.is_control() { '·' } else { c })
+                                    .collect()
+                            })
+                            .collect(),
+                        Err(e) => vec![format!("無法預覽：{e}")],
+                    };
+                }
+            }
             AppEvent::Diff(Err(e)) => self.set_message(e.to_string(), true),
             AppEvent::Searched(found) => {
                 if !found {

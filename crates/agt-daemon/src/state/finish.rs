@@ -170,6 +170,26 @@ impl Daemon {
         Ok(msg.as_deref().and_then(agt_git::subject_line))
     }
 
+    pub fn finish_preview(&self, id: &str, action: &str) -> OpResult<String> {
+        let info = self.get(id)?;
+        let (wt, _, base, repo) = need_worktree(&info)?;
+        let strategy = self.cfg().general.merge_strategy.clone();
+        let auto_commit = self
+            .cfg()
+            .agents
+            .get(&info.agent)
+            .is_some_and(|a| a.auto_commit);
+        Ok(agt_git::finish_preview(
+            Path::new(&repo),
+            Path::new(&wt),
+            &base,
+            &info.task,
+            action == "merge",
+            &strategy,
+            auto_commit,
+        )?)
+    }
+
     pub fn diff(&self, id: &str) -> OpResult<String> {
         let info = self.get(id)?;
         let (wt, _, base, repo) = need_worktree(&info)?;

@@ -874,3 +874,114 @@ fn merge_groups_stops_on_conflict_and_keeps_finished_groups() {
     // 前面的組 one 已合進去
     assert!(root.join("one/a.txt").exists());
 }
+
+// ---- 收尾預覽 ----
+
+fn preview(repo: &Path, wt: &Path, merge: bool, strategy: &str, auto: bool) -> String {
+    finish_preview(repo, wt, "main", "任務", merge, strategy, auto).unwrap()
+}
+
+#[test]
+fn preview_pr_grouped_lists_every_group_with_pr_body() {
+    let (repo, _w, wt, _b) = grouped_worktree();
+    let d = wt.join(NOTES_DIR).join("groups/one");
+    std::fs::write(d.join(PR_BODY_FILE), "## 做了什麼\n加入 one\n第三行\n").unwrap();
+    let p = preview(repo.path(), &wt, false, "ask", false);
+    assert!(p.starts_with("分成 3 組：3 個 commit、3 個 PR"), "{p}");
+    assert!(p.contains("[one] 加入 one（1 個路徑）"), "{p}");
+    assert!(p.contains("[two] 任務（two）"), "{p}"); // 沒有 COMMIT_MSG：任務名稱（組名）
+    assert!(p.contains("[rest] 任務（rest）"), "{p}"); // 沒被認領的變更
+    assert!(p.contains("## 做了什麼") && p.contains("加入 one"), "{p}");
+    assert!(p.contains("…") && !p.contains("第三行"), "{p}"); // 只列前兩行
+}
+
+#[test]
+fn preview_merge_grouped_has_no_pr_and_names_strategy() {
+    let (repo, _w, wt, _b) = grouped_worktree();
+    std::fs::write(
+        wt.join(NOTES_DIR).join("groups/one").join(PR_BODY_FILE),
+        "PR 才有的說明\n",
+    )
+    .unwrap();
+    for (s, note) in [
+        ("merge", "每組一個 merge commit"),
+        ("squash", "每組壓成一個 commit"),
+        ("rebase", "每組一個 commit 接在 base 後面"),
+        ("ask", "合併策略稍後選擇"),
+    ] {
+        let p = preview(repo.path(), &wt, true, s, false);
+        assert!(p.starts_with("分成 3 組依序合進 main：3 個 commit"), "{p}");
+        assert!(p.contains(note) && p.contains("不開 PR"), "{s}: {p}");
+        assert!(!p.contains("PR 才有的說明"), "{s}: {p}");
+    }
+}
+
+#[test]
+fn preview_without_groups_uses_notes_or_task() {
+    let repo = init_repo();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("wp");
+    add_worktree(repo.path(), &wt, "agt/test/p-000010", "main").unwrap();
+    std::fs::write(wt.join("x.txt"), "x\n").unwrap();
+
+    // 沒有說明檔：標題用任務名稱
+    let p = preview(repo.path(), &wt, false, "ask", true);
+    assert_eq!(p, "1 個 commit、1 個 PR\n▸ 任務");
+
+    let notes = wt.join(NOTES_DIR);
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(notes.join(COMMIT_MSG_FILE), "新增 x\n\n內文一\n內文二\n").unwrap();
+    std::fs::write(notes.join(PR_BODY_FILE), "## 說明\n詳細\n").unwrap();
+    let p = preview(repo.path(), &wt, false, "ask", true);
+    assert!(p.contains("▸ 新增 x") && p.contains("    內文一"), "{p}");
+    assert!(p.contains("PR 說明：") && p.contains("    ## 說明"), "{p}");
+    // merge 不開 PR，不顯示 PR 說明
+    let p = preview(repo.path(), &wt, true, "squash", true);
+    assert!(p.contains("▸ 新增 x") && p.contains("不開 PR"), "{p}");
+    assert!(!p.contains("PR 說明"), "{p}");
+}
+
+#[test]
+fn preview_merge_counts_commits_per_strategy() {
+    let repo = init_repo();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("wc");
+    add_worktree(repo.path(), &wt, "agt/test/c-000011", "main").unwrap();
+    for f in ["b.txt", "c.txt"] {
+        std::fs::write(wt.join(f), "x\n").unwrap();
+        git(&wt, &["add", "."]).unwrap();
+        git(&wt, &["commit", "-q", "-m", f]).unwrap();
+    }
+    // 分支上有 2 個 commit，乾淨：沒有待自動 commit 的變更
+    let n = |s: &str, auto: bool| preview(repo.path(), &wt, true, s, auto);
+    assert!(n("rebase", true).contains("預計 2 個 commit"));
+    assert!(n("merge", true).contains("預計 3 個 commit（merge，2 個 commit 加 1 個 merge commit）"));
+    assert!(n("squash", true).contains("預計 1 個 commit（squash"));
+    assert!(n("ask", true).contains("分支有 2 個 commit"));
+
+    // 有未 commit 的變更：auto_commit 開啟時多 1 個，關閉時不算
+    std::fs::write(wt.join("d.txt"), "d\n").unwrap();
+    assert!(n("rebase", true).contains("預計 3 個 commit"));
+    assert!(n("merge", true).contains("預計 4 個 commit"));
+    assert!(n("rebase", false).contains("預計 2 個 commit"));
+    assert!(n("squash", true).contains("預計 1 個 commit"));
+}
+
+#[test]
+fn preview_is_read_only_and_rejects_bad_groups() {
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let before = git(repo.path(), &["branch", "--list"]).unwrap();
+    preview(repo.path(), &wt, false, "ask", true);
+    preview(repo.path(), &wt, true, "merge", true);
+    // 沒有建立分組 branch、沒有 commit，變更仍在
+    assert_eq!(git(repo.path(), &["branch", "--list"]).unwrap(), before);
+    assert!(!branch_exists(repo.path(), &format!("{branch}-one")));
+    assert!(is_dirty_wt(repo.path(), &wt, true).unwrap());
+
+    // 分組格式錯誤：回傳錯誤，讓視窗顯示原因
+    write_group(&wt, "bad", "\n", None);
+    let e = finish_preview(repo.path(), &wt, "main", "任務", false, "ask", false)
+        .expect_err("FILES 是空的")
+        .to_string();
+    assert!(e.contains("FILES"), "{e}");
+}

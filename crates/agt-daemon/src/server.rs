@@ -364,6 +364,9 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
         ClientMsg::Finish { id, action, force } => {
             blocking!(|d: &Arc<Daemon>| d.finish(&id, action, force).map(ReplyBody::Text))
         }
+        ClientMsg::FinishPreview { id, action } => {
+            blocking!(|d: &Arc<Daemon>| d.finish_preview(&id, &action).map(ReplyBody::Text))
+        }
         ClientMsg::Diff { id } => blocking!(|d: &Arc<Daemon>| d.diff(&id).map(ReplyBody::Text)),
         ClientMsg::Rename { id, task } => {
             reply(out, req_id, d.rename(&id, &task).map(ReplyBody::Session))

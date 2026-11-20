@@ -389,7 +389,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 draw_browser(f, area, b, &mut hits);
             }
         }
-        Popup::Finish { selected } => {
+        Popup::Finish { selected, preview } => {
             let mut lines = vec![Line::raw("")];
             for (i, (name, desc)) in FINISH_ITEMS.iter().enumerate() {
                 let style = if i == *selected {
@@ -400,11 +400,32 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 lines.push(Line::styled(format!("  {name:<8} {desc}  "), style));
             }
             lines.push(Line::raw(""));
+            // 預計產生的 commit / PR（pr、merge 的內容；keep、discard 不會產生）
+            let none = vec!["keep、discard 不會產生 commit 或 PR".to_string()];
+            let preview = match *selected {
+                0 => &preview[0],
+                1 => &preview[1],
+                _ => &none,
+            };
+            let max_preview = (area.height as usize).saturating_sub(lines.len() + 8).max(2);
+            for (i, l) in preview.iter().enumerate() {
+                if i == max_preview {
+                    lines.push(Line::styled("  …", Style::new().fg(Color::DarkGray)));
+                    break;
+                }
+                let style = if i == 0 {
+                    Style::new().fg(Color::Yellow)
+                } else {
+                    Style::new()
+                };
+                lines.push(Line::styled(format!("  {l}"), style));
+            }
+            lines.push(Line::raw(""));
             lines.push(Line::styled(
                 "  點選項或 ↑↓ 選擇 · Enter 執行 · Esc 取消",
                 Style::new().fg(Color::DarkGray),
             ));
-            let r = centered(area, 56, lines.len() as u16 + 2);
+            let r = centered(area, 72, lines.len() as u16 + 2);
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(lines).block(block("收尾")), r);
             menu_hits(&mut hits, r, FINISH_ITEMS.len());
