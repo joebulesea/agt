@@ -6,8 +6,8 @@ impl Daemon {
     pub(super) fn remove_entry(&self, id: &str, finish_action: Option<&str>) -> OpResult<()> {
         self.store().end_session(id, finish_action)?;
         self.run_on_close(id);
-        self.entries.lock().unwrap().remove(id);
-        self.tamper_warned.lock().unwrap().remove(id);
+        self.entries.lock_or_recover().remove(id);
+        self.tamper_warned.lock_or_recover().remove(id);
         // 分頁關閉後紀錄檔就沒有人會看了（每個最多約 100 MB，且可能含有機密）。
         // Windows 上 Agent 剛被結束時檔案可能還開著，刪不掉就留著，只記錄。
         let logs = self.paths.logs();
@@ -27,8 +27,7 @@ impl Daemon {
 
     pub(super) fn others_share(&self, id: &str, worktree: &str) -> bool {
         self.entries
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .values()
             .any(|e| e.info.id != id && e.info.worktree.as_deref() == Some(worktree))
     }

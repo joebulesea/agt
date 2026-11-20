@@ -1,0 +1,43 @@
+# cargo-deny 設定：授權、重複版本、相依來源。
+# 已知弱點由 CI 的 `cargo audit` 負責，這裡只跑 bans / licenses / sources
+#（`cargo deny check bans licenses sources`），避免兩邊重複回報。
+
+[graph]
+all-features = true
+
+[licenses]
+# 允許的授權（SPDX）。新增相依套件被擋下時，先確認授權可接受再加進來。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    "Unlicense",
+    "BSL-1.0",
+]
+confidence-threshold = 0.9
+
+# 本專案自己的 crate 是 `UNLICENSED` + `publish = false`，不納入檢查。
+# 決定授權條款後可以移除這一項（見 docs/TODO-安裝與發布.md）。
+[licenses.private]
+ignore = true
+
+[bans]
+# 同一個套件出現多個版本只警告（GUI / TUI 相依常有，不值得擋 CI）。
+multiple-versions = "warn"
+# 禁止 `*` 版本需求；workspace 內的 path 相依除外。
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -63,3 +63,15 @@ jobs:
           persist-credentials: false
       - run: sh -n scripts/install.sh
       - run: shellcheck scripts/install.sh
+
+  # 授權、重複版本與相依來源（設定在 deny.toml；弱點檢查由上面的 audit 負責）
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-deny
+      - run: cargo deny check bans licenses sources

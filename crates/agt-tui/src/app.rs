@@ -268,6 +268,7 @@ impl App {
         cwd: String,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> App {
+        crate::theme::set(&ui.theme, &ui.colors);
         App {
             client,
             prefix: Prefix::parse(&ui.prefix_key),

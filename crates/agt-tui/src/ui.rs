@@ -1,6 +1,7 @@
 //! 畫面繪製：左側欄、主區域、底部狀態列（規格 8.1）。
 
 use crate::app::{App, CLOSE_ITEMS, Click, ClickHit, Confirm, FINISH_ITEMS, Popup, STRATEGIES};
+use crate::theme::theme;
 use agt_proto::screen::{Color as PColor, Screen, flags};
 use agt_proto::{AgentStatus, SessionInfo};
 use crossterm::event::KeyCode;
@@ -46,7 +47,7 @@ fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
     16 + 36 * q(r) + 6 * q(g) + q(b)
 }
 
-fn color(c: PColor, tc: bool) -> Color {
+pub(crate) fn color(c: PColor, tc: bool) -> Color {
     match c {
         PColor::Default => Color::Reset,
         PColor::Idx(i) => Color::Indexed(i),
@@ -57,13 +58,13 @@ fn color(c: PColor, tc: bool) -> Color {
 
 pub fn status_style(s: AgentStatus) -> Style {
     match s {
-        AgentStatus::Running => Style::new().fg(Color::Green),
-        AgentStatus::Thinking => Style::new().fg(Color::Cyan),
-        AgentStatus::WaitingInput => Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        AgentStatus::Done => Style::new().fg(Color::Gray),
-        AgentStatus::Error => Style::new().fg(Color::Red),
-        AgentStatus::Starting => Style::new().fg(Color::Blue),
-        AgentStatus::Idle | AgentStatus::Exited => Style::new().fg(Color::DarkGray),
+        AgentStatus::Running => Style::new().fg(theme().green),
+        AgentStatus::Thinking => Style::new().fg(theme().cyan),
+        AgentStatus::WaitingInput => Style::new().fg(theme().yellow).add_modifier(Modifier::BOLD),
+        AgentStatus::Done => Style::new().fg(theme().gray),
+        AgentStatus::Error => Style::new().fg(theme().red),
+        AgentStatus::Starting => Style::new().fg(theme().blue),
+        AgentStatus::Idle | AgentStatus::Exited => Style::new().fg(theme().dark_gray),
     }
 }
 
@@ -134,7 +135,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.screen_area = area;
     app.send_resize();
 
-    let border = Style::new().fg(Color::DarkGray);
+    let border = Style::new().fg(theme().dark_gray);
     let buf = f.buffer_mut();
     for y in 0..body_h {
         buf[(sep_x, y)].set_symbol("│").set_style(border);
@@ -199,8 +200,8 @@ fn button(
 
 fn button_style() -> Style {
     Style::new()
-        .fg(Color::Black)
-        .bg(Color::Cyan)
+        .fg(theme().on_accent)
+        .bg(theme().cyan)
         .add_modifier(Modifier::BOLD)
 }
 

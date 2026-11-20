@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -191,6 +192,16 @@ pub struct UiConfig {
     /// 設了 `auto_commit` 的 Agent（`extends` 展開後）。新增分頁時用來提示收尾會自動 commit。
     #[serde(default)]
     pub auto_commit_agents: Vec<String>,
+    /// dark | light | colorblind：TUI 的配色
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// 設定檔 `[colors]`：覆寫主題中個別顏色（名稱見 `colors::COLOR_KEYS`）
+    #[serde(default)]
+    pub colors: BTreeMap<String, String>,
+}
+
+fn default_theme() -> String {
+    "dark".into()
 }
 
 fn default_osc52() -> String {
@@ -212,6 +223,8 @@ impl Default for UiConfig {
                 "shell".into(),
             ],
             auto_commit_agents: Vec::new(),
+            theme: default_theme(),
+            colors: BTreeMap::new(),
         }
     }
 }

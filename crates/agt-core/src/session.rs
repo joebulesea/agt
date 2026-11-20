@@ -5,6 +5,7 @@ use crate::osc::OscScanner;
 use crate::platform;
 use crate::term::{TermEvent, Terminal};
 use crate::{Error, Result};
+use agt_proto::sync::MutexExt;
 use agt_proto::{AgentStatus, Screen, ScreenDiff, ScreenUpdate};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
@@ -266,8 +267,8 @@ impl Session {
         };
         tracing::debug!(id = %self.id, ?code, "pump：子行程已結束");
         // 關閉 PTY。Windows 的 ClosePseudoConsole 會阻塞，不能在 async 執行緒上做。
-        self.input.lock().unwrap().take();
-        let master = self.master.lock().unwrap().take();
+        self.input.lock_or_recover().take();
+        let master = self.master.lock_or_recover().take();
         if let Some(m) = master {
             let _ = std::thread::Builder::new()
                 .name("agt-pty-close".into())
@@ -285,7 +286,7 @@ impl Session {
                 .spawn(move || platform::run_cleanup(&cmd));
         }
         self.flush_frame();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         inner.exit_code = code;
         if let Some(log) = inner.log.as_mut() {
             let _ = log.flush();
@@ -312,7 +313,7 @@ impl Session {
 
     fn on_output(&self, chunk: &[u8]) {
         let mut writes = Vec::new();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         if let Some(log) = inner.log.as_mut()
             && log.write_all(chunk).is_err()
         {
@@ -360,7 +361,7 @@ impl Session {
     }
 
     fn periodic(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         if !inner.status.is_alive() || inner.exit_code.is_some() {
             return;
         }
@@ -420,12 +421,12 @@ impl Session {
         source: StatusSource,
         message: Option<String>,
     ) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         self.set_status_locked(&mut inner, to, source, message)
     }
 
     fn flush_frame(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         if !inner.dirty {
             return;
         }
@@ -483,7 +484,7 @@ impl Session {
     /// 完整快照；會先把待送的差異送給其他觀看者。
     pub fn snapshot(&self) -> Screen {
         self.flush_frame();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         let screen = inner.term.screen();
         if self.screens.receiver_count() > 0 {
             inner.last_frame = Some(screen.clone());
@@ -496,7 +497,7 @@ impl Session {
     }
 
     fn send_input(&self, bytes: Vec<u8>) {
-        if let Some(tx) = self.input.lock().unwrap().as_ref() {
+        if let Some(tx) = self.input.lock_or_recover().as_ref() {
             let _ = tx.send(bytes);
         }
     }
@@ -504,7 +505,7 @@ impl Session {
     /// 使用者輸入：原樣送給 PTY。若正在捲動歷史，先回到底部。
     pub fn write(&self, bytes: &[u8]) {
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock_or_recover();
             if inner.term.display_offset() > 0 {
                 inner.term.scroll(i32::MIN);
                 inner.dirty = true;
@@ -516,14 +517,14 @@ impl Session {
     pub fn resize(&self, cols: u16, rows: u16) {
         let cols = cols.clamp(2, agt_proto::MAX_COLS);
         let rows = rows.clamp(1, agt_proto::MAX_ROWS);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         if inner.term.cols() == cols && inner.term.rows() == rows {
             return;
         }
         inner.term.resize(cols, rows);
         inner.dirty = true;
         drop(inner);
-        if let Some(m) = self.master.lock().unwrap().as_ref() {
+        if let Some(m) = self.master.lock_or_recover().as_ref() {
             let _ = m.resize(PtySize {
                 rows,
                 cols,
@@ -534,29 +535,29 @@ impl Session {
     }
 
     pub fn size(&self) -> (u16, u16) {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.lock_or_recover();
         (inner.term.cols(), inner.term.rows())
     }
 
     pub fn scroll(&self, delta: i32) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         inner.term.scroll(delta);
         inner.dirty = true;
     }
 
     pub fn search(&self, query: &str) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock_or_recover();
         let found = inner.term.search_up(query);
         inner.dirty = true;
         found
     }
 
     pub fn status(&self) -> AgentStatus {
-        self.inner.lock().unwrap().status
+        self.inner.lock_or_recover().status
     }
 
     pub fn exit_code(&self) -> Option<i32> {
-        self.inner.lock().unwrap().exit_code
+        self.inner.lock_or_recover().exit_code
     }
 
     pub fn pid(&self) -> Option<u32> {
@@ -564,7 +565,7 @@ impl Session {
     }
 
     pub fn is_running(&self) -> bool {
-        self.inner.lock().unwrap().exit_code.is_none() && self.input.lock().unwrap().is_some()
+        self.inner.lock_or_recover().exit_code.is_none() && self.input.lock_or_recover().is_some()
     }
 
     /// 結束整個行程樹。
@@ -572,7 +573,7 @@ impl Session {
         if let Some(pid) = self.pid {
             platform::kill_tree(pid);
         }
-        if let Some(k) = self.killer.lock().unwrap().as_mut() {
+        if let Some(k) = self.killer.lock_or_recover().as_mut() {
             let _ = k.kill();
         }
         // 同步執行：daemon 關閉時也要確定外部資源（例如容器）已清掉

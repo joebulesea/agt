@@ -48,18 +48,42 @@ agt rename <id> "新任務名稱"
 agt finish <id> merge --strategy squash   # merge | pr | keep | discard
 agt kill <id> [--cleanup]
 agt restart <id> [--fresh]             # daemon 重啟後，在同一個 worktree 重新啟動 Agent（接續上次的對話；--fresh 開新對話）
-agt gc [--prune]                       # 比對 git worktree 與資料庫，列出 / 清理留下的 worktree 副本
+agt gc [--prune] [--json]                       # 比對 git worktree 與資料庫，列出 / 清理留下的 worktree 副本
 agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docker Sandboxes，加入 Agent（第一次執行 agt 時自動執行）
-agt doctor                             # 檢查執行環境（daemon、設定檔、git、Docker、gh…）並說明下一步；有失敗項目時 exit 1
-agt config check [--file F] [--repo DIR]   # 檢查設定檔（不需要 daemon）：錯誤含行號，另列出找不到的指令、拼錯的變數等警告
-agt update [--check] [--version 0.3.0] [-y]   # 從 GitHub Release 更新 agt（核對 SHA256、重新啟動 daemon）
+agt doctor [--json]                    # 檢查執行環境（daemon、設定檔、git、Docker、gh…）並說明下一步；有失敗項目時 exit 1
+agt config check [--file F] [--repo DIR] [--json]   # 檢查設定檔（不需要 daemon）：錯誤含行號，另列出找不到的指令、拼錯的變數等警告
+agt update [--check [--json]] [--version 0.3.0] [-y]   # 從 GitHub Release 更新 agt（核對 SHA256、重新啟動 daemon）
 agt uninstall [--dry-run] [--purge] [--worktrees] [-y]   # 解除安裝（預設保留設定、資料與 worktree）
-agt daemon start|stop|restart|status
+agt daemon start|stop|restart|status [--json]   # status --json：`daemon_running`、`socket`，執行中時另有 pid、version、sessions、running（執行中的分頁數）…
+agt completions <bash|zsh|fish|powershell|elvish>   # 輸出 shell 補全腳本（不需要 daemon）
 ```
+
+#### Shell 補全
+
+```sh
+agt completions bash > ~/.local/share/bash-completion/completions/agt        # bash
+agt completions zsh  > ~/.zfunc/_agt          # zsh（~/.zfunc 要在 fpath 中，並在 compinit 之前）
+agt completions fish > ~/.config/fish/completions/agt.fish                    # fish
+```
+
+PowerShell：在 `$PROFILE` 加上 `agt completions powershell | Out-String | Invoke-Expression`。補全涵蓋子命令與選項（不含分頁 id 這類動態值）。
 
 `agt gc` 用來清理殘留的 worktree：它會比對 git worktree 與資料庫，列出已沒有對應分頁的副本，加上 `--prune` 才會實際刪除。
 
 新增分頁時（`Ctrl+A` → `n`）Base 欄位留空會使用主 repo 目前的 HEAD branch，畫面上會顯示實際的 branch；它不是 remote 的預設 branch 時以黃字提醒，避免 PR 開到 feature branch。底部狀態列最右邊顯示 agt 的版本號。Agent 結束後（例如 `/exit`），畫面上會出現可點擊的「重新啟動，接續對話（`R`）」與「開新對話（`N`）」按鈕。
+
+主題：`[general]` 的 `theme` 選擇 TUI 配色（左側欄、狀態列、浮動視窗；分頁中 Agent 自己輸出的顏色不受影響）：`dark`（預設）、`light`（亮色背景的終端機）、`colorblind`（紅綠色盲，避開紅／綠對比改用橘與藍）。修改設定檔後會熱重載，不必重開 agt。想改個別顏色時，在設定檔加 `[colors]` 區段覆寫主題（疊加在所選主題上），例如：
+
+```toml
+[colors]
+cyan = "#00afaf"   # 強調色
+yellow = "208"     # 256 色索引
+sel_bg = "darkgray"
+```
+
+顏色可寫 `#rrggbb`、`0`–`255`、ANSI 名稱（`black red green yellow blue magenta cyan gray darkgray white`）或 `default`；可覆寫的名稱見 [`config/default.toml`](config/default.toml)。不支援真彩的終端機會自動把 `#rrggbb` 降成 256 色。名稱或顏色寫錯時設定檔視為錯誤（狀態列顯示原因，沿用上一份有效的設定）。
+
+系統通知：分頁變成「等待輸入」、「完成」或「發生錯誤」，且你沒有在看那個分頁時，agt 會發送系統通知。`[general]` 的 `notify = false` 全部關閉，`notify_on` 選擇要通知的狀態：`waiting`、`done`、`error`、`exited`（Agent 行程結束），預設是前三者。Windows 上點擊通知會開新的終端機視窗（優先用 Windows Terminal，沒有則開新的 console）執行 `agt attach <id>` 並切到該分頁；需要 daemon 還在執行，通知進了通知中心後 daemon 若已重新啟動則點了沒反應。
 
 TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
 
@@ -162,5 +186,5 @@ Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --adviso
 - **IPC 存取限制**：只接受同一位使用者。Unix：socket 目錄 0700 且必須是自己的（不接受符號連結）、socket 0600，兩端都檢查對方的 uid；Windows：pipe 的 ACL 只允許目前的使用者與 SYSTEM，client 連線後確認 pipe 的擁有者。連線後 10 秒內沒有送出 Hello 會被中斷。同一位使用者的行程之間沒有再細分權限（分頁裡的 Agent 若在主機上執行，可以透過 `AGT_SOCKET` 操作其他分頁）。
 - **Windows 路徑長度**：worktree 路徑超過 240 字元且未開啟 `core.longpaths` 時拒絕建立（保留檔案名稱的空間）。
 - **Antigravity CLI / GitHub Copilot CLI / OpenAI Codex CLI**：只有規則比對（規格 14.2 待確認是否有 hooks）。Antigravity CLI 的 `--continue` 接續的是這個目錄最近一次的對話；Copilot CLI 用 `--session-id` 接續分頁自己的對話；Codex CLI 用 `resume --last`，同樣是接續最近一次的對話。
-- **未實作**：`cargo-dist` 打包、主題設定、`agt daemon stop` 之外的開機自動啟動（規格待決）。
+- **未實作**：`cargo-dist` 打包、`agt daemon stop` 之外的開機自動啟動（規格待決）。
 - **Windows 原生**：已在 Windows 11 以交叉編譯的執行檔實測 CLI 與 daemon 全流程；TUI 只在 Linux 容器內做過自動化測試，尚未在 Windows Terminal 中手動操作過。

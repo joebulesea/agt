@@ -210,7 +210,7 @@ impl Daemon {
             "status",
             json!({"to": "starting", "source": "daemon"}),
         );
-        self.entries.lock().unwrap().insert(
+        self.entries.lock_or_recover().insert(
             info.id.clone(),
             Entry {
                 info: info.clone(),

@@ -11,6 +11,16 @@
 
 ### 新增
 
+- `agt update --check --json`：輸出 `{current, latest, tag, status, update_available}`（`status`：`up_to_date`、`update_available`、`ahead`、`downgrade`），查詢失敗時輸出 `{error}` 並 exit 1
+- `agt gc --json` 與 `agt config check --json`：`gc` 輸出 `{pruned, items:[{kind, repo, path, branch, session}]}`；`config check` 成功時輸出 `{ok: true, config_file, config_exists, repo, worktree_root, agents, auto_commit, warnings}`，錯誤時輸出 `{ok: false, error}`，exit code 與文字模式相同（錯誤 1、警告 0）
+- `agt doctor --json` 與 `agt daemon status --json`：以 JSON 輸出給腳本或狀態列使用（`ls --json` 原本就有）。doctor 輸出 `{ok, failures, warnings, items:[{level, text, hint}]}`，有失敗項目時仍 exit 1；daemon status 輸出 `daemon_running`、`socket`，執行中時另有 `pid`、`version`、`sessions`、`running`（執行中的分頁數）、`clients`、`data_dir`、`config_path`
+- 自訂顏色：設定檔 `[colors]` 區段可覆寫主題中的個別顏色（`#rrggbb`、0–255、ANSI 名稱或 `default`），疊加在 `theme` 之上；`agt config check` 會檢查名稱與寫法。
+- 主題設定：`[general] theme = "dark" | "light" | "colorblind"`。`light` 給亮色背景的終端機，`colorblind` 避開紅／綠對比；預設 `dark` 與原本配色相同。設定值會經由 `UiConfig` 傳給 TUI（新欄位有預設值，協定版本不變），設定檔熱重載後立即生效，寫錯時 `agt config check` 會報錯
+- Windows：點擊系統通知會開新的終端機視窗執行 `agt attach <id>`（優先 Windows Terminal，否則新的 console）。需要 daemon 仍在執行；其他平台行為不變
+- 系統通知可選擇狀態：`[general] notify_on = ["waiting", "done", "error"]`（預設前三者；另可加 `"exited"` 在 Agent 行程結束時通知，`notify = false` 仍是全部關閉）。分頁發生錯誤時現在也會通知（原本只有等待輸入與完成）；設定值寫錯時 `agt config check` 會報錯
+- `agt completions <shell>`：輸出 bash、zsh、fish、PowerShell、elvish 的補全腳本（子命令與選項；新增相依 `clap_complete`）
+- CI 新增 `cargo deny`（`deny.toml`）：檢查相依套件的授權白名單、`*` 版本需求與來源（只允許 crates.io）；弱點檢查仍由 `cargo audit` 負責
+
 - 收尾視窗（`m`）顯示預計產生的 commit / PR 數量與標題、說明（有分組時列出每組）。
 
 - 分組收尾：Agent 在 `.agt/groups/<組名>/` 放 `FILES`、`COMMIT_MSG`、`PR_BODY.md`，收尾 pr / merge 時每組各自一個 commit（pr 各自一個 PR），未認領的變更自成 `rest` 組。說明見 `docs/Agent-分組收尾說明.md`
@@ -41,6 +51,8 @@
 - 在 workspace 與各 crate 的 `Cargo.toml` 加上 `rust-version = "1.89"`，Rust 太舊時 cargo 會直接指出需要的版本，不再出現難懂的編譯錯誤
 
 ### 修正
+
+- daemon、核心與 client 的取鎖改用不會中毒的 helper（`agt_proto::sync`），某個執行緒 panic 後不會讓其他分頁跟著連鎖 panic
 
 - TUI 冒煙測試：OSC 52 預設改為 `ask` 後測試設定沒跟著更新，改成 `osc52 = "on"`，並改為逐格讀取畫面，不再因為 pyte 處理寬字元的限制而丟出 `IndexError`
 - 資料庫版本比 agt 新時（例如降版後）拒絕開啟並說明原因，不再靜默使用而可能寫壞資料

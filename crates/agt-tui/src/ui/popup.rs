@@ -106,7 +106,7 @@ pub(super) fn block(title: &str) -> Block<'_> {
     Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan))
+        .border_style(Style::new().fg(theme().cyan))
         .title(Span::styled(
             format!(" {title} "),
             Style::new().add_modifier(Modifier::BOLD),
@@ -135,21 +135,21 @@ pub(super) fn draw_browser(
     };
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(" 位置 ", Style::new().fg(Color::Gray)),
+            Span::styled(" 位置 ", Style::new().fg(theme().gray)),
             Span::styled(
                 truncate(&b.title(), inner_w.saturating_sub(7)),
                 Style::new().add_modifier(Modifier::BOLD),
             ),
         ]),
         match (&b.error, b.filter.is_empty()) {
-            (Some(e), _) => Line::styled(format!(" {e}"), Style::new().fg(Color::Red)),
+            (Some(e), _) => Line::styled(format!(" {e}"), Style::new().fg(theme().red)),
             (None, true) => Line::styled(
                 " 輸入文字篩選 · ⎇ = git repo",
-                Style::new().fg(Color::DarkGray),
+                Style::new().fg(theme().dark_gray),
             ),
             (None, false) => Line::from(vec![
-                Span::styled(" 篩選 ", Style::new().fg(Color::Gray)),
-                Span::styled(format!("{}▏", b.filter), Style::new().fg(Color::Yellow)),
+                Span::styled(" 篩選 ", Style::new().fg(theme().gray)),
+                Span::styled(format!("{}▏", b.filter), Style::new().fg(theme().yellow)),
             ]),
         },
     ];
@@ -166,11 +166,11 @@ pub(super) fn draw_browser(
         let text = truncate(&format!(" {icon} {label}"), inner_w);
         let pad = " ".repeat(inner_w.saturating_sub(text.width()));
         let style = if i == b.selected {
-            Style::new().fg(Color::Black).bg(Color::Cyan)
+            Style::new().fg(theme().on_accent).bg(theme().cyan)
         } else if e.kind == Kind::UseThis {
-            Style::new().fg(Color::Green)
+            Style::new().fg(theme().green)
         } else if e.git {
-            Style::new().fg(Color::Yellow)
+            Style::new().fg(theme().yellow)
         } else {
             Style::new()
         };
@@ -181,7 +181,7 @@ pub(super) fn draw_browser(
     }
     lines.push(Line::styled(
         " ↑↓ 移動 · Enter/→ 進入 · ←/Backspace 上一層 · Tab 選定反白的目錄 · Esc 取消",
-        Style::new().fg(Color::DarkGray),
+        Style::new().fg(theme().dark_gray),
     ));
     f.render_widget(Paragraph::new(lines).block(block("選擇 Repo 目錄")), r);
     hits.push(ClickHit {
@@ -243,22 +243,22 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             ];
             for (k, d) in rows {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:<14}", k), Style::new().fg(Color::Yellow)),
+                    Span::styled(format!("  {:<14}", k), Style::new().fg(theme().yellow)),
                     Span::raw(d.to_string()),
                 ]));
             }
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 "  燈號：● 執行中  ◐ 思考中  ⚠ 等待輸入  ✓ 完成  ✗ 錯誤  ○ 閒置/結束",
-                Style::new().fg(Color::Gray),
+                Style::new().fg(theme().gray),
             ));
             lines.push(Line::styled(
                 "  +N 領先 base 的 commit 數，✎ 有未 commit 的變更",
-                Style::new().fg(Color::Gray),
+                Style::new().fg(theme().gray),
             ));
             lines.push(Line::styled(
                 "  滑鼠：點左側欄切換分頁；點側欄與底部狀態列的按鈕執行指令",
-                Style::new().fg(Color::Gray),
+                Style::new().fg(theme().gray),
             ));
             let r = centered(area, 72, lines.len() as u16 + 2);
             f.render_widget(Clear, r);
@@ -273,13 +273,13 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             let field = |i: usize, label: &str, value: String| {
                 let focused = form.field == i;
                 let style = if focused {
-                    Style::new().fg(Color::Black).bg(Color::Cyan)
+                    Style::new().fg(theme().on_accent).bg(theme().cyan)
                 } else {
                     Style::new()
                 };
                 let cursor = if focused && i != 0 { "▏" } else { "" };
                 Line::from(vec![
-                    Span::styled(format!("  {label:<8}"), Style::new().fg(Color::Gray)),
+                    Span::styled(format!("  {label:<8}"), Style::new().fg(theme().gray)),
                     Span::styled(format!(" {value}{cursor} "), style),
                 ])
             };
@@ -321,7 +321,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 match base_warn {
                     Some(w) => Line::styled(
                         format!("  {}", truncate(&w, (r.width as usize).saturating_sub(4))),
-                        Style::new().fg(Color::Yellow),
+                        Style::new().fg(theme().yellow),
                     ),
                     None => Line::raw(""),
                 },
@@ -332,11 +332,11 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 Span::raw("  "),
                 Span::styled(ok, button_style()),
                 Span::raw("  "),
-                Span::styled(cancel, Style::new().fg(Color::Black).bg(Color::Gray)),
+                Span::styled(cancel, Style::new().fg(theme().on_accent).bg(theme().gray)),
             ]));
             lines.push(Line::styled(
                 "  點欄位輸入 · 點 ◀ ▶ 選 Agent · Tab/↑↓ 切換欄位 · Ctrl+O 瀏覽目錄",
-                Style::new().fg(Color::DarkGray),
+                Style::new().fg(theme().dark_gray),
             ));
             f.render_widget(Paragraph::new(lines).block(block("新增分頁")), r);
             // Repo 列最右邊的「瀏覽…」按鈕
@@ -393,7 +393,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             let mut lines = vec![Line::raw("")];
             for (i, (name, desc)) in FINISH_ITEMS.iter().enumerate() {
                 let style = if i == *selected {
-                    Style::new().fg(Color::Black).bg(Color::Cyan)
+                    Style::new().fg(theme().on_accent).bg(theme().cyan)
                 } else {
                     Style::new()
                 };
@@ -412,11 +412,11 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 .max(2);
             for (i, l) in preview.iter().enumerate() {
                 if i == max_preview {
-                    lines.push(Line::styled("  …", Style::new().fg(Color::DarkGray)));
+                    lines.push(Line::styled("  …", Style::new().fg(theme().dark_gray)));
                     break;
                 }
                 let style = if i == 0 {
-                    Style::new().fg(Color::Yellow)
+                    Style::new().fg(theme().yellow)
                 } else {
                     Style::new()
                 };
@@ -425,7 +425,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 "  點選項或 ↑↓ 選擇 · Enter 執行 · Esc 取消",
-                Style::new().fg(Color::DarkGray),
+                Style::new().fg(theme().dark_gray),
             ));
             let r = centered(area, 72, lines.len() as u16 + 2);
             f.render_widget(Clear, r);
@@ -437,14 +437,14 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             if let Some(agent) = busy {
                 lines.push(Line::styled(
                     format!("  {agent} 仍在執行中，關閉會結束它"),
-                    Style::new().fg(Color::Yellow),
+                    Style::new().fg(theme().yellow),
                 ));
                 lines.push(Line::raw(""));
             }
             let top = lines.len();
             for (i, (name, desc)) in CLOSE_ITEMS.iter().enumerate() {
                 let style = if i == *selected {
-                    Style::new().fg(Color::Black).bg(Color::Cyan)
+                    Style::new().fg(theme().on_accent).bg(theme().cyan)
                 } else {
                     Style::new()
                 };
@@ -453,7 +453,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 "  點選項或 ↑↓ 選擇 · Enter 執行 · Esc 取消",
-                Style::new().fg(Color::DarkGray),
+                Style::new().fg(theme().dark_gray),
             ));
             let r = centered(area, 56, lines.len() as u16 + 2);
             f.render_widget(Clear, r);
@@ -479,7 +479,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             let mut lines = vec![Line::raw("")];
             for (i, s) in STRATEGIES.iter().enumerate() {
                 let style = if i == *selected {
-                    Style::new().fg(Color::Black).bg(Color::Cyan)
+                    Style::new().fg(theme().on_accent).bg(theme().cyan)
                 } else {
                     Style::new()
                 };
@@ -505,7 +505,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 // 截斷說明也依寬度折行，整句一定顯示完整（含字數）
                 let note = wrap_lines(&truncated_note(action), body.width as usize);
                 let keep = room.saturating_sub(note.len());
-                let dim = Style::new().fg(Color::DarkGray);
+                let dim = Style::new().fg(theme().dark_gray);
                 lines
                     .into_iter()
                     .take(keep)
@@ -522,7 +522,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 Paragraph::new(Line::from(vec![
                     Span::styled(yes, button_style()),
                     Span::raw("  "),
-                    Span::styled(no, Style::new().fg(Color::Black).bg(Color::Gray)),
+                    Span::styled(no, Style::new().fg(theme().on_accent).bg(theme().gray)),
                 ])),
                 Rect::new(yx, by, r.width.saturating_sub(3), 1),
             );
@@ -575,11 +575,11 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 for (i, (name, body)) in tabs.iter().enumerate() {
                     let st = if i == *tab {
                         Style::new()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
+                            .fg(theme().on_accent)
+                            .bg(theme().cyan)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::new().fg(Color::Gray)
+                        Style::new().fg(theme().gray)
                     };
                     let _ = body;
                     spans.push(Span::styled(format!(" {} {name} ", i + 1), st));
@@ -592,27 +592,27 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                     Style::new()
                 } else if l.starts_with("### 已 commit") {
                     Style::new()
-                        .fg(Color::Black)
-                        .bg(Color::Green)
+                        .fg(theme().on_accent)
+                        .bg(theme().green)
                         .add_modifier(Modifier::BOLD)
                 } else if l.starts_with("### 未追蹤") {
                     Style::new()
-                        .fg(Color::Black)
-                        .bg(Color::Magenta)
+                        .fg(theme().on_accent)
+                        .bg(theme().magenta)
                         .add_modifier(Modifier::BOLD)
                 } else if l.starts_with("###") {
                     Style::new()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow)
+                        .fg(theme().on_accent)
+                        .bg(theme().yellow)
                         .add_modifier(Modifier::BOLD)
                 } else if l.starts_with("+++") || l.starts_with("---") || l.starts_with("diff ") {
                     Style::new().add_modifier(Modifier::BOLD)
                 } else if l.starts_with('+') {
-                    Style::new().fg(Color::Green)
+                    Style::new().fg(theme().green)
                 } else if l.starts_with('-') {
-                    Style::new().fg(Color::Red)
+                    Style::new().fg(theme().red)
                 } else if l.starts_with("@@") {
-                    Style::new().fg(Color::Cyan)
+                    Style::new().fg(theme().cyan)
                 } else {
                     Style::new()
                 };

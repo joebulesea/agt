@@ -1,6 +1,7 @@
 //! TUI、CLI 與未來 GUI 共用的 daemon client。
 
 use crate::codec::{encode_frame, input_frame};
+use crate::sync::MutexExt;
 use crate::transport;
 use crate::*;
 use std::collections::HashMap;
@@ -73,7 +74,7 @@ impl Client {
                             return true;
                         };
                         if let ServerMsg::Reply { req_id, result } = msg {
-                            if let Some(tx) = p2.lock().unwrap().remove(&req_id) {
+                            if let Some(tx) = p2.lock_or_recover().remove(&req_id) {
                                 let _ = tx.send(result);
                             }
                         } else {
@@ -91,7 +92,7 @@ impl Client {
                 true
             })
             .await;
-            p2.lock().unwrap().clear();
+            p2.lock_or_recover().clear();
             let _ = ev_tx.send(Incoming::Closed);
         });
 
@@ -136,7 +137,7 @@ impl Client {
     pub async fn request(&self, msg: ClientMsg) -> Result<ReplyBody, ClientError> {
         let req_id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(req_id, tx);
+        self.pending.lock_or_recover().insert(req_id, tx);
         self.send_json(req_id, msg)?;
         match rx.await {
             Ok(ReplyBody::Error { code, message }) => Err(ClientError::Remote { code, message }),

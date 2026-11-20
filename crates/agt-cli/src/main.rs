@@ -11,7 +11,8 @@ use agt_proto::client::{Client, ClientError, Connected, expect_session, expect_s
 use agt_proto::transport::{self, ENV_SESSION};
 use agt_proto::*;
 use anyhow::{Context, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use std::io::{IsTerminal, Read, Write};
 use std::time::{Duration, Instant};
 
@@ -103,6 +104,9 @@ enum Cmd {
         /// 清理：移除乾淨的孤兒 worktree、修正資料庫
         #[arg(long)]
         prune: bool,
+        /// 以 JSON 輸出：`{pruned, items: [{kind, repo, path, branch, session}]}`
+        #[arg(long)]
+        json: bool,
     },
     /// 初始設定：檢查並安裝 git / Docker / Docker Sandboxes，產生設定檔與 Dockerfile（第一次執行 agt 時會自動執行）
     Setup {
@@ -121,6 +125,9 @@ enum Cmd {
         /// 只檢查有沒有新版，不下載
         #[arg(long)]
         check: bool,
+        /// 搭配 --check：以 JSON 輸出 `{current, latest, tag, status, update_available}`
+        #[arg(long, requires = "check")]
+        json: bool,
         /// 指定版本（例如 0.3.0），預設最新版
         #[arg(long)]
         version: Option<String>,
@@ -144,11 +151,20 @@ enum Cmd {
         dry_run: bool,
     },
     /// 檢查執行環境（daemon、設定檔、git、Docker、gh 等），並說明每個問題的下一步
-    Doctor,
+    Doctor {
+        /// 以 JSON 輸出（有失敗項目時 exit 1）
+        #[arg(long)]
+        json: bool,
+    },
     /// 設定檔工具
     Config {
         #[command(subcommand)]
         cmd: ConfigCmd,
+    },
+    /// 輸出 shell 補全腳本（bash、zsh、fish、powershell、elvish），不需要 daemon
+    Completions {
+        /// 目標 shell
+        shell: Shell,
     },
     /// 管理 daemon
     Daemon {
@@ -167,6 +183,9 @@ enum ConfigCmd {
         /// 一併檢查這個 repo 的 `.agt.toml`
         #[arg(long)]
         repo: Option<String>,
+        /// 以 JSON 輸出（錯誤時 `{ok: false, error}`，exit 1）
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -187,7 +206,11 @@ enum DaemonCmd {
         #[arg(long, short)]
         yes: bool,
     },
-    Status,
+    Status {
+        /// 以 JSON 輸出：`daemon_running`、`socket`，執行中時另有 pid、version、sessions、running（執行中的分頁數）等欄位
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() {
@@ -201,6 +224,12 @@ fn main() {
     }) = &cli.cmd
     {
         notify(status, message.clone(), tool.clone(), session.clone());
+        return;
+    }
+    // 補全腳本只需要命令定義，不連 daemon、不建立 runtime
+    if let Some(Cmd::Completions { shell }) = &cli.cmd {
+        let mut cmd = Cli::command();
+        clap_complete::generate(*shell, &mut cmd, "agt", &mut std::io::stdout());
         return;
     }
     // daemon 自己建立 runtime，不能在 agt 的 runtime 內執行
@@ -589,11 +618,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("已在 {} 重新啟動 {}", s.cwd, s.agent);
             Ok(())
         }
-        Some(Cmd::Gc { prune }) => {
+        Some(Cmd::Gc { prune, json }) => {
             let c = ensure_daemon("cli").await?.client;
             let ReplyBody::Gc(items) = c.request(ClientMsg::Gc { prune }).await? else {
                 bail!("回應格式不符預期");
             };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&gc_json(prune, &items))?);
+                return Ok(());
+            }
             if items.is_empty() {
                 println!("worktree 與資料庫一致");
             }
@@ -619,18 +652,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Some(Cmd::Update {
             check,
+            json,
             version,
             yes,
-        }) => update::run(check, version, yes).await,
+        }) => update::run(check, json, version, yes).await,
         Some(Cmd::Uninstall {
             yes,
             purge,
             worktrees,
             dry_run,
         }) => uninstall::run(yes, purge, worktrees, dry_run).await,
-        Some(Cmd::Doctor) => doctor::run().await,
+        Some(Cmd::Doctor { json }) => doctor::run(json).await,
         Some(Cmd::Config {
-            cmd: ConfigCmd::Check { file, repo },
+            cmd: ConfigCmd::Check { file, repo, json },
         }) => {
             // 設定檔的解析與驗證在 agt-daemon（和 daemon 載入的是同一份程式）
             let mut args: Vec<String> = vec![];
@@ -640,11 +674,48 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if let Some(r) = repo {
                 args.extend(["--repo".into(), absolute(&r)]);
             }
+            if json {
+                args.push("--json".into());
+            }
             std::process::exit(agt_daemon::check_config(&args));
         }
         Some(Cmd::Daemon { cmd }) => daemon(cmd).await,
-        Some(Cmd::Notify { .. }) => unreachable!(),
+        Some(Cmd::Notify { .. } | Cmd::Completions { .. }) => unreachable!(),
     }
+}
+
+/// `agt daemon status` 連線 daemon 的結果。
+enum DaemonProbe {
+    /// 連得上；`None` = 回應不是預期的格式，沒有詳細資訊
+    Running(Option<DaemonInfo>),
+    /// daemon 在執行但拒絕連線（例如協定版本不同）
+    Error(String),
+    NotRunning,
+}
+
+/// `agt daemon status --json` 的輸出。`daemon_running` 是 daemon 是否在執行；
+/// `running` 是 `DaemonInfo` 原有的「執行中的分頁數」，兩者不能混用。
+fn daemon_status_json(socket: &str, probe: &DaemonProbe) -> anyhow::Result<serde_json::Value> {
+    Ok(match probe {
+        DaemonProbe::Running(Some(i)) => {
+            let mut v = serde_json::to_value(i)?;
+            v["daemon_running"] = true.into();
+            v["socket"] = socket.into();
+            v
+        }
+        DaemonProbe::Running(None) => {
+            serde_json::json!({"daemon_running": true, "socket": socket})
+        }
+        DaemonProbe::Error(message) => {
+            serde_json::json!({"daemon_running": false, "socket": socket, "error": message})
+        }
+        DaemonProbe::NotRunning => serde_json::json!({"daemon_running": false, "socket": socket}),
+    })
+}
+
+/// `agt gc --json` 的輸出：`{pruned, items: [{kind, repo, path, branch, session}]}`。
+fn gc_json(pruned: bool, items: &[GcItem]) -> serde_json::Value {
+    serde_json::json!({"pruned": pruned, "items": items})
 }
 
 async fn stop_daemon(yes: bool) -> anyhow::Result<bool> {
@@ -730,7 +801,20 @@ async fn daemon(cmd: DaemonCmd) -> anyhow::Result<()> {
             ensure_daemon("cli").await?;
             println!("daemon 已重新啟動");
         }
-        DaemonCmd::Status => match connect_kind("cli").await {
+        DaemonCmd::Status { json: true } => {
+            let socket = transport::endpoint();
+            let probe = match connect_kind("cli").await {
+                Ok(conn) => match conn.client.request(ClientMsg::DaemonStatus).await? {
+                    ReplyBody::Daemon(i) => DaemonProbe::Running(Some(i)),
+                    _ => DaemonProbe::Running(None),
+                },
+                Err(ClientError::Remote { message, .. }) => DaemonProbe::Error(message),
+                Err(_) => DaemonProbe::NotRunning,
+            };
+            let v = daemon_status_json(&socket, &probe)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        }
+        DaemonCmd::Status { json: false } => match connect_kind("cli").await {
             Ok(conn) => {
                 if let ReplyBody::Daemon(i) = conn.client.request(ClientMsg::DaemonStatus).await? {
                     println!("agt daemon {}（pid {}）", i.version, i.pid);
@@ -816,5 +900,211 @@ mod daemon_hint_tests {
             h.contains(if cfg!(windows) { "taskkill" } else { "pkill" }),
             "{h}"
         );
+    }
+}
+
+#[cfg(test)]
+mod gc_json_tests {
+    use super::*;
+
+    fn item(kind: &str, branch: Option<&str>, session: Option<&str>) -> GcItem {
+        GcItem {
+            kind: kind.into(),
+            repo: "/r/proj".into(),
+            path: "/w/x".into(),
+            branch: branch.map(Into::into),
+            session: session.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn empty_list() {
+        let v = gc_json(false, &[]);
+        assert_eq!(v["pruned"], false);
+        assert_eq!(v["items"].as_array().unwrap().len(), 0);
+        // 一定有這兩個欄位，腳本才不用判斷是否存在
+        assert_eq!(v.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn items_keep_all_fields() {
+        let v = gc_json(
+            true,
+            &[
+                item("orphan_worktree", Some("agt/x/orphan"), None),
+                item("closed_worktree", None, Some("ab12cd34")),
+            ],
+        );
+        assert_eq!(v["pruned"], true);
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["kind"], "orphan_worktree");
+        assert_eq!(items[0]["repo"], "/r/proj");
+        assert_eq!(items[0]["path"], "/w/x");
+        assert_eq!(items[0]["branch"], "agt/x/orphan");
+        assert!(items[0]["session"].is_null());
+        assert_eq!(items[1]["kind"], "closed_worktree");
+        assert!(items[1]["branch"].is_null());
+        assert_eq!(items[1]["session"], "ab12cd34");
+        // 每個項目都有完整的五個欄位（沒有值時是 null，不是缺少）
+        for it in items {
+            assert_eq!(it.as_object().unwrap().len(), 5, "{it}");
+        }
+    }
+
+    #[test]
+    fn exact_shape_snapshot() {
+        // 欄位名稱是對外的格式：改名或增減欄位會破壞腳本，所以整份比對
+        let v = gc_json(
+            true,
+            &[
+                item("orphan_worktree", Some("agt/x/o"), None),
+                item("closed_worktree", None, Some("ab12cd34")),
+            ],
+        );
+        let want = serde_json::json!({
+            "pruned": true,
+            "items": [
+                {"kind": "orphan_worktree", "repo": "/r/proj", "path": "/w/x",
+                 "branch": "agt/x/o", "session": null},
+                {"kind": "closed_worktree", "repo": "/r/proj", "path": "/w/x",
+                 "branch": null, "session": "ab12cd34"},
+            ],
+        });
+        assert_eq!(v, want);
+    }
+
+    #[test]
+    fn order_is_preserved_and_all_kinds_pass_through() {
+        let kinds = ["orphan_worktree", "missing_worktree", "closed_worktree"];
+        let items: Vec<GcItem> = kinds.iter().map(|k| item(k, None, None)).collect();
+        let v = gc_json(false, &items);
+        let got: Vec<&str> = v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(got, kinds);
+    }
+
+    #[test]
+    fn pruned_flag_does_not_depend_on_items() {
+        for pruned in [false, true] {
+            assert_eq!(gc_json(pruned, &[])["pruned"], pruned);
+            let one = [item("orphan_worktree", None, None)];
+            assert_eq!(gc_json(pruned, &one)["pruned"], pruned);
+        }
+    }
+
+    #[test]
+    fn special_characters_survive_round_trip() {
+        // Windows 反斜線、中文、空白、引號、換行都要能正確跳脫與還原
+        let weird = "C:\\Users\\測試 user\\\"wt\"\n新行";
+        let it = GcItem {
+            kind: "orphan_worktree".into(),
+            repo: weird.into(),
+            path: weird.into(),
+            branch: Some("agt/測試/分支".into()),
+            session: None,
+        };
+        let v = gc_json(false, std::slice::from_ref(&it));
+        assert_eq!(v["items"][0]["path"], weird);
+        let text = serde_json::to_string(&v).unwrap();
+        // 序列化後是單行（換行被跳脫），腳本可以逐行處理
+        assert!(!text.contains('\n'));
+        let back: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(back["items"][0]["repo"], weird);
+        assert_eq!(back["items"][0]["branch"], "agt/測試/分支");
+        // 還原成 GcItem 後與原本相同
+        let item_back: GcItem = serde_json::from_value(back["items"][0].clone()).unwrap();
+        assert_eq!(item_back, it);
+    }
+
+    #[test]
+    fn items_deserialize_without_optional_fields() {
+        // 協定上 branch / session 有預設值：舊版 daemon 沒送這兩欄也要能讀
+        let it: GcItem =
+            serde_json::from_str(r#"{"kind":"orphan_worktree","repo":"/r","path":"/p"}"#).unwrap();
+        assert_eq!((it.branch, it.session), (None, None));
+        // 再輸出時補成 null，欄位不會缺
+        let v = gc_json(false, &[it]);
+        assert!(v["items"][0]["branch"].is_null());
+        assert!(v["items"][0]["session"].is_null());
+    }
+
+    #[test]
+    fn pretty_output_is_multiline_and_deterministic() {
+        let v = gc_json(false, &[item("orphan_worktree", Some("b"), None)]);
+        let a = serde_json::to_string_pretty(&v).unwrap();
+        let b = serde_json::to_string_pretty(&v).unwrap();
+        assert_eq!(a, b);
+        assert!(a.lines().count() > 1);
+    }
+
+    #[test]
+    fn output_is_valid_json_text() {
+        let v = gc_json(false, &[item("missing_worktree", None, None)]);
+        let text = serde_json::to_string_pretty(&v).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, v);
+    }
+}
+
+#[cfg(test)]
+mod daemon_status_json_tests {
+    use super::*;
+
+    fn info() -> DaemonInfo {
+        DaemonInfo {
+            pid: 4242,
+            version: "0.2.1".into(),
+            sessions: 3,
+            running: 2,
+            clients: 1,
+            data_dir: "/d".into(),
+            config_path: "/d/config.toml".into(),
+        }
+    }
+
+    #[test]
+    fn running_keeps_session_count_separate_from_daemon_running() {
+        let v = daemon_status_json("/s.sock", &DaemonProbe::Running(Some(info()))).unwrap();
+        assert_eq!(v["daemon_running"], true);
+        // `running` 是執行中的分頁數，不能被布林蓋掉
+        assert_eq!(v["running"], 2);
+        assert_eq!(v["sessions"], 3);
+        assert_eq!(v["pid"], 4242);
+        assert_eq!(v["version"], "0.2.1");
+        assert_eq!(v["clients"], 1);
+        assert_eq!(v["data_dir"], "/d");
+        assert_eq!(v["config_path"], "/d/config.toml");
+        assert_eq!(v["socket"], "/s.sock");
+        assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn running_without_details() {
+        let v = daemon_status_json("/s.sock", &DaemonProbe::Running(None)).unwrap();
+        assert_eq!(v["daemon_running"], true);
+        assert_eq!(v["socket"], "/s.sock");
+        assert!(v.get("pid").is_none());
+    }
+
+    #[test]
+    fn not_running() {
+        let v = daemon_status_json("/s.sock", &DaemonProbe::NotRunning).unwrap();
+        assert_eq!(v["daemon_running"], false);
+        assert_eq!(v["socket"], "/s.sock");
+        assert!(v.get("pid").is_none() && v.get("error").is_none());
+        assert_eq!(v.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn refused_connection_reports_error() {
+        let v = daemon_status_json("/s.sock", &DaemonProbe::Error("協定版本不同".into())).unwrap();
+        assert_eq!(v["daemon_running"], false);
+        assert_eq!(v["error"], "協定版本不同");
+        assert_eq!(v["socket"], "/s.sock");
     }
 }

@@ -5,7 +5,7 @@ use super::*;
 impl Daemon {
     /// 關閉分頁時執行 Agent 設定的 `on_close`（例如刪除沙箱），在背景執行、不阻塞。
     pub(super) fn run_on_close(&self, id: &str) {
-        let Some(info) = self.entries.lock().unwrap().get(id).map(|e| e.info.clone()) else {
+        let Some(info) = self.entries.lock_or_recover().get(id).map(|e| e.info.clone()) else {
             return;
         };
         let cfg = self.cfg();
@@ -125,17 +125,15 @@ impl Daemon {
                             to,
                         });
                         // 使用者目前正在看的分頁不發系統通知
-                        if matches!(to, AgentStatus::WaitingInput | AgentStatus::Done)
-                            && d.cfg().general.notify
-                            && session.viewers() == 0
-                        {
-                            let what = if to == AgentStatus::WaitingInput {
-                                "等待你的回覆"
-                            } else {
-                                "已完成"
+                        if d.cfg().general.should_notify(to) && session.viewers() == 0 {
+                            let what = match to {
+                                AgentStatus::WaitingInput => "等待你的回覆",
+                                AgentStatus::Error => "發生錯誤",
+                                AgentStatus::Exited => "已結束",
+                                _ => "已完成",
                             };
                             let body = message.unwrap_or_else(|| format!("{} {what}", info.agent));
-                            platform::notify(&format!("agt · {}", info.task), &body);
+                            platform::notify(&format!("agt · {}", info.task), &body, Some(id.as_str()));
                         }
                     }
                     SessionEvent::Notify { title, body } => {
@@ -225,7 +223,7 @@ impl Daemon {
 
     /// Agent 結束時呼叫：剛以 `resume_args` 接續、很快就以錯誤結束 → true（應改開新對話）。
     pub(super) fn resume_failed(&self, id: &str, generation: u64, code: Option<i32>) -> bool {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock_or_recover();
         let Some(e) = entries.get_mut(id) else {
             return false;
         };
@@ -241,10 +239,10 @@ impl Daemon {
     /// 在同一個 worktree 重新啟動 Agent。Agent 設定了 `resume_args` 時接續上次的對話；
     /// `fresh` 或是沒有可接續的對話時開新對話。
     pub fn restart(self: &Arc<Self>, id: &str, fresh: bool) -> OpResult<SessionInfo> {
-        let _one_at_a_time = self.restart_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _one_at_a_time = self.restart_lock.lock_or_recover();
         let id = self.resolve(id)?;
         let (info, old, conversation) = {
-            let entries = self.entries.lock().unwrap();
+            let entries = self.entries.lock_or_recover();
             let e = entries.get(&id).ok_or_else(|| OpError::not_found(&id))?;
             (e.info.clone(), e.session.clone(), e.conversation.clone())
         };
@@ -277,7 +275,7 @@ impl Daemon {
         let (cols, rows) = old.map(|s| s.size()).unzip();
         // 先登記這次啟動，再啟動程序：程序可能立刻結束
         let generation = {
-            let mut entries = self.entries.lock().unwrap();
+            let mut entries = self.entries.lock_or_recover();
             let e = entries
                 .get_mut(&id)
                 .ok_or_else(|| OpError::not_found(&id))?;
@@ -288,7 +286,7 @@ impl Daemon {
         let (session, events) =
             self.start_session(&info, &conversation, resume, true, None, cols, rows)?;
         let info = {
-            let mut entries = self.entries.lock().unwrap();
+            let mut entries = self.entries.lock_or_recover();
             let e = entries
                 .get_mut(&id)
                 .ok_or_else(|| OpError::not_found(&id))?;

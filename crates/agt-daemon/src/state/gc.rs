@@ -137,8 +137,7 @@ impl Daemon {
     pub fn poll_git(&self) {
         let targets: Vec<(String, String, String, String)> = self
             .entries
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .values()
             .filter_map(|e| {
                 Some((
@@ -158,7 +157,7 @@ impl Daemon {
                 Err(e) => {
                     // 沙箱裡的 Agent 改了 .git：不執行 git，並提醒使用者一次
                     if agt_git::trusted_gitdir(Path::new(&repo), Path::new(&wt)).is_err()
-                        && self.tamper_warned.lock().unwrap().insert(id.clone())
+                        && self.tamper_warned.lock_or_recover().insert(id.clone())
                     {
                         tracing::warn!("{id}：{e}");
                         let _ = self.events.send(ServerMsg::Error {
@@ -170,7 +169,7 @@ impl Daemon {
                 }
             };
             let changed = {
-                let mut entries = self.entries.lock().unwrap();
+                let mut entries = self.entries.lock_or_recover();
                 match entries.get_mut(&id) {
                     Some(e)
                         if (e.info.ahead, e.info.behind, e.info.dirty)

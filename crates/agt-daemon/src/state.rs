@@ -3,6 +3,7 @@
 use crate::config::{Config, Paths};
 use agt_core::{LaunchCtx, Session, SessionEvent, SessionOptions, StatusSource, platform};
 use agt_git::GitError;
+use agt_proto::sync::{MutexExt, RwLockExt};
 use agt_proto::{
     AgentStatus, CreateSession, FinishAction, GcItem, MergeStrategy, ServerMsg, SessionInfo, codes,
 };
@@ -225,11 +226,11 @@ impl Daemon {
     }
 
     pub fn cfg(&self) -> Arc<Config> {
-        self.cfg.read().unwrap().clone()
+        self.cfg.read_or_recover().clone()
     }
 
     pub fn cfg_error(&self) -> Option<String> {
-        self.cfg_error.lock().unwrap().clone()
+        self.cfg_error.lock_or_recover().clone()
     }
 
     /// 重新載入設定；失敗時保留上一份有效設定（規格 9）。已在執行的分頁不受影響。
@@ -238,7 +239,7 @@ impl Daemon {
         let (err, ui) = match result {
             Ok(c) => {
                 let ui = c.ui();
-                *self.cfg.write().unwrap() = Arc::new(c);
+                *self.cfg.write_or_recover() = Arc::new(c);
                 tracing::info!("設定已重新載入");
                 (None, Some(ui))
             }
@@ -247,16 +248,16 @@ impl Daemon {
                 (Some(e), None)
             }
         };
-        *self.cfg_error.lock().unwrap() = err.clone();
+        *self.cfg_error.lock_or_recover() = err.clone();
         let _ = self.events.send(ServerMsg::ConfigStatus { error: err, ui });
     }
 
     pub fn touch(&self) {
-        *self.last_activity.lock().unwrap() = Instant::now();
+        *self.last_activity.lock_or_recover() = Instant::now();
     }
 
     fn store(&self) -> std::sync::MutexGuard<'_, Store> {
-        self.store.lock().unwrap()
+        self.store.lock_or_recover()
     }
 
     fn record(&self, id: &str, kind: &str, data: serde_json::Value) {
@@ -267,7 +268,7 @@ impl Daemon {
 
     /// 接受完整 UUID、短 id 或唯一的前綴。
     pub fn resolve(&self, id: &str) -> OpResult<String> {
-        let entries = self.entries.lock().unwrap();
+        let entries = self.entries.lock_or_recover();
         if entries.contains_key(id) {
             return Ok(id.to_string());
         }
@@ -286,8 +287,7 @@ impl Daemon {
     pub fn list(&self) -> Vec<SessionInfo> {
         let mut v: Vec<SessionInfo> = self
             .entries
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .values()
             .map(|e| e.info.clone())
             .collect();
@@ -298,8 +298,7 @@ impl Daemon {
     pub fn get(&self, id: &str) -> OpResult<SessionInfo> {
         let id = self.resolve(id)?;
         self.entries
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .get(&id)
             .map(|e| e.info.clone())
             .ok_or_else(|| OpError::not_found(&id))
@@ -307,23 +306,21 @@ impl Daemon {
 
     pub fn session(&self, id: &str) -> Option<Arc<Session>> {
         self.entries
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .get(id)
             .and_then(|e| e.session.clone())
     }
 
     pub fn running_count(&self) -> usize {
         self.entries
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .values()
             .filter(|e| e.session.as_ref().is_some_and(|s| s.is_running()))
             .count()
     }
 
     fn update_info(&self, id: &str, f: impl FnOnce(&mut SessionInfo)) -> Option<SessionInfo> {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock_or_recover();
         let e = entries.get_mut(id)?;
         f(&mut e.info);
         Some(e.info.clone())
@@ -337,7 +334,7 @@ impl Daemon {
         generation: u64,
         f: impl FnOnce(&mut SessionInfo),
     ) -> Option<SessionInfo> {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock_or_recover();
         let e = entries.get_mut(id).filter(|e| e.generation == generation)?;
         f(&mut e.info);
         Some(e.info.clone())
@@ -355,14 +352,13 @@ impl Daemon {
         secs > 0
             && self.ui_clients.load(Ordering::Relaxed) == 0
             && self.running_count() == 0
-            && self.last_activity.lock().unwrap().elapsed() >= Duration::from_secs(secs)
+            && self.last_activity.lock_or_recover().elapsed() >= Duration::from_secs(secs)
     }
 
     pub fn kill_all(&self) {
         let sessions: Vec<Arc<Session>> = self
             .entries
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .values()
             .filter_map(|e| e.session.clone())
             .collect();
@@ -375,7 +371,7 @@ impl Daemon {
 
     pub fn info(&self) -> agt_proto::DaemonInfo {
         // 注意：不能在同一個敘述裡兩次鎖 entries（暫時的 guard 會活到敘述結束 → 死結）
-        let sessions = self.entries.lock().unwrap().len();
+        let sessions = self.entries.lock_or_recover().len();
         let running = self.running_count();
         agt_proto::DaemonInfo {
             pid: std::process::id(),
@@ -508,7 +504,7 @@ mod tests {
             ..Default::default()
         });
         info.status = AgentStatus::Running;
-        d.entries.lock().unwrap().insert(
+        d.entries.lock_or_recover().insert(
             "s1".into(),
             Entry {
                 info,
