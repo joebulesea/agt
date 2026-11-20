@@ -150,3 +150,122 @@ fn new_form_opens_and_escape_closes() {
     app.on_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
     assert!(app.popup.is_none());
 }
+
+// ---- diff 視窗分頁 ----
+
+const DIFF: &str = "### 已 commit（main...HEAD）\ndiff --git a/a b/a\n+one\n\n\n### 未 commit 的變更\n（無）\n\n\n### 未追蹤的檔案\nnew.txt\n";
+
+type Tabs = Vec<(String, Vec<String>)>;
+
+fn text_popup(app: &App) -> (&Vec<String>, usize, &Tabs, usize) {
+    match &app.popup {
+        Some(Popup::Text {
+            lines,
+            scroll,
+            tabs,
+            tab,
+            ..
+        }) => (lines, *scroll, tabs, *tab),
+        _ => panic!("應該有文字視窗"),
+    }
+}
+
+fn special(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+#[test]
+fn diff_popup_splits_sections_into_tabs() {
+    let (mut app, _s) = test_app("off");
+    app.show_text("diff", DIFF, true);
+    let (lines, scroll, tabs, tab) = text_popup(&app);
+    assert_eq!(tabs.len(), 3);
+    assert_eq!(tabs[0].0, "已 commit（main...HEAD）");
+    assert_eq!(tabs[1].0, "未 commit 的變更");
+    assert_eq!(tabs[2].0, "未追蹤的檔案");
+    // 標題行不在內容裡；第一頁是目前頁
+    assert!(
+        tabs.iter()
+            .all(|t| t.1.iter().all(|l| !l.starts_with("###")))
+    );
+    assert_eq!(tab, 0);
+    assert_eq!(scroll, 0);
+    assert!(lines.iter().any(|l| l == "+one"));
+    assert_eq!(tabs[1].1[0], "（無）");
+    assert!(tabs[2].1.iter().any(|l| l == "new.txt"));
+}
+
+#[test]
+fn plain_text_popup_has_no_tabs() {
+    let (mut app, _s) = test_app("off");
+    // 錯誤訊息即使含有 ### 也不分頁
+    app.show_text("錯誤", "### 看起來像標題\nbody", false);
+    let (lines, _, tabs, _) = text_popup(&app);
+    assert!(tabs.is_empty());
+    assert_eq!(lines.len(), 2);
+    // 沒有任何標題的 diff 也不分頁，內容原樣顯示
+    app.show_text("diff", "diff --git a b\n+x", true);
+    let (lines, _, tabs, _) = text_popup(&app);
+    assert!(tabs.is_empty());
+    assert_eq!(lines.len(), 2);
+    // 只有一頁時，切換鍵不動作也不當機
+    app.on_event(special(KeyCode::Tab));
+    assert!(app.popup.is_some());
+}
+
+#[test]
+fn diff_popup_keys_switch_tabs_and_reset_scroll() {
+    let (mut app, _s) = test_app("off");
+    app.show_text("diff", DIFF, true);
+    // 先往下捲，切換頁後捲動歸零
+    app.on_event(key('j'));
+    assert_eq!(text_popup(&app).1, 1);
+    app.on_event(special(KeyCode::Tab));
+    let (lines, scroll, _, tab) = text_popup(&app);
+    assert_eq!((tab, scroll), (1, 0));
+    assert_eq!(lines[0], "（無）");
+    // → / l 下一頁，到最後一頁再往後會繞回第一頁
+    app.on_event(special(KeyCode::Right));
+    assert_eq!(text_popup(&app).3, 2);
+    app.on_event(key('l'));
+    assert_eq!(text_popup(&app).3, 0);
+    // ← / h / BackTab 上一頁（第一頁往前繞到最後一頁）
+    app.on_event(special(KeyCode::Left));
+    assert_eq!(text_popup(&app).3, 2);
+    app.on_event(key('h'));
+    assert_eq!(text_popup(&app).3, 1);
+    app.on_event(special(KeyCode::BackTab));
+    assert_eq!(text_popup(&app).3, 0);
+    // 數字鍵直接跳；超出頁數的數字不動作
+    app.on_event(key('3'));
+    let (lines, _, _, tab) = text_popup(&app);
+    assert_eq!(tab, 2);
+    assert!(lines.iter().any(|l| l == "new.txt"));
+    app.on_event(key('9'));
+    assert_eq!(text_popup(&app).3, 2);
+    app.on_event(key('1'));
+    assert_eq!(text_popup(&app).3, 0);
+    // q 關閉
+    app.on_event(key('q'));
+    assert!(app.popup.is_none());
+}
+
+#[test]
+fn diff_popup_scroll_is_limited_to_current_tab() {
+    let (mut app, _s) = test_app("off");
+    app.show_text("diff", DIFF, true);
+    app.on_event(key('2'));
+    // 「未 commit」頁只有幾行：一直往下捲不會超出該頁的最後一行
+    for _ in 0..50 {
+        app.on_event(key('j'));
+    }
+    let (lines, scroll, _, _) = text_popup(&app);
+    assert_eq!(scroll, lines.len() - 1);
+    // 複製的是目前這頁的內容
+    app.on_event(key('c'));
+    let copied = app.clipboard_out.clone().unwrap();
+    assert!(
+        copied.contains("（無）") && !copied.contains("+one"),
+        "{copied}"
+    );
+}

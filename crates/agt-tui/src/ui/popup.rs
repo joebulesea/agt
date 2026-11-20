@@ -534,46 +534,94 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             lines,
             scroll,
             diff,
+            tabs,
+            tab,
         } => {
             let r = centered(
                 area,
                 text_popup_width(area.width),
                 area.height.saturating_sub(4),
             );
-            let inner_h = r.height.saturating_sub(2) as usize;
+            let bar = usize::from(!tabs.is_empty());
+            let inner_h = (r.height.saturating_sub(2) as usize).saturating_sub(bar);
             let rows = text_rows(lines, *diff, area.width);
             let lines = &rows;
-            let shown: Vec<Line> = lines
-                .iter()
-                .skip(*scroll)
-                .take(inner_h)
-                .map(|l| {
-                    let style = if !diff {
+            let mut shown: Vec<Line> = vec![];
+            if !tabs.is_empty() {
+                let mut spans = vec![];
+                for (i, (name, body)) in tabs.iter().enumerate() {
+                    let st = if i == *tab {
                         Style::new()
-                    } else if l.starts_with("###") {
-                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                    } else if l.starts_with("+++") || l.starts_with("---") || l.starts_with("diff ")
-                    {
-                        Style::new().add_modifier(Modifier::BOLD)
-                    } else if l.starts_with('+') {
-                        Style::new().fg(Color::Green)
-                    } else if l.starts_with('-') {
-                        Style::new().fg(Color::Red)
-                    } else if l.starts_with("@@") {
-                        Style::new().fg(Color::Cyan)
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::new()
+                        Style::new().fg(Color::Gray)
                     };
-                    Line::styled(l.clone(), style)
-                })
-                .collect();
+                    let _ = body;
+                    spans.push(Span::styled(format!(" {} {name} ", i + 1), st));
+                    spans.push(Span::raw(" "));
+                }
+                shown.push(Line::from(spans));
+            }
+            shown.extend(lines.iter().skip(*scroll).take(inner_h).map(|l| {
+                let style = if !diff {
+                    Style::new()
+                } else if l.starts_with("### 已 commit") {
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else if l.starts_with("### 未追蹤") {
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD)
+                } else if l.starts_with("###") {
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if l.starts_with("+++") || l.starts_with("---") || l.starts_with("diff ") {
+                    Style::new().add_modifier(Modifier::BOLD)
+                } else if l.starts_with('+') {
+                    Style::new().fg(Color::Green)
+                } else if l.starts_with('-') {
+                    Style::new().fg(Color::Red)
+                } else if l.starts_with("@@") {
+                    Style::new().fg(Color::Cyan)
+                } else {
+                    Style::new()
+                };
+                Line::styled(l.clone(), style)
+            }));
             let t = format!(
-                "{title}  {}/{} · ↑↓ PgUp PgDn 滾輪 · c 複製 · q 關閉",
+                "{title}  {}/{} · {}↑↓ PgUp PgDn 滾輪 · c 複製 · q 關閉",
                 (*scroll + 1).min(lines.len().max(1)),
-                lines.len()
+                lines.len(),
+                if tabs.len() > 1 {
+                    "Tab/←→/1-9 切換分頁 · "
+                } else {
+                    ""
+                }
             );
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(shown).block(block(&t)), r);
+            if lines.len() > inner_h {
+                let mut sb =
+                    ratatui::widgets::ScrollbarState::new(lines.len().saturating_sub(inner_h) + 1)
+                        .position(*scroll);
+                f.render_stateful_widget(
+                    ratatui::widgets::Scrollbar::new(
+                        ratatui::widgets::ScrollbarOrientation::VerticalRight,
+                    ),
+                    r.inner(ratatui::layout::Margin {
+                        vertical: 1 + bar as u16,
+                        horizontal: 0,
+                    }),
+                    &mut sb,
+                );
+            }
             hits.push(ClickHit {
                 rect: r,
                 click: Click::Nothing,

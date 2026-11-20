@@ -162,6 +162,9 @@ pub enum Popup {
         lines: Vec<String>,
         scroll: usize,
         diff: bool,
+        /// diff 依 `### ` 標題切成的分頁（標題, 內容）；空表示不分頁。
+        tabs: Vec<(String, Vec<String>)>,
+        tab: usize,
     },
     Rename {
         input: String,
