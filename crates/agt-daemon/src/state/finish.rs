@@ -80,6 +80,23 @@ impl Daemon {
                     MergeStrategy::Squash => agt_git::Strategy::Squash,
                     MergeStrategy::Rebase => agt_git::Strategy::Rebase,
                 };
+                // Agent 在 .agt/groups/ 描述了分組：每組各自一個 commit 依序合進 base
+                let groups = agt_git::load_groups(Path::new(&wt))?;
+                if !groups.is_empty() {
+                    let out = agt_git::merge_groups(
+                        Path::new(&repo),
+                        Path::new(&wt),
+                        &branch,
+                        &base,
+                        &info.task,
+                        s,
+                        groups,
+                    );
+                    self.record(&id, "git", json!({"action": "merge", "groups": true, "strategy": format!("{strategy:?}").to_lowercase(), "ok": out.is_ok()}));
+                    let out = out?;
+                    self.store().set_finish_action(&id, "merge")?;
+                    return Ok(out);
+                }
                 let msg = agt_git::merge_into_base(
                     Path::new(&repo),
                     Path::new(&wt),
@@ -98,6 +115,25 @@ impl Daemon {
                 let subject = self.auto_commit(&id, &info, &repo, &wt)?;
                 let extra = self.cfg().general.sensitive_paths.clone();
                 confirm_sensitive(&repo, &wt, &base, &extra, "建立 PR", force)?;
+                // Agent 在 .agt/groups/ 描述了分組：每組各自 branch / commit / PR
+                let groups = agt_git::load_groups(Path::new(&wt))?;
+                if !groups.is_empty() {
+                    let out = agt_git::create_group_prs(
+                        Path::new(&repo),
+                        Path::new(&wt),
+                        &branch,
+                        &base,
+                        &info.task,
+                        groups,
+                    )?;
+                    self.record(
+                        &id,
+                        "git",
+                        json!({"action": "pr", "groups": true, "result": out}),
+                    );
+                    self.store().set_finish_action(&id, "pr")?;
+                    return Ok(out);
+                }
                 // PR 標題：這次 commit 的標題（Agent 寫的 COMMIT_MSG），沒有時用任務名稱
                 let title = subject.unwrap_or_else(|| info.task.clone());
                 let out =

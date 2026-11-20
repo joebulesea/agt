@@ -607,3 +607,270 @@ fn non_repo_is_none() {
     let d = tempfile::tempdir().unwrap();
     assert!(repo_info(d.path()).unwrap().is_none());
 }
+
+// ---- 分組收尾 ----
+
+fn write_group(wt: &Path, name: &str, files: &str, msg: Option<&str>) {
+    let d = wt.join(NOTES_DIR).join("groups").join(name);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("FILES"), files).unwrap();
+    if let Some(m) = msg {
+        std::fs::write(d.join(COMMIT_MSG_FILE), m).unwrap();
+    }
+}
+
+/// 主 repo（在 main）加一個 worktree，裡面有三個互不相關的變更：
+/// one/（組 one）、two.txt（組 two）、rest.txt（沒被認領）。
+fn grouped_worktree() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, String) {
+    let repo = init_repo();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("wg");
+    let branch = "agt/test/g-000009".to_string();
+    add_worktree(repo.path(), &wt, &branch, "main").unwrap();
+    std::fs::create_dir_all(wt.join("one")).unwrap();
+    std::fs::write(wt.join("one/a.txt"), "1\n").unwrap();
+    std::fs::write(wt.join("one/b.txt"), "1b\n").unwrap();
+    std::fs::write(wt.join("two.txt"), "2\n").unwrap();
+    std::fs::write(wt.join("rest.txt"), "r\n").unwrap();
+    write_group(&wt, "one", "one\n", Some("加入 one\n\n內文\n"));
+    write_group(&wt, "two", "./two.txt\n", None);
+    (repo, wts, wt, branch)
+}
+
+fn refused(r: Result<Vec<groups::Group>>) -> String {
+    r.expect_err("應該被拒絕").to_string()
+}
+
+#[test]
+fn claims_matches_exact_and_directory_prefix() {
+    let f = vec!["src".to_string(), "a.txt".to_string()];
+    assert!(groups::claims(&f, "a.txt"));
+    assert!(groups::claims(&f, "src/x/y.rs"));
+    assert!(!groups::claims(&f, "src2/x.rs"));
+    assert!(!groups::claims(&f, "a.txt.bak"));
+}
+
+#[test]
+fn load_groups_reads_sorted_and_normalizes() {
+    let (_r, _w, wt, _b) = grouped_worktree();
+    let g = load_groups(&wt).unwrap();
+    assert_eq!(g.len(), 2);
+    assert_eq!(g[0].name, "one");
+    assert_eq!(g[0].files, vec!["one"]);
+    assert_eq!(
+        g[0].commit_msg.as_deref().and_then(subject_line).as_deref(),
+        Some("加入 one")
+    );
+    assert_eq!(g[1].name, "two");
+    assert_eq!(g[1].files, vec!["two.txt"]); // 去掉 ./
+    assert!(g[1].commit_msg.is_none());
+
+    // 沒有 groups 目錄：空
+    let empty = tempfile::tempdir().unwrap();
+    assert!(load_groups(empty.path()).unwrap().is_empty());
+}
+
+#[test]
+fn load_groups_rejects_bad_names_paths_and_empty_files() {
+    let d = tempfile::tempdir().unwrap();
+    let wt = d.path();
+    for name in ["rest", "a b", ".hidden", "-x", "中文"] {
+        let _ = std::fs::remove_dir_all(wt.join(NOTES_DIR));
+        write_group(wt, name, "x\n", None);
+        assert!(refused(load_groups(wt)).contains("名稱"), "{name}");
+    }
+    for path in [
+        "../x",
+        "/etc/passwd",
+        "a/../b",
+        ".git/config",
+        ".agt/x",
+        ":(top)x",
+        "C:/x",
+    ] {
+        let _ = std::fs::remove_dir_all(wt.join(NOTES_DIR));
+        write_group(wt, "ok", &format!("{path}\n"), None);
+        assert!(refused(load_groups(wt)).contains("不合規定"), "{path}");
+    }
+    let _ = std::fs::remove_dir_all(wt.join(NOTES_DIR));
+    write_group(wt, "ok", "\n  \n", None);
+    assert!(refused(load_groups(wt)).contains("FILES"));
+}
+
+#[cfg(unix)]
+#[test]
+fn load_groups_rejects_symlinked_dirs() {
+    let d = tempfile::tempdir().unwrap();
+    let wt = d.path();
+    let other = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(wt.join(NOTES_DIR)).unwrap();
+    std::os::unix::fs::symlink(other.path(), wt.join(NOTES_DIR).join("groups")).unwrap();
+    assert!(load_groups(wt).is_err());
+
+    let _ = std::fs::remove_file(wt.join(NOTES_DIR).join("groups"));
+    std::fs::create_dir_all(wt.join(NOTES_DIR).join("groups")).unwrap();
+    std::fs::write(other.path().join("FILES"), "x\n").unwrap();
+    std::os::unix::fs::symlink(other.path(), wt.join(NOTES_DIR).join("groups/evil")).unwrap();
+    assert!(load_groups(wt).is_err());
+}
+
+#[test]
+fn group_branches_are_independent_and_idempotent() {
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    let gitdir = trusted_gitdir(root, &wt).unwrap();
+    let groups = load_groups(&wt).unwrap();
+
+    let (gb, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &groups[0], "任務").unwrap();
+    assert!(made);
+    assert_eq!(gb, format!("{branch}-one"));
+    let files = git(root, &["ls-tree", "-r", "--name-only", &gb]).unwrap();
+    assert!(
+        files.contains("one/a.txt") && files.contains("one/b.txt"),
+        "{files}"
+    );
+    assert!(
+        !files.contains("two.txt") && !files.contains("rest.txt"),
+        "{files}"
+    );
+    // 只多一個 commit，親代是 main，訊息用該組的 COMMIT_MSG
+    assert_eq!(
+        git(root, &["rev-list", "--count", &format!("main..{gb}")]).unwrap(),
+        "1"
+    );
+    assert_eq!(
+        git(root, &["log", "-1", "--format=%s", &gb]).unwrap(),
+        "加入 one"
+    );
+    // 沒有 COMMIT_MSG：用「任務（組名）」
+    let (gb2, _) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &groups[1], "任務").unwrap();
+    assert_eq!(
+        git(root, &["log", "-1", "--format=%s", &gb2]).unwrap(),
+        "任務（two）"
+    );
+
+    // 沒有新變更：不再多一個 commit
+    let (_, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &groups[0], "任務").unwrap();
+    assert!(!made);
+    assert_eq!(
+        git(root, &["rev-list", "--count", &format!("main..{gb}")]).unwrap(),
+        "1"
+    );
+    // 有新變更：在原本的 branch 上追加（不改寫歷史）
+    std::fs::write(wt.join("one/a.txt"), "changed\n").unwrap();
+    let before = git(root, &["rev-parse", &gb]).unwrap();
+    let (_, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &groups[0], "任務").unwrap();
+    assert!(made);
+    assert_eq!(
+        git(root, &["rev-parse", &format!("{gb}^")]).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn empty_group_is_rejected() {
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    let gitdir = trusted_gitdir(root, &wt).unwrap();
+    write_group(&wt, "nothing", "no-such-file.txt\n", None);
+    let g = load_groups(&wt).unwrap();
+    let nothing = g.iter().find(|g| g.name == "nothing").unwrap();
+    let e = groups::make_group_branch(root, &wt, &gitdir, &branch, "main", nothing, "t")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("沒有任何變更"), "{e}");
+}
+
+fn count(root: &Path, args: &[&str]) -> usize {
+    git(root, args).unwrap().trim().parse().unwrap()
+}
+
+#[test]
+fn merge_groups_merge_strategy_one_merge_commit_per_group() {
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    let g = load_groups(&wt).unwrap();
+    let out = merge_groups(root, &wt, &branch, "main", "任務", Strategy::Merge, g).unwrap();
+    assert!(out.contains("分成 3 組"), "{out}");
+    // one、two、rest 各一個 merge commit
+    assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 3);
+    for f in ["one/a.txt", "one/b.txt", "two.txt", "rest.txt"] {
+        assert!(root.join(f).exists(), "{f}");
+    }
+    // 暫時的分組 branch 與說明都清掉了；.agt 沒有被當成 rest 的內容
+    let branches = git(root, &["branch", "--list", &format!("{branch}-*")]).unwrap();
+    assert!(branches.is_empty(), "{branches}");
+    assert!(!wt.join(NOTES_DIR).join("groups/one").exists());
+    assert!(!wt.join(NOTES_DIR).join("groups/two").exists());
+    assert!(!root.join(".agt").exists());
+}
+
+#[test]
+fn merge_groups_squash_and_rebase_make_linear_commits() {
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    let g = load_groups(&wt).unwrap();
+    merge_groups(root, &wt, &branch, "main", "任務", Strategy::Squash, g).unwrap();
+    assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 0);
+    assert_eq!(count(root, &["rev-list", "--count", "main"]), 4); // init + 3 組
+    let subjects = git(root, &["log", "--format=%s", "-3", "main"]).unwrap();
+    assert!(subjects.contains("加入 one"), "{subjects}");
+    assert!(subjects.contains("任務（two）"), "{subjects}");
+    assert!(subjects.contains("任務（rest）"), "{subjects}");
+
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    let g = load_groups(&wt).unwrap();
+    merge_groups(root, &wt, &branch, "main", "任務", Strategy::Rebase, g).unwrap();
+    assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 0);
+    assert_eq!(count(root, &["rev-list", "--count", "main"]), 4);
+    assert!(root.join("two.txt").exists() && root.join("rest.txt").exists());
+}
+
+#[test]
+fn merge_groups_refuses_before_touching_base() {
+    // 主工作目錄有未 commit 的變更
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    std::fs::write(root.join("a.txt"), "dirty\n").unwrap();
+    let g = load_groups(&wt).unwrap();
+    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).unwrap_err();
+    assert!(matches!(e, GitError::Dirty(_)), "{e}");
+
+    // 主工作目錄不在 base 上
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    git(root, &["checkout", "-q", "-b", "other"]).unwrap();
+    let g = load_groups(&wt).unwrap();
+    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).unwrap_err();
+    assert!(e.to_string().contains("不是 main"), "{e}");
+
+    // 其中一組是空的：在合併任何一組之前就停下，base 沒有變
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    write_group(&wt, "zzz", "no-such-file.txt\n", None);
+    let g = load_groups(&wt).unwrap();
+    let head = git(root, &["rev-parse", "main"]).unwrap();
+    assert!(merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).is_err());
+    assert_eq!(git(root, &["rev-parse", "main"]).unwrap(), head);
+}
+
+#[test]
+fn merge_groups_stops_on_conflict_and_keeps_finished_groups() {
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    // 在 base 上先改 one/a.txt 之外也有的檔案：讓組 two 的 two.txt 與 base 衝突
+    std::fs::write(root.join("two.txt"), "base 版本\n").unwrap();
+    git(root, &["add", "."]).unwrap();
+    git(root, &["commit", "-q", "-m", "base two"]).unwrap();
+    let g = load_groups(&wt).unwrap();
+    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).unwrap_err();
+    assert!(matches!(e, GitError::Conflict(_)), "{e}");
+    assert!(e.to_string().contains("two"), "{e}");
+    // 前面的組 one 已合進去
+    assert!(root.join("one/a.txt").exists());
+}
