@@ -141,6 +141,10 @@ Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --adviso
 
 在 agt 按 `m` 收尾並選 **pr** 時，agt 會 commit、push 並建立 PR；該 branch 已有開啟中的 PR 時只 push 並更新說明。需要主機安裝並登入 GitHub CLI（`gh auth login`），沒有 `gh` 時只會 commit 並顯示要手動執行的 push 指令。分頁的 base 只在本機（例如還沒 push 的 feat branch）但內容都已在 remote 預設 branch 時，PR 以預設 branch 為目標；否則在 push 前停下並說明。`claude-docker` 與 `claude-sbx` 的範例提示會請 Claude 寫這兩個檔案（需 `auto_commit = true`），主機用的腳本是 `docker/claude/agt-pr.cmd`。`.agt/` 會被加入主 repo 的 info/exclude，不會出現在 diff 或 auto_commit 的 commit 裡。收尾失敗時原因會寫進 `agtd.log` 與該分頁的事件記錄；錯誤視窗可按 `c`（或 `y`）複製全部內容。操作步驟見 [agt-pr 操作步驟](docs/agt-pr-操作步驟.md)。
 
+#### 分組收尾
+
+任務包含多個互不相關的主題時，Agent 可在 `.agt/groups/<組名>/` 放 `FILES`、`COMMIT_MSG`、`PR_BODY.md`，收尾（pr 或 merge）時每組各自一個 commit（pr 則各自一個 PR），未被認領的變更自成 `rest` 組。格式與規則見 [Agent 分組收尾說明](docs/Agent-分組收尾說明.md)，內含可貼進 Agent 提示的版本。
+
 ## 環境變數
 
 | 變數 | 用途 |
