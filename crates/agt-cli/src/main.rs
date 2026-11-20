@@ -1,8 +1,10 @@
 //! agt：CLI 與 TUI 入口。
 
 mod deps;
+mod doctor;
 mod prompt;
 mod setup;
+mod uninstall;
 mod update;
 
 use agt_proto::client::{Client, ClientError, Connected, expect_session, expect_sessions};
@@ -114,33 +116,57 @@ enum Cmd {
         #[arg(long)]
         install: bool,
     },
-    /// 更新 agt 到最新版（下載、核對 SHA256、換掉執行檔）
+    /// 從 GitHub Release 更新 agt（核對 SHA256，並重新啟動 daemon）
     Update {
-        /// 只檢查有沒有新版本
+        /// 只檢查有沒有新版，不下載
         #[arg(long)]
         check: bool,
         /// 指定版本（例如 0.3.0），預設最新版
         #[arg(long)]
         version: Option<String>,
-        /// 不詢問；版本相同時也重新安裝
+        /// 有 Agent 執行中時不詢問，直接結束 daemon
         #[arg(long, short)]
         yes: bool,
     },
-    /// 移除 agt：停止 daemon、刪除沙箱容器與執行檔
+    /// 解除安裝：停止 daemon、移除沙箱與容器、刪除執行檔與 PATH 設定
     Uninstall {
+        /// 不詢問（設定與資料、worktree 仍需 --purge / --worktrees 才會刪除）
         #[arg(long, short)]
         yes: bool,
-        /// 一併刪除設定與資料（不詢問）
+        /// 一併刪除設定、分頁資料庫與終端機紀錄
         #[arg(long)]
         purge: bool,
-        /// 一併刪除 worktree 副本（不詢問；未合併的變更會消失）
+        /// 一併刪除所有 worktree（沒有 commit / merge 的修改會遺失）
         #[arg(long)]
-        purge_worktrees: bool,
+        worktrees: bool,
+        /// 只列出會做什麼，不改動任何東西
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 檢查執行環境（daemon、設定檔、git、Docker、gh 等），並說明每個問題的下一步
+    Doctor,
+    /// 設定檔工具
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
     },
     /// 管理 daemon
     Daemon {
         #[command(subcommand)]
         cmd: DaemonCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// 檢查設定檔：語法與欄位錯誤（含行號）、找不到的指令、拼錯的變數等；不需要 daemon 在執行
+    Check {
+        /// 檢查指定的檔案，預設是 agt 使用的設定檔
+        #[arg(long)]
+        file: Option<String>,
+        /// 一併檢查這個 repo 的 `.agt.toml`
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -177,7 +203,6 @@ fn main() {
         notify(status, message.clone(), tool.clone(), session.clone());
         return;
     }
-    update::cleanup_old();
     // daemon 自己建立 runtime，不能在 agt 的 runtime 內執行
     if let Some(Cmd::Daemon {
         cmd: DaemonCmd::Run { foreground },
@@ -189,6 +214,8 @@ fn main() {
         }
         return;
     }
+    // 清除上次 `agt update` 留下、當時還在執行所以刪不掉的舊檔
+    update::cleanup_old();
     // 從檔案總管雙擊開啟時，結束後視窗會直接關閉；出錯時要先等使用者看完訊息
     let double_click = deps::launched_by_double_click();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -403,16 +430,6 @@ async fn tui(focus: Option<String>) -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.cmd {
         None | Some(Cmd::Tui) => tui(None).await,
-        Some(Cmd::Update {
-            check,
-            version,
-            yes,
-        }) => update::update(check, version, yes).await,
-        Some(Cmd::Uninstall {
-            yes,
-            purge,
-            purge_worktrees,
-        }) => update::uninstall(yes, purge, purge_worktrees).await,
         Some(Cmd::Setup {
             yes,
             build,
@@ -600,6 +617,31 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Update {
+            check,
+            version,
+            yes,
+        }) => update::run(check, version, yes).await,
+        Some(Cmd::Uninstall {
+            yes,
+            purge,
+            worktrees,
+            dry_run,
+        }) => uninstall::run(yes, purge, worktrees, dry_run).await,
+        Some(Cmd::Doctor) => doctor::run().await,
+        Some(Cmd::Config {
+            cmd: ConfigCmd::Check { file, repo },
+        }) => {
+            // 設定檔的解析與驗證在 agt-daemon（和 daemon 載入的是同一份程式）
+            let mut args: Vec<String> = vec![];
+            if let Some(f) = file {
+                args.extend(["--file".into(), absolute(&f)]);
+            }
+            if let Some(r) = repo {
+                args.extend(["--repo".into(), absolute(&r)]);
+            }
+            std::process::exit(agt_daemon::check_config(&args));
+        }
         Some(Cmd::Daemon { cmd }) => daemon(cmd).await,
         Some(Cmd::Notify { .. }) => unreachable!(),
     }
@@ -756,7 +798,7 @@ fn notify(status: &str, message: Option<String>, tool: Option<String>, session: 
 }
 
 #[cfg(test)]
-mod tests {
+mod daemon_hint_tests {
     use super::*;
 
     #[test]

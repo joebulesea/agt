@@ -83,7 +83,14 @@ pub struct AgentSettings {
 }
 
 /// 可用的 `adapter` 值。
-pub const ADAPTERS: &[&str] = &["claude", "antigravity", "copilot", "codex", "shell", "pattern"];
+pub const ADAPTERS: &[&str] = &[
+    "claude",
+    "antigravity",
+    "copilot",
+    "codex",
+    "shell",
+    "pattern",
+];
 
 fn default_source() -> String {
     "pattern".into()
@@ -362,7 +369,16 @@ mod tests {
         let mut c = ctx();
         assert_eq!(
             base_command("sbx", &s, &c).args,
-            ["run", "claude", "/wt/proj", "--", "--model", "sonnet", "--session-id", "conv-1"]
+            [
+                "run",
+                "claude",
+                "/wt/proj",
+                "--",
+                "--model",
+                "sonnet",
+                "--session-id",
+                "conv-1"
+            ]
         );
         // 重新啟動（restart_args）時也要帶上
         c.restarted = true;

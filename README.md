@@ -1,6 +1,6 @@
 # agt：AI Agent 終端機多工器
 
-依照《agt：AI Agent 終端機設計規格》v1.0 實作的 Rust workspace。每個 AI Agent 工作階段是左側欄的一個分頁，各自在獨立的 git worktree / branch 上工作；背景的 `agtd` 持有所有 PTY，UI 關閉後 Agent 照常執行。
+依照《agt：AI Agent 終端機設計規格》v1.0 實作的 Rust workspace。每個 AI Agent 工作階段是左側欄的一個分頁，各自在獨立的 git worktree / branch 上工作；背景的 daemon（`agt daemon run`）持有所有 PTY，UI 關閉後 Agent 照常執行。
 
 ## 建置
 
@@ -24,6 +24,18 @@ docker\publish.cmd [--restart]  # 同上，在 cmd 執行或雙擊（會自動�
 
 TUI 冒煙測試（在容器中以 pty + pyte 驅動 TUI 並截取畫面）：`python3 tests/tui_smoke.py <bin 目錄>`。
 
+## 安裝（發布版）
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.sh | sh     # Linux x64
+```
+
+```powershell
+irm https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.ps1 | iex           # Windows x64
+```
+
+腳本會下載最新 Release、用 `SHA256SUMS` 核對後安裝（Linux：`~/.local/bin`；Windows：`%APPDATA%\agt`，加入使用者 PATH），最後執行 `agt setup`。用環境變數 `AGT_REPO`（`<owner>/<repo>`，預設 `joebulesea/agt`；fork 要測試時改成自己的）、`AGT_VERSION`、`AGT_NO_SETUP=1` 調整。之後用 `agt update` 自我更新（需要系統有 `curl` 與 `tar`；Windows 10 以後內建）。發布方式：把 `Cargo.toml` 的版號改好，打 tag `vX.Y.Z` 並推送，`.github/workflows/release.yml` 會建置各平台壓縮檔與 `SHA256SUMS` 並發布。
+
 ## 使用
 
 ```sh
@@ -32,17 +44,22 @@ agt new claude --repo ~/proj --task "登入功能"   # 建立分頁：worktree +
 agt ls                                 # 列出分頁
 agt attach <id>                        # 開啟 TUI 並切到該分頁
 agt diff <id>
+agt rename <id> "新任務名稱"
 agt finish <id> merge --strategy squash   # merge | pr | keep | discard
 agt kill <id> [--cleanup]
 agt restart <id> [--fresh]             # daemon 重啟後，在同一個 worktree 重新啟動 Agent（接續上次的對話；--fresh 開新對話）
 agt gc [--prune]                       # 比對 git worktree 與資料庫，列出 / 清理留下的 worktree 副本
 agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docker Sandboxes，加入 Agent（第一次執行 agt 時自動執行）
+agt doctor                             # 檢查執行環境（daemon、設定檔、git、Docker、gh…）並說明下一步；有失敗項目時 exit 1
+agt config check [--file F] [--repo DIR]   # 檢查設定檔（不需要 daemon）：錯誤含行號，另列出找不到的指令、拼錯的變數等警告
+agt update [--check] [--version 0.3.0] [-y]   # 從 GitHub Release 更新 agt（核對 SHA256、重新啟動 daemon）
+agt uninstall [--dry-run] [--purge] [--worktrees] [-y]   # 解除安裝（預設保留設定、資料與 worktree）
 agt daemon start|stop|restart|status
-agt update [--check] [--version X]       # 自我更新（下載、核對 SHA256、換掉執行檔）
-agt uninstall                          # 移除 agt（設定、資料與 worktree 另外詢問）
 ```
 
 `agt gc` 用來清理殘留的 worktree：它會比對 git worktree 與資料庫，列出已沒有對應分頁的副本，加上 `--prune` 才會實際刪除。
+
+新增分頁時（`Ctrl+A` → `n`）Base 欄位留空會使用主 repo 目前的 HEAD branch，畫面上會顯示實際的 branch；它不是 remote 的預設 branch 時以黃字提醒，避免 PR 開到 feature branch。底部狀態列最右邊顯示 agt 的版本號。Agent 結束後（例如 `/exit`），畫面上會出現可點擊的「重新啟動，接續對話（`R`）」與「開新對話（`N`）」按鈕。
 
 TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
 
@@ -89,7 +106,18 @@ Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --adviso
 `claude-sbx` 使用 [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/)（`sbx`，microVM，不需要 Docker Desktop）：沙箱保留到分頁關閉，沙箱內可唯讀使用 git。相關設定 `restart_args`（重新啟動時取代 `args`）、`on_close`（只在關閉分頁時執行）與 `{gitdir}` 變數，範例見 [`config/default.toml`](config/default.toml) 的 `[agents.claude-sbx]`。
 
 
-在容器中執行 Claude Code，容器只看得到該分頁的 worktree：`docker build -t agt-claude docker/claude/`，再把 [`config/default.toml`](config/default.toml) 裡的 `[agents.claude-docker]` 範例複製到設定檔。Antigravity CLI 同理：`docker build -t agt-agy docker/agy/`，範例是 `[agents.agy-docker]`；GitHub Copilot CLI 是 `docker build -t agt-copilot docker/copilot/`，範例是 `[agents.copilot-docker]`；OpenAI Codex CLI 是 `docker build -t agt-codex docker/codex/`，範例是 `[agents.codex-docker]`。Agent 設定可用 `adapter`（沿用內建 Agent 的狀態判斷）、`cleanup`（分頁結束時執行的收尾指令）、`update`（daemon 啟動時在背景執行、新建分頁時先在分頁中執行的更新指令；Agent 的執行檔放在分頁中唯讀的 volume，只由這個指令更新）與 `{cwd}`、`{session}` 變數。容器內無法使用 git，commit 由收尾選單處理。詳見 [Windows 使用說明](docs/Windows-TUI-使用說明.md) 第 10 節。
+在容器中執行 Claude Code，容器只看得到該分頁的 worktree：`docker build -t agt-claude docker/claude/`，再把 [`config/default.toml`](config/default.toml) 裡的 `[agents.claude-docker]` 範例複製到設定檔。Antigravity CLI 同理：`docker build -t agt-agy docker/agy/`，範例是 `[agents.agy-docker]`；GitHub Copilot CLI 是 `docker build -t agt-copilot docker/copilot/`，範例是 `[agents.copilot-docker]`；OpenAI Codex CLI 是 `docker build -t agt-codex docker/codex/`，範例是 `[agents.codex-docker]`。Agent 設定可用 `adapter`（沿用內建 Agent 的狀態判斷）、`cleanup`（分頁結束時執行的收尾指令）、`update`（daemon 啟動時在背景執行、新建分頁時先在分頁中執行的更新指令；Agent 的執行檔放在分頁中唯讀的 volume，只由這個指令更新）與 `{cwd}`、`{session}` 變數。容器內無法使用 git，commit 由收尾選單處理。`update` 指令在 daemon 啟動時執行一次（相同指令只跑一次），新建分頁時也會先執行再啟動 Agent，讓沙箱分頁自動使用最新版；設定 `update_on_new = false` 可關閉後者（`R` 重新啟動不會執行）。詳見 [Windows 使用說明](docs/Windows-TUI-使用說明.md) 第 10 節。
+
+### 沙箱分頁的 commit 與 PR
+
+容器內無法使用 git，所以 Agent 改完程式後把說明寫成兩個檔案，由主機上的 agt 在收尾時使用：
+
+- `.agt/COMMIT_MSG`：commit 訊息，第一行（50 字以內）同時是 PR 標題。
+- `.agt/PR_BODY.md`：PR 說明（做了什麼、為什麼、如何測試）。
+
+收尾時 **merge 與 pr 擇一**：選 merge 是在本機把 branch 併進 base，選 pr 是 push 並建立 PR、不在本機 merge（等 PR 在 GitHub 上合併）；兩者都會先 commit（Agent 設了 `auto_commit` 時）。
+
+在 agt 按 `m` 收尾並選 **pr** 時，agt 會 commit、push 並建立 PR；該 branch 已有開啟中的 PR 時只 push 並更新說明。需要主機安裝並登入 GitHub CLI（`gh auth login`），沒有 `gh` 時只會 commit 並顯示要手動執行的 push 指令。分頁的 base 只在本機（例如還沒 push 的 feat branch）但內容都已在 remote 預設 branch 時，PR 以預設 branch 為目標；否則在 push 前停下並說明。`claude-docker` 與 `claude-sbx` 的範例提示會請 Claude 寫這兩個檔案（需 `auto_commit = true`），主機用的腳本是 `docker/claude/agt-pr.cmd`。`.agt/` 會被加入主 repo 的 info/exclude，不會出現在 diff 或 auto_commit 的 commit 裡。收尾失敗時原因會寫進 `agtd.log` 與該分頁的事件記錄；錯誤視窗可按 `c`（或 `y`）複製全部內容。操作步驟見 [agt-pr 操作步驟](docs/agt-pr-操作步驟.md)。
 
 ## 環境變數
 

@@ -55,7 +55,7 @@
 
 提升權限執行 daemon 時，pipe 擁有者可能是 Administrators 群組，client 目前接受。這條路徑沒有實測。
 
-- [ ] 實測提升權限的 daemon 與一般權限的 client 是否能正常連線。程式碼檢查結果：pipe 的 ACL 只含 SYSTEM 與「目前使用者的 SID」（提升權限後仍是同一個 SID，所以不會擋掉原本的使用者）；client 接受擁有者為本人、Administrators、SYSTEM。理論上可行，但沒有在 Windows 上實測；接受 Administrators 代表其他系統管理員也能建立被接受的 pipe，但系統管理員本來就能操作你的行程，不另外收緊
+- [ ] 實測提升權限的 daemon 與一般權限的 client 是否能正常連線。程式碼檢查結果：pipe 的 ACL 只含 SYSTEM 與「目前使用者的 SID」（提升權限後仍是同一個 SID）；client 接受擁有者為本人、Administrators、SYSTEM。理論上可行，但沒有在 Windows 上實測；系統管理員本來就能操作你的行程，不另外收緊
 
 ---
 

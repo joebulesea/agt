@@ -284,6 +284,12 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ])
             };
             let agent = form.agents.get(form.agent).cloned().unwrap_or_default();
+            // 收尾（merge / pr）前會自動 commit 的 Agent，在欄位上標出來
+            let agent_label = if app.ui.auto_commit_agents.contains(&agent) {
+                format!("◀ {agent} ▶  auto_commit")
+            } else {
+                format!("◀ {agent} ▶")
+            };
             // Base 留空時實際會用哪個 branch：主 repo 不在預設 branch 上時，PR 與 merge 的目標會跟著它
             let (base_hint, base_warn) = if form.base.trim().is_empty() {
                 let repo = crate::app::expand_home(form.repo.trim());
@@ -294,7 +300,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             };
             let mut lines = vec![
                 Line::raw(""),
-                field(0, "Agent", format!("◀ {agent} ▶")),
+                field(0, "Agent", agent_label),
                 field(
                     1,
                     "Repo",

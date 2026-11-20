@@ -4,7 +4,7 @@
 import os, pty, sys, time, select, subprocess, tempfile
 import pyte
 
-bindir = sys.argv[1]
+bindir = os.path.abspath(sys.argv[1])  # 之後會 chdir，先轉成絕對路徑
 home = tempfile.mkdtemp()
 env = dict(os.environ, AGT_HOME=home, AGT_SOCKET=os.path.join(home, "agt.sock"),
            TERM="xterm-256color", COLORTERM="truecolor", SHELL="/bin/bash")

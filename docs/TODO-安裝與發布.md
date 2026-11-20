@@ -1,7 +1,5 @@
 # 待辦：像 Claude CLI 一樣用指令安裝 agt
 
-> 狀態：發布流程、安裝腳本、`agt update` / `agt uninstall` 已寫好並有單元測試，**還沒在真實的 GitHub Release 與乾淨的 Windows 上實測**（需要先決定 repo 位置，並把 `AGT_REPO` / 腳本內的 `OWNER/agt` 改成實際值）。勾選的項目表示程式已完成，不代表已實測。
-
 目標：
 
 ```powershell
@@ -47,19 +45,19 @@ agt update                                    # 之後自我更新
   - [x] Linux x64（必要時用 musl 做靜態連結）
 - [x] 打包：`agt-<版本>-<平台>.zip` / `.tar.gz`，內含 `agt`
 - [x] 產生 `SHA256SUMS`，連同壓縮檔上傳到 Releases
-- [x] 提供「最新版本」查詢方式（Releases API 或固定的 `latest.json`）
+- [ ] 提供「最新版本」查詢方式（Releases API 或固定的 `latest.json`）
 - [ ] 版本號管理：建立 CHANGELOG；沿用既有的協定版本檢查（版本不同時提示 `agt daemon restart`）
 
 ## 3. 安裝腳本（約 1 天）
 
 - [x] `install.ps1`（Windows）
-  - [ ] 判斷 CPU 架構，下載對應壓縮檔（只用 HTTPS）
-  - [ ] **核對 SHA256**，不符就中止
-  - [ ] 已安裝且 daemon 在執行時，先 `agt daemon stop -y`
-  - [ ] 解壓到 `%APPDATA%\agt\`（不需要系統管理員；和設定檔、`docker\`、`data\` 放在一起，與目前手動安裝的位置相同）
-  - [ ] 把目錄加進使用者 PATH（已存在則略過）
+  - [x] 判斷 CPU 架構，下載對應壓縮檔（只用 HTTPS）
+  - [x] **核對 SHA256**，不符就中止
+  - [x] 已安裝且 daemon 在執行時，先 `agt daemon stop -y`
+  - [x] 解壓到 `%APPDATA%\agt\`（不需要系統管理員；和設定檔、`docker\`、`data\` 放在一起，與目前手動安裝的位置相同）
+  - [x] 把目錄加進使用者 PATH（已存在則略過）
   - [x] 檢查 git 是否存在，沒有就提示安裝：交給 `agt setup` 的環境檢查（已實作，見 [TODO-環境檢查與安裝](TODO-環境檢查與安裝.md)），install.ps1 不另外檢查
-  - [ ] 最後執行 `agt setup`
+  - [x] 最後執行 `agt setup`
 - [x] `install.sh`（Linux / macOS）：同上，安裝到 `~/.local/bin`
 - [ ] 在乾淨的 Windows（沒有 Rust、沒有舊版 agt）上實測
 
@@ -67,13 +65,13 @@ agt update                                    # 之後自我更新
 
 - [x] `agt update`：查詢最新版本 → 下載並核對 SHA256 → 停止 daemon → 換掉執行檔 → 重新啟動 daemon
   - [x] **執行中的 exe 無法覆蓋**（開發時多次遇到）：先把舊檔改名為 `.old` 再放新檔，下次啟動時清除 `.old`
-  - [ ] 有分頁正在執行時先提醒（重啟 daemon 會結束所有 Agent）
+  - [x] 有分頁正在執行時先提醒（重啟 daemon 會結束所有 Agent）
 - [ ] （選用）啟動時背景檢查新版本，在狀態列提示
 - [x] `agt uninstall`（或文件說明）：
-  - [ ] 停止 daemon
-  - [ ] 刪除沙箱 / 容器（`sbx rm agt-*`、`docker rm -f` 標記 `agt=1` 的容器）
-  - [ ] 刪除執行檔 `%APPDATA%\agt\agt.exe` 與 PATH 設定
-  - [ ] 詢問是否刪除設定（`%APPDATA%\agt` 其餘內容）、worktree `~/.agt/worktrees`
+  - [x] 停止 daemon
+  - [x] 刪除沙箱 / 容器（`sbx rm agt-*`、`docker rm -f` 標記 `agt=1` 的容器）
+  - [x] 刪除執行檔 `%APPDATA%\agt\agt.exe`（與舊版留下的 `agtd.exe`）與 PATH 設定
+  - [x] 詢問是否刪除設定（`%APPDATA%\agt` 其餘內容）、worktree `~/.agt/worktrees`
 
 ## 5. 之後再做
 

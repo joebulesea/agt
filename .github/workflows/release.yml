@@ -1,31 +1,61 @@
 name: Release
-# 推送 v* 標籤時編譯、打包並建立 GitHub Release（附 SHA256SUMS 與安裝腳本）
+
+# 推送 v* 標籤時：驗證版號 → 建立 draft release → 各平台編譯並上傳 → 產生 SHA256SUMS 並正式發布
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
 
+# 預設唯讀；只有需要寫入 Release 的 job 才提高權限
 permissions:
   contents: read
 
 jobs:
+  create:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: 標籤必須和 Cargo.toml 的版號一致
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' Cargo.toml)
+          if [ "$want" != "$have" ]; then
+            echo "::error::標籤 $GITHUB_REF_NAME 與 Cargo.toml 的版號 $have 不一致"
+            exit 1
+          fi
+      - name: 建立 draft release
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          # 重新執行 workflow 時 release 可能已經存在（draft）
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft $pre \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+
   build:
+    needs: create
     strategy:
       fail-fast: true
       matrix:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            platform: windows-x64
             ext: zip
-          # 用較舊的 glibc 編譯，舊的 Linux 發行版也能執行
+          # 用較舊的 Ubuntu 編譯，產出的執行檔相容較多 glibc 版本
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            platform: linux-x64
             ext: tar.gz
     runs-on: ${{ matrix.os }}
-    # 只有這個 job 需要寫入 Release
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -34,58 +64,44 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      - name: 標籤必須和 Cargo.toml 的版本一致
-        shell: bash
+      # 發布前先跑測試（e2e 只在 Unix 執行）
+      - name: 測試
+        if: runner.os == 'Linux'
         run: |
-          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-          if [ "v$ver" != "${GITHUB_REF_NAME}" ]; then
-            echo "標籤 ${GITHUB_REF_NAME} 與 Cargo.toml 的版本 v$ver 不一致" >&2
-            exit 1
-          fi
-          echo "VERSION=$ver" >> "$GITHUB_ENV"
-      - run: git config --global user.email ci@example.invalid && git config --global user.name ci
-      - run: cargo test --workspace --release --target ${{ matrix.target }}
-      - run: cargo build --release --locked --target ${{ matrix.target }} -p agt-cli
-      - name: 打包
-        shell: bash
-        run: |
-          out="agt-${VERSION}-${{ matrix.platform }}"
-          mkdir -p "dist/$out"
-          bin="target/${{ matrix.target }}/release"
-          if [ "${{ matrix.ext }}" = zip ]; then
-            cp "$bin/agt.exe" "dist/$out/"
-            (cd "dist/$out" && 7z a -tzip "../$out.zip" agt.exe)
-          else
-            cp "$bin/agt" "dist/$out/"
-            tar -czf "dist/$out.tar.gz" -C "dist/$out" agt
-          fi
-          echo "ASSET=dist/$out.${{ matrix.ext }}" >> "$GITHUB_ENV"
-      - name: 上傳到 Release
-        shell: bash
+          git config --global user.email ci@example.invalid
+          git config --global user.name ci
+          cargo test --workspace --locked
+      # agt update 用這個 repo 查詢與下載新版（建置時寫進執行檔）
+      - run: cargo build --release --locked --workspace --target ${{ matrix.target }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          AGT_REPO: ${{ github.repository }}
+      - name: 打包並上傳
+        shell: bash
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "見 CHANGELOG.md" || true
-          gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+          name="agt-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          if [ "${{ matrix.ext }}" = zip ]; then
+            cp "target/${{ matrix.target }}/release/agt.exe" "$name/"
+            7z a "$name.zip" "$name" >/dev/null
+          else
+            cp "target/${{ matrix.target }}/release/agt" "$name/"
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "$name.${{ matrix.ext }}" --clobber
 
-  # 兩個平台都上傳後，產生 SHA256SUMS 並附上安裝腳本
-  checksums:
+  publish:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: SHA256SUMS
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: 產生 SHA256SUMS 並正式發布
         run: |
-          mkdir assets && cd assets
+          mkdir dl && cd dl
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern 'agt-*'
           sha256sum agt-* > SHA256SUMS
           cat SHA256SUMS
-          cp ../scripts/install.sh ../scripts/install.ps1 .
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber SHA256SUMS install.sh install.ps1
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" SHA256SUMS --clobber
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

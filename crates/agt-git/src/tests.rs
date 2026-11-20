@@ -1,4 +1,6 @@
 use super::*;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[test]
 fn slug_rules() {

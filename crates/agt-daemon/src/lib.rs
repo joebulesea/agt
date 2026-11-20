@@ -1,6 +1,7 @@
 //! daemon：持有所有 PTY 與畫面狀態；TUI 只是一個可以隨時關閉、重新連線的顯示端。
 //! 以 `agt daemon run` 執行（不再有獨立的 agtd 執行檔）。
 
+mod check;
 mod config;
 mod server;
 mod state;
@@ -16,6 +17,11 @@ use std::time::Duration;
 
 /// 同時連線數上限（TUI、CLI、hook 的 `agt notify` 都是短連線，正常用量遠低於此）。
 const MAX_CONNECTIONS: usize = 64;
+
+/// `agt config check`：只檢查設定檔，不取得 lock、不啟動 daemon。回傳結束碼。
+pub fn check_config(args: &[String]) -> i32 {
+    check::run(args)
+}
 
 /// 執行 daemon 直到結束（`agt daemon run`）。`foreground` 時日誌輸出到終端機，否則寫入 `agtd.log`。
 /// 必須在還沒有 tokio runtime 的執行緒上呼叫；結束時直接結束行程。

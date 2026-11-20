@@ -3,6 +3,7 @@ name = "agt-daemon"
 description = "持有所有 PTY 與畫面狀態的背景 daemon（以 agt daemon run 執行）"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

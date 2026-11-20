@@ -29,18 +29,9 @@ impl App {
             }
             return;
         }
-        let bracketed = self
-            .screen
-            .as_ref()
-            .is_some_and(|s| s.has_mode(modes::BRACKETED_PASTE));
-        if bracketed {
-            let mut b = b"\x1b[200~".to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b.extend_from_slice(b"\x1b[201~");
-            self.input(&b);
-        } else {
-            self.input(s.replace("\r\n", "\r").replace('\n', "\r").as_bytes());
-        }
+        // 一律用 bracketed paste 包起來：即使 daemon 傳來的畫面快照還沒帶到
+        // BRACKETED_PASTE 旗標，也不會把貼上內容的換行當成 Enter 而誤送出。
+        self.input(&paste_bytes(s));
     }
 
     pub(super) fn on_key(&mut self, k: KeyEvent) {

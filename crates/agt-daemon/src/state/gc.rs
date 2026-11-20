@@ -1,4 +1,4 @@
-//! Daemon 的維護工作：孤兒偵測（gc）、git 狀態輪詢、閒置關閉、關閉全部、狀態資訊。
+//! worktree 與資料庫的比對與清理（gc）、定期輪詢 git 狀態。
 
 use super::*;
 
@@ -192,45 +192,6 @@ impl Daemon {
                     dirty: st.dirty,
                 });
             }
-        }
-    }
-
-    /// 所有工作階段結束且沒有 client 連線，經過 `idle_shutdown_secs` 後回傳 true。
-    pub fn should_idle_shutdown(&self) -> bool {
-        let secs = self.cfg().general.idle_shutdown_secs;
-        secs > 0
-            && self.ui_clients.load(Ordering::Relaxed) == 0
-            && self.running_count() == 0
-            && self.last_activity.lock().unwrap().elapsed() >= Duration::from_secs(secs)
-    }
-
-    pub fn kill_all(&self) {
-        let sessions: Vec<Arc<Session>> = self
-            .entries
-            .lock()
-            .unwrap()
-            .values()
-            .filter_map(|e| e.session.clone())
-            .collect();
-        for s in sessions {
-            if s.is_running() {
-                s.kill();
-            }
-        }
-    }
-
-    pub fn info(&self) -> agt_proto::DaemonInfo {
-        // 注意：不能在同一個敘述裡兩次鎖 entries（暫時的 guard 會活到敘述結束 → 死結）
-        let sessions = self.entries.lock().unwrap().len();
-        let running = self.running_count();
-        agt_proto::DaemonInfo {
-            pid: std::process::id(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            sessions,
-            running,
-            clients: self.ui_clients.load(Ordering::Relaxed),
-            data_dir: self.paths.data_dir.to_string_lossy().into_owned(),
-            config_path: self.paths.config_file.to_string_lossy().into_owned(),
         }
     }
 }
