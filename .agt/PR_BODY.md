@@ -19,3 +19,4 @@
 - `agt config check` 列出每個 Agent 展開 `extends` 後的 `auto_commit` on/off（`crates/agt-daemon/src/check.rs`），並補測試 `auto_commit_lines_follow_extends`。
 - 同樣沒有在沙箱中編譯或執行測試（沒有 cargo），請本機執行 `cargo test`。
 - 左側欄分頁清單第二行行尾以綠色顯示 `auto`，標題列顯示 `[auto_commit]`（`crates/agt-tui/src/ui.rs`）。
+- `.gitignore` 加上 `/.agt/`，讓 Agent 說明檔（`COMMIT_MSG`、`PR_BODY.md`）在這個 repo 一定不會被誤加進 commit（agt 原本只靠各 clone 的 `info/exclude`）。
