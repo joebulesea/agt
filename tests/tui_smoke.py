@@ -9,6 +9,11 @@ home = tempfile.mkdtemp()
 env = dict(os.environ, AGT_HOME=home, AGT_SOCKET=os.path.join(home, "agt.sock"),
            TERM="xterm-256color", COLORTERM="truecolor", SHELL="/bin/bash")
 open(os.path.join(home, "config.toml"), "w").write("[general]\nnotify = false\nosc52 = \"on\"\n")
+# 「偵測到可用的 Agent，要加入嗎？」的提示取決於執行環境（CI 的 runner 有 Docker、開發機有 claude），
+# 會擋住測試；預先寫入「不要再提醒」清單，讓測試與環境無關
+open(os.path.join(home, "setup-skip.txt"), "w").write("\n".join(
+    ["claude-advisor", "claude-sbx", "claude-sbx-advisor", "claude-docker", "agy-docker",
+     "copilot-docker", "codex-docker", "claude-docker-advisor"]) + "\n")
 repo = os.path.join(home, "proj"); os.makedirs(repo)
 for c in (["git", "init", "-q", "-b", "main"], ["git", "commit", "-q", "--allow-empty", "-m", "init"]):
     subprocess.run(c, cwd=repo, check=True)
