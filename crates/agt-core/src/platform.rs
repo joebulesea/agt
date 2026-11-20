@@ -160,12 +160,20 @@ pub fn update_script(cmd: &[String]) -> Option<String> {
         return None;
     }
     Some(if cfg!(windows) {
-        let line = cmd.iter().map(|a| ps_quote(a)).collect::<Vec<_>>().join(" ");
+        let line = cmd
+            .iter()
+            .map(|a| ps_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
             "Write-Host '[agt] 檢查 Agent 更新…'\n& {line}\nif (-not $?) {{ Write-Host '[agt] 更新指令失敗，使用現有版本' }}\n$null = 0"
         )
     } else {
-        let line = cmd.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" ");
+        let line = cmd
+            .iter()
+            .map(|a| sh_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
             "echo '[agt] 檢查 Agent 更新…'\n{line} || echo \"[agt] 更新指令失敗（exit $?），使用現有版本\""
         )
@@ -215,6 +223,57 @@ fn run_quiet(cmd: &[String], what: &str, warn_on_fail: bool) {
         Ok(s) => tracing::warn!(?cmd, ?s, "{what}執行失敗"),
         Err(e) => tracing::warn!(?cmd, "無法執行{what}：{e}"),
     }
+}
+
+/// Agent 的指令是 `docker` 時，確認 Docker engine 有在執行；沒有的話回傳要顯示給使用者的說明。
+/// 其他指令一律回傳 `None`（不檢查）。逾時（engine 卡住）也視為沒有回應。
+pub fn docker_unavailable(command: &str) -> Option<String> {
+    let name = Path::new(command)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if name != "docker" {
+        return None;
+    }
+    let mut c = std::process::Command::new(command);
+    c.args(["version", "--format", "{{.Server.Version}}"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(_) => {
+            return Some(
+                "找不到 docker 指令：尚未安裝 Docker。請先安裝 Docker Desktop（或執行 `agt setup`）。"
+                    .into(),
+            );
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) if st.success() => return None,
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+        }
+    }
+    Some(
+        "Docker 沒有開啟：連不上 Docker engine。請先啟動 Docker Desktop，等它完全啟動（鯨魚圖示不再轉動）後再試一次。"
+            .into(),
+    )
 }
 
 /// 結束整個行程樹。Windows 用 `taskkill /T`（等同 Job Object 終止行程樹）；
@@ -336,5 +395,33 @@ mod tests {
         }
         // 不經過 cmd.exe（.exe 或 Unix）：不限制
         assert!(check_cmd_args(&[], &["a&b".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn docker_check_only_applies_to_docker() {
+        assert!(docker_unavailable("claude").is_none());
+        assert!(docker_unavailable("").is_none());
+        assert!(docker_unavailable("sbx").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn docker_check_reports_when_engine_is_down() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("docker");
+        std::fs::write(&fake, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let msg = docker_unavailable(fake.to_str().unwrap()).expect("engine 掛掉時要有訊息");
+        assert!(msg.contains("Docker 沒有開啟"), "{msg}");
+        std::fs::write(&fake, "#!/bin/sh\necho 27.0\n").unwrap();
+        assert!(docker_unavailable(fake.to_str().unwrap()).is_none());
+        // 找不到指令
+        let missing = dir.path().join("nodir/docker");
+        assert!(
+            docker_unavailable(missing.to_str().unwrap())
+                .unwrap()
+                .contains("找不到 docker")
+        );
     }
 }

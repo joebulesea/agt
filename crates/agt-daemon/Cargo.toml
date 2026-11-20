@@ -1,14 +1,10 @@
 [package]
 name = "agt-daemon"
-description = "agtd：持有所有 PTY 與畫面狀態的背景 daemon"
+description = "持有所有 PTY 與畫面狀態的背景 daemon（以 agt daemon run 執行）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-
-[[bin]]
-name = "agtd"
-path = "src/main.rs"
 
 [dependencies]
 agt-proto.workspace = true

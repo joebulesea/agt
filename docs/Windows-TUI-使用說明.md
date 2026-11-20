@@ -6,12 +6,12 @@
 
 | 項目 | 說明 |
 | --- | --- |
-| 執行檔 | `agt.exe` 與 `agtd.exe`，必須放在同一個資料夾：安裝在 `%APPDATA%\agt\`（建置輸出另有一份在 `C:\claude\Rust\agt\dist\windows\`） |
+| 執行檔 | 只有 `agt.exe`（daemon 也是它，以 `agt daemon run` 執行）：安裝在 `%APPDATA%\agt\`（建置輸出另有一份在 `C:\claude\Rust\agt\dist\windows\`） |
 | 終端機 | 建議使用 Windows Terminal（PowerShell） |
 | git | 2.20 以上，需在 PATH 中 |
 | Agent | 要使用的 Agent 指令必須在 PATH 中：`claude`（Claude Code）、`agy`（Antigravity CLI）、`copilot`（GitHub Copilot CLI，`npm install -g @github/copilot`）、`codex`（OpenAI Codex CLI，`npm install -g @openai/codex`）；`shell` 會使用 `pwsh`，沒有時改用 `powershell` |
 
-不需要手動啟動 daemon：執行 `agt` 時若 daemon 尚未執行，會自動在背景啟動 `agtd`。
+不需要手動啟動 daemon：執行 `agt` 時若 daemon 尚未執行，會自動在背景啟動 daemon（`agt daemon run`；工作管理員裡看到的是 `agt.exe`）。
 
 ## 2. 加入 PATH（選用）
 
@@ -54,7 +54,7 @@ daemon 或 TUI 執行中時 exe 會被鎖住，腳本會先把舊檔改名為 `.
 
 ## 3. 初始設定（agt setup）
 
-只有 `agt.exe` 與 `agtd.exe` 也能直接使用（在檔案總管雙擊 `agt.exe` 也可以）：第一次執行 `agt`（還沒有設定檔）時，會先出現初始設定畫面：
+只有 `agt.exe` 也能直接使用（在檔案總管雙擊 `agt.exe` 也可以）：第一次執行 `agt`（還沒有設定檔）時，會先出現初始設定畫面：
 
 1. 檢查環境：git、Docker Desktop（含 WSL2）、Docker Sandboxes（`sbx`，含是否已登入、是否已設定網路政策）、Claude Code、GitHub Copilot CLI、OpenAI Codex CLI、Antigravity CLI；有問題的項目標示 **必要 / 建議 / 選用**。
 2. 有缺少的項目時，勾選要處理的項目（預設只勾必要的 git），每一項再選擇處理方式：

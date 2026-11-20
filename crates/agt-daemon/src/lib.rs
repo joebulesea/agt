@@ -1,4 +1,5 @@
-//! agtd：持有所有 PTY 與畫面狀態；TUI 只是一個可以隨時關閉、重新連線的顯示端。
+//! daemon：持有所有 PTY 與畫面狀態；TUI 只是一個可以隨時關閉、重新連線的顯示端。
+//! 以 `agt daemon run` 執行（不再有獨立的 agtd 執行檔）。
 
 mod config;
 mod server;
@@ -16,8 +17,9 @@ use std::time::Duration;
 /// 同時連線數上限（TUI、CLI、hook 的 `agt notify` 都是短連線，正常用量遠低於此）。
 const MAX_CONNECTIONS: usize = 64;
 
-fn main() -> anyhow::Result<()> {
-    let foreground = std::env::args().any(|a| a == "--foreground");
+/// 執行 daemon 直到結束（`agt daemon run`）。`foreground` 時日誌輸出到終端機，否則寫入 `agtd.log`。
+/// 必須在還沒有 tokio runtime 的執行緒上呼叫；結束時直接結束行程。
+pub fn run_daemon(foreground: bool) -> anyhow::Result<()> {
     let mut paths = Paths::detect();
     // 舊版把資料放在 %LOCALAPPDATA%\agt：第一次用新版啟動時搬到 %APPDATA%\agt\data
     let migrated = Paths::legacy_data_dir().and_then(|old| paths.migrate_from(&old));
@@ -30,7 +32,7 @@ fn main() -> anyhow::Result<()> {
         .write(true)
         .open(paths.lock())?;
     if lock.try_lock().is_err() {
-        eprintln!("agtd 已在執行中");
+        eprintln!("daemon 已在執行中");
         return Ok(());
     }
 
@@ -78,7 +80,8 @@ fn main() -> anyhow::Result<()> {
         }
     };
     let endpoint = transport::endpoint();
-    let agt_exe = transport::sibling_exe("agt");
+    // daemon 就是 agt 本身；Agent 的 hooks 用同一個執行檔呼叫 `agt notify`
+    let agt_exe = std::env::current_exe()?;
     let agt_exe = std::fs::canonicalize(&agt_exe)
         .map(|p| agt_git::normalize(&p))
         .unwrap_or(agt_exe);
@@ -91,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         .build()?;
     let result = rt.block_on(async move {
         let d = Daemon::new(paths, endpoint, agt_exe, cfg, cfg_err)?;
-        run(d).await
+        serve(d).await
     });
     // 不無限等待背景的阻塞工作（Windows 的 named pipe 等待連線會佔住 blocking 執行緒）
     tracing::debug!("shutdown：關閉 runtime");
@@ -99,15 +102,15 @@ fn main() -> anyhow::Result<()> {
     tracing::debug!("shutdown：runtime 已關閉");
     drop(lock);
     if let Err(e) = &result {
-        tracing::error!("agtd 異常結束：{e:#}");
+        tracing::error!("daemon 異常結束：{e:#}");
     }
     std::process::exit(if result.is_ok() { 0 } else { 1 });
 }
 
-async fn run(d: Arc<Daemon>) -> anyhow::Result<()> {
+async fn serve(d: Arc<Daemon>) -> anyhow::Result<()> {
     let listener = transport::listen(&d.endpoint)?;
     tracing::info!(
-        "agtd {} 啟動，pid {}，監聽 {}",
+        "agt daemon {} 啟動，pid {}，監聽 {}",
         env!("CARGO_PKG_VERSION"),
         std::process::id(),
         d.endpoint
@@ -205,7 +208,7 @@ async fn run(d: Arc<Daemon>) -> anyhow::Result<()> {
             _ = d.shutdown.notified() => break,
         }
     }
-    tracing::info!("agtd 結束");
+    tracing::info!("daemon 結束");
     d.kill_all();
     tracing::debug!("shutdown：已結束所有 Agent");
     tokio::time::sleep(Duration::from_millis(200)).await;

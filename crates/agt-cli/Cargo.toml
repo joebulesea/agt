@@ -1,6 +1,6 @@
 [package]
 name = "agt-cli"
-description = "agt：CLI 與 TUI 入口（tui / new / ls / attach / notify / gc / daemon）"
+description = "agt：CLI、TUI 與 daemon 的入口（tui / new / ls / attach / notify / gc / daemon）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 agt-proto.workspace = true
 agt-tui.workspace = true
+agt-daemon.workspace = true
 tokio.workspace = true
 clap.workspace = true
 serde_json.workspace = true

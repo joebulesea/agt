@@ -36,3 +36,28 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit
+
+  # TUI 冒煙測試：在 pty 中執行 agt，用 pyte 模擬終端機並檢查畫面
+  tui-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
+      - run: git config --global user.email ci@example.invalid && git config --global user.name ci
+      - run: cargo build --workspace
+      - run: python3 -m pip install pyte
+      - run: python3 tests/tui_smoke.py target/debug
+
+  # 安裝腳本的語法檢查
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sh -n scripts/install.sh
+      - run: shellcheck scripts/install.sh

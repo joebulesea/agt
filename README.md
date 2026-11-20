@@ -7,7 +7,7 @@
 需要 Rust 1.89 以上（edition 2024、`File::try_lock`）。
 
 ```sh
-cargo build --release          # 產出 target/release/agt 與 agtd（放在同一個目錄）
+cargo build --release          # 產出 target/release/agt（單一執行檔，daemon 以 `agt daemon run` 執行）
 cargo test --workspace         # 單元測試 + 端對端測試（Unix）
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -27,7 +27,7 @@ TUI 冒煙測試（在容器中以 pty + pyte 驅動 TUI 並截取畫面）：`p
 ## 使用
 
 ```sh
-agt                                    # 開啟 TUI（必要時自動在背景啟動 agtd）
+agt                                    # 開啟 TUI（必要時自動在背景啟動 daemon（`agt daemon run`））
 agt new claude --repo ~/proj --task "登入功能"   # 建立分頁：worktree + branch agt/claude/<slug>-<id>
 agt ls                                 # 列出分頁
 agt attach <id>                        # 開啟 TUI 並切到該分頁
@@ -38,6 +38,8 @@ agt restart <id> [--fresh]             # daemon 重啟後，在同一個 worktre
 agt gc [--prune]                       # 比對 git worktree 與資料庫，列出 / 清理留下的 worktree 副本
 agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docker Sandboxes，加入 Agent（第一次執行 agt 時自動執行）
 agt daemon start|stop|restart|status
+agt update [--check] [--version X]       # 自我更新（下載、核對 SHA256、換掉執行檔）
+agt uninstall                          # 移除 agt（設定、資料與 worktree 另外詢問）
 ```
 
 `agt gc` 用來清理殘留的 worktree：它會比對 git worktree 與資料庫，列出已沒有對應分頁的副本，加上 `--prune` 才會實際刪除。
@@ -76,7 +78,7 @@ Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --adviso
 | `agt-agents` | Claude Code（hooks）、Antigravity、GitHub Copilot CLI、OpenAI Codex CLI（規則比對）、Shell、自訂 Agent |
 | `agt-git` | WorktreeManager：直接呼叫 `git` |
 | `agt-store` | SQLite（WAL、`user_version` migration）、可輪替的終端機紀錄檔 |
-| `agt-daemon` | `agtd`：IPC Router、工作階段管理、設定檔熱重載、閒置關閉；端對端測試在 `tests/e2e.rs` |
+| `agt-daemon` | daemon 函式庫：IPC Router、工作階段管理、設定檔熱重載、閒置關閉（由 `agt daemon run` 執行） |
 | `agt-tui` | ratatui 介面，只依賴 `agt-proto` |
 | `agt-cli` | `agt` 執行檔 |
 
@@ -101,7 +103,7 @@ Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --adviso
 
 ## 與規格的差異與未完成項目
 
-- **端對端測試位置**：放在 `crates/agt-daemon/tests/`（才能取得 `agtd` 執行檔路徑），不是根目錄的 `tests/`；根目錄的 `tests/` 放 TUI 冒煙測試。
+- **端對端測試位置**：放在 `crates/agt-cli/tests/e2e.rs`（才能取得 `agt` 執行檔路徑），不是根目錄的 `tests/`；根目錄的 `tests/` 放 TUI 冒煙測試。
 - **Windows 結束行程樹**：用 `taskkill /T /F` 而不是 Job Object。
 - **IPC 存取限制**：只接受同一位使用者。Unix：socket 目錄 0700 且必須是自己的（不接受符號連結）、socket 0600，兩端都檢查對方的 uid；Windows：pipe 的 ACL 只允許目前的使用者與 SYSTEM，client 連線後確認 pipe 的擁有者。連線後 10 秒內沒有送出 Hello 會被中斷。同一位使用者的行程之間沒有再細分權限（分頁裡的 Agent 若在主機上執行，可以透過 `AGT_SOCKET` 操作其他分頁）。
 - **Windows 路徑長度**：worktree 路徑超過 240 字元且未開啟 `core.longpaths` 時拒絕建立（保留檔案名稱的空間）。

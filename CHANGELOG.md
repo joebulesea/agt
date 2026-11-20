@@ -11,6 +11,12 @@
 
 ### 新增
 
+- ⚠ 不相容：畫面封包的編碼由 `bincode` 1.x（已停止維護）改為 `postcard`，協定版本 1 → 2；升級後請執行 `agt daemon restart`（分頁保留）
+- 發布流程：推送 `v*` 標籤時由 `.github/workflows/release.yml` 編譯 Windows x64（MSVC）與 Linux x64、打包並附上 `SHA256SUMS` 建立 Release；新增安裝腳本 `scripts/install.ps1`、`scripts/install.sh`（核對 SHA256 後安裝）
+- `agt update`（`--check` 只檢查、`--version` 指定版本）：下載、核對 SHA256、結束 daemon 後換掉執行檔（舊檔先改名為 `.old`，失敗會回復）；`agt uninstall`：停止 daemon、刪除 `agt=1` 容器與執行檔，設定、資料與 worktree 另外詢問。發布位置由 `AGT_REPO` 指定
+- Agent 的指令是 `docker` 但 Docker 沒有開啟時，建立分頁與重新啟動會明確提示「Docker 沒有開啟」（找不到 docker 指令時提示尚未安裝），不再讓容器指令莫名失敗
+- `docker/proxy/`：只放行指定網域的 squid proxy 範例（容器網路限制）；`docker/agy` 可用 `AGY_INSTALL_SHA256` 建置參數核對安裝腳本
+- CI 新增 TUI 冒煙測試與安裝腳本檢查；TUI 新增不需要 daemon 的 `App` 單元測試（OSC 52 確認、前綴鍵、分頁切換、輸入轉送）
 - OpenAI Codex CLI adapter（`codex`）與 `codex-docker` 沙箱（`docker/codex/`），`agt setup` 可以勾選加入
 - 新建分頁時先執行 Agent 的 `update` 指令再啟動 Agent，`claude-docker` 等沙箱分頁會自動使用最新版；可用 `update_on_new = false` 關閉
 - 底部狀態列最右邊顯示 agt 的版本號
@@ -22,8 +28,18 @@
 - 新增分頁表單的 Base 欄位留空時顯示實際會用的 branch（主 repo 目前的 HEAD）；它不是 remote 的預設 branch 時以黃字提醒，避免 PR 開到 feature branch
 - 收尾（merge / pr / discard）失敗時寫進 `agtd.log` 與該分頁的事件記錄，錯誤視窗關掉後也查得到原因
 
+- 偵測到版本不同的 daemon 還在執行（例如從有獨立 agtd 的舊版升級）時，`agt`、`agt daemon stop/restart` 會說明原因，並依平台列出結束它的指令，不再誤報「daemon 沒有在執行」
+
+### 內部調整
+
+- ⚠ 不相容：`agtd` 併入 `agt`，只剩單一執行檔；daemon 改以 `agt daemon run` 執行（通常由 agt 自動在背景啟動）。升級後舊的 `agtd` / `agtd.exe` 不再使用，`agt update`、安裝腳本與 `docker/publish.sh` 會把它刪除；端對端測試移到 `crates/agt-cli/tests/`。**從舊版升級時**，舊的 daemon 還在執行時（協定版本不同，`agt daemon stop` 找不到它），要先手動結束它：Windows `taskkill /IM agtd.exe /F`、Linux `pkill agtd`，再執行新版 agt（分頁資料保留，可用 Ctrl+A → R 接續）
+- 拆分大檔，行為不變：`agt-git`（`finish.rs`、`tests.rs`）、daemon 的 `state`（`create` / `ops` / `maintenance` / `tests`）、TUI 的 `app`（`events` / `requests` / `input` / `popup` / `mouse` / `tests`）與 `ui`（`panes` / `popup` / `tests`）、`agt setup`（`agents` / `offer` / `tests`）
+
 ### 修正
 
+- TUI 冒煙測試改用逐格讀取畫面，不再因為 pyte 處理寬字元的限制而丟出 `IndexError`
+
+- TUI 冒煙測試：OSC 52 預設改為 `ask` 後測試設定沒跟著更新，改成 `osc52 = "on"`
 - 錯誤訊息等文字視窗會依視窗寬度自動換行，長訊息不再被切掉（diff 視窗維持不換行）；按 `c`（或 `y`）可把全部內容複製到剪貼簿（例如收尾 pr 失敗的訊息）
 
 ## 0.2.0 - 2026-11-18

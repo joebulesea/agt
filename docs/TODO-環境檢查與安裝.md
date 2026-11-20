@@ -35,7 +35,7 @@
 | Claude Code（主機） | 選用 | `on_path("claude")` | `winget install -e --id Anthropic.ClaudeCode` | 官方安裝腳本（`install.ps1` / `install.sh`） |
 | Copilot CLI / Codex CLI / agy | 選用 | 沿用 | 只顯示指令（需要 npm） | 顯示指令 |
 
-- [ ] 實測確認所有 winget ID（特別是 `Anthropic.ClaudeCode`、`Docker.sbx`）與 agy 的官方網址
+- [x] winget ID 與下載網址已核對：`Git.Git`、`Anthropic.ClaudeCode`、`Docker.DockerDesktop`、`Docker.sbx` 都存在於 microsoft/winget-pkgs 的 manifests，文件中的下載頁與 agy 安裝腳本網址回應 200（只核對存在，沒有實際執行安裝）
 
 ## 2. 使用流程
 

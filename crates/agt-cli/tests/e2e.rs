@@ -1,5 +1,5 @@
-//! 端對端測試：啟動真正的 agtd，以假 Agent 腳本 + 暫存 git repo 走完整流程。
-//! （規格 12 的 tests/ 目錄；放在 agt-daemon 底下才能取得 agtd 執行檔路徑。）
+//! 端對端測試：啟動真正的 daemon（`agt daemon run`），以假 Agent 腳本 + 暫存 git repo 走完整流程。
+//! （規格 12 的 tests/ 目錄；放在 agt-cli 底下才能取得 agt 執行檔路徑。）
 //!
 //! Windows 上假 Agent 由 Git for Windows 附的 `sh.exe` 執行（agt 本來就需要 git），
 //! 同一份腳本在兩個平台上都能用。
@@ -50,14 +50,14 @@ fn sh() -> String {
     }
 }
 
-/// 測試用的 agtd。交叉編譯後在別的機器上執行時，編譯時記下的路徑不存在，
-/// 改找與測試執行檔相鄰的 agtd（和 agt 找 agtd 的方式相同）。
-fn agtd_exe() -> PathBuf {
-    let built = PathBuf::from(env!("CARGO_BIN_EXE_agtd"));
+/// 測試用的 agt。交叉編譯後在別的機器上執行時，編譯時記下的路徑不存在，
+/// 改找與測試執行檔相鄰的 agt。
+fn agt_exe() -> PathBuf {
+    let built = PathBuf::from(env!("CARGO_BIN_EXE_agt"));
     if built.is_file() {
         built
     } else {
-        agt_proto::transport::sibling_exe("agtd")
+        agt_proto::transport::sibling_exe("agt")
     }
 }
 
@@ -138,7 +138,8 @@ copy_files = [".env"]
     }
 
     fn start(&mut self) {
-        let child = Command::new(agtd_exe())
+        let child = Command::new(agt_exe())
+            .args(["daemon", "run"])
             .env("AGT_HOME", &self.home)
             .env("AGT_SOCKET", &self.sock)
             .stdin(Stdio::null())
