@@ -708,8 +708,15 @@ async fn daemon(cmd: DaemonCmd) -> anyhow::Result<()> {
         // main() 在建立 runtime 之前就處理了
         DaemonCmd::Run { .. } => {}
         DaemonCmd::Start => {
+            // 先確認是否已在執行，訊息才能分辨「本來就在跑」和「這次才啟動」
+            let running = connect_kind("cli").await.is_ok();
             ensure_daemon("cli").await?;
-            println!("daemon 已在執行");
+            let msg = if running {
+                "daemon 已在執行"
+            } else {
+                "daemon 已啟動"
+            };
+            println!("{msg}");
         }
         DaemonCmd::Stop { yes } => {
             if stop_daemon(yes).await? {
@@ -726,7 +733,7 @@ async fn daemon(cmd: DaemonCmd) -> anyhow::Result<()> {
         DaemonCmd::Status => match connect_kind("cli").await {
             Ok(conn) => {
                 if let ReplyBody::Daemon(i) = conn.client.request(ClientMsg::DaemonStatus).await? {
-                    println!("agtd {}（pid {}）", i.version, i.pid);
+                    println!("agt daemon {}（pid {}）", i.version, i.pid);
                     println!("  socket    ：{}", transport::endpoint());
                     println!("  工作階段  ：{}（執行中 {}）", i.sessions, i.running);
                     println!("  UI 連線   ：{}", i.clients);

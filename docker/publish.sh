@@ -56,16 +56,15 @@ install_to() {
   rm -f "$dir"/agt*.old 2>/dev/null || true
   # 舊版有獨立的 agtd.exe（已併入 agt.exe，由 `agt daemon run` 執行）：刪掉；使用中就留著
   rm -f "$dir/agtd.exe" 2>/dev/null || true
-  for f in agt.exe; do
-    if ! cp "$STAGE/$f" "$dir/$f" 2>/dev/null; then
-      old="$dir/$f.old"
-      # .old 本身也還在使用中（例如 daemon 正從它執行）時，改用不重複的名稱
-      [ -e "$old" ] && old="$dir/$f.$$.old"
-      mv "$dir/$f" "$old"
-      cp "$STAGE/$f" "$dir/$f"
-      echo "    $f 使用中，舊檔改名為 $(basename "$old")"
-    fi
-  done
+  f=agt.exe
+  if ! cp "$STAGE/$f" "$dir/$f" 2>/dev/null; then
+    old="$dir/$f.old"
+    # .old 本身也還在使用中（例如 daemon 正從它執行）時，改用不重複的名稱
+    [ -e "$old" ] && old="$dir/$f.$$.old"
+    mv "$dir/$f" "$old"
+    cp "$STAGE/$f" "$dir/$f"
+    echo "    $f 使用中，舊檔改名為 $(basename "$old")"
+  fi
   echo "==> 已放到 $dir"
 }
 

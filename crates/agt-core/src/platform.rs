@@ -407,15 +407,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn docker_check_reports_when_engine_is_down() {
-        use std::os::unix::fs::PermissionsExt;
+        // 用 symlink 指向系統的 true / false 當假的 docker（只看 exit code）。
+        // 不要在測試裡寫入腳本再執行：其他測試執行緒同時 fork 時，子程序會暫時持有寫入中的 fd，
+        // 執行剛寫好的檔案會偶發 ETXTBSY（Text file busy），被當成「找不到 docker」。
+        fn sys(name: &str) -> std::path::PathBuf {
+            ["/bin", "/usr/bin"]
+                .iter()
+                .map(|d| Path::new(d).join(name))
+                .find(|p| p.is_file())
+                .unwrap_or_else(|| panic!("找不到 {name}"))
+        }
         let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("docker");
-        std::fs::write(&fake, "#!/bin/sh\nexit 1\n").unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let msg = docker_unavailable(fake.to_str().unwrap()).expect("engine 掛掉時要有訊息");
+        let down = dir.path().join("down/docker");
+        let up = dir.path().join("up/docker");
+        for (link, target) in [(&down, "false"), (&up, "true")] {
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(sys(target), link).unwrap();
+        }
+        let msg = docker_unavailable(down.to_str().unwrap()).expect("engine 掛掉時要有訊息");
         assert!(msg.contains("Docker 沒有開啟"), "{msg}");
-        std::fs::write(&fake, "#!/bin/sh\necho 27.0\n").unwrap();
-        assert!(docker_unavailable(fake.to_str().unwrap()).is_none());
+        assert!(docker_unavailable(up.to_str().unwrap()).is_none());
         // 找不到指令
         let missing = dir.path().join("nodir/docker");
         assert!(
