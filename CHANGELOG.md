@@ -5,12 +5,13 @@
 - **PATCH**（0.2.0 → 0.2.1）：修正錯誤、調整文字或介面細節
 - **MINOR**（0.2.x → 0.3.0）：新功能、使用者看得到的行為改變，或不相容的改變（標示「⚠ 不相容」）
 
-每個 PR 不改版號，只在「未發布」加上一行；發布時依其中最大的變更類型決定新版號，修改 `Cargo.toml`、打 tag `vX.Y.Z`，再執行 `docker/publish.sh`。
+每個 PR 不改版號，只在「未發布」加上一行；發布時依其中最大的變更類型決定新版號，修改 `Cargo.toml`、打 tag `vX.Y.Z`，再執行 `docker/publish.sh`。若條目與其他 PR 共用 `CHANGELOG.md` 而容易衝突，可先寫成 `docs/未發布/<主題>.md`，發布時併入本檔並刪除該檔。
 
 ## 未發布
 
 ### 新增
 
+- diff 視窗依「已 commit／未 commit 的變更／未追蹤的檔案」分頁（`Tab`、`←` `→`、`h` `l` 或 `1`–`9` 切換，切換後捲回頂端；`c` 複製目前這一頁），區段改用色塊標示，內容超出視窗高度時右側顯示捲軸
 - ⚠ 不相容：`agtd` 併入 `agt`，只剩單一執行檔；daemon 改以 `agt daemon run` 執行（通常由 agt 自動在背景啟動），`agt config check` 與 `agt doctor` 也不再另外啟動 `agtd`。release 壓縮檔、安裝腳本、`agt update`、`docker/publish.sh` 都改為單檔並刪除舊的 `agtd`；端對端測試移到 `crates/agt-cli/tests/`。**從舊版升級時**，舊的 daemon 還在執行（協定版本不同，`agt daemon stop` 找不到它）要先手動結束：Windows `taskkill /IM agtd.exe /F`、Linux `pkill agtd`，再執行新版 agt（分頁資料保留，可用 Ctrl+A → R 接續）
 - ⚠ 不相容：畫面封包的編碼由 `bincode` 1.x（已停止維護）改為 `postcard`，協定版本 1 → 2；升級後請執行 `agt daemon restart`（分頁保留）
 - 偵測到版本不同的 daemon 還在執行（例如從有獨立 agtd 的舊版升級）時，`agt`、`agt daemon stop/restart` 會說明原因，並依平台列出結束它的指令，不再誤報「daemon 沒有在執行」
