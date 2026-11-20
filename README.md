@@ -63,6 +63,28 @@ agt daemon start|stop|restart|status
 
 TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
 
+#### diff 視窗
+
+`Ctrl+A` → `d` 開啟 diff 浮動視窗，內容依來源分成三頁，頂端的分頁列以反白標示目前這一頁：
+
+| 分頁 | 內容 |
+| --- | --- |
+| 已 commit | 這個 branch 相對於 base 的 commit（`base...HEAD`） |
+| 未 commit 的變更 | 已追蹤檔案尚未 commit 的修改 |
+| 未追蹤的檔案 | 還沒加入 git 的新檔案清單 |
+
+| 按鍵 | 動作 |
+| --- | --- |
+| `Tab`、`→`、`l` | 下一頁（最後一頁再按會回到第一頁） |
+| `Shift+Tab`、`←`、`h` | 上一頁 |
+| `1`–`9` | 直接跳到該頁 |
+| `↑` `↓`、`j` `k`、滾輪 | 逐行捲動（滾輪一次 3 行） |
+| `PgUp`、`PgDn`（或空白鍵）、`g` `G` | 翻頁、跳到開頭、跳到結尾 |
+| `c`（或 `y`） | 複製**目前這一頁**的內容到剪貼簿 |
+| `q`、`Esc`、`Enter` | 關閉 |
+
+切換分頁後會回到該頁頂端。內容超出視窗高度時，右側會出現捲軸；標題列顯示目前行數與總行數。diff 不折行，保留程式碼排版。
+
 設定檔範例與預設值見 [`config/default.toml`](config/default.toml)。同一個 Agent 想多一個選項（例如指定模型）時，用 `extends` 沿用既有設定、`extra_args` 追加參數：
 
 ```toml
@@ -118,6 +140,10 @@ Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --adviso
 收尾時 **merge 與 pr 擇一**：選 merge 是在本機把 branch 併進 base，選 pr 是 push 並建立 PR、不在本機 merge（等 PR 在 GitHub 上合併）；兩者都會先 commit（Agent 設了 `auto_commit` 時）。
 
 在 agt 按 `m` 收尾並選 **pr** 時，agt 會 commit、push 並建立 PR；該 branch 已有開啟中的 PR 時只 push 並更新說明。需要主機安裝並登入 GitHub CLI（`gh auth login`），沒有 `gh` 時只會 commit 並顯示要手動執行的 push 指令。分頁的 base 只在本機（例如還沒 push 的 feat branch）但內容都已在 remote 預設 branch 時，PR 以預設 branch 為目標；否則在 push 前停下並說明。`claude-docker` 與 `claude-sbx` 的範例提示會請 Claude 寫這兩個檔案（需 `auto_commit = true`），主機用的腳本是 `docker/claude/agt-pr.cmd`。`.agt/` 會被加入主 repo 的 info/exclude，不會出現在 diff 或 auto_commit 的 commit 裡。收尾失敗時原因會寫進 `agtd.log` 與該分頁的事件記錄；錯誤視窗可按 `c`（或 `y`）複製全部內容。操作步驟見 [agt-pr 操作步驟](docs/agt-pr-操作步驟.md)。
+
+#### 分組收尾
+
+任務包含多個互不相關的主題時，Agent 可在 `.agt/groups/<組名>/` 放 `FILES`、`COMMIT_MSG`、`PR_BODY.md`，收尾（pr 或 merge）時每組各自一個 commit（pr 則各自一個 PR），未被認領的變更自成 `rest` 組。格式與規則見 [Agent 分組收尾說明](docs/Agent-分組收尾說明.md)，內含可貼進 Agent 提示的版本。
 
 ## 環境變數
 

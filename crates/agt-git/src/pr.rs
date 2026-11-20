@@ -14,28 +14,8 @@ pub fn create_pr(
 ) -> Result<String> {
     // 先驗證；gh 自己也會在 worktree 裡呼叫 git，下面用同一個 gitdir 固定它
     let gitdir = trusted_gitdir(repo, worktree)?;
-    let mut probe = Command::new("gh");
-    probe
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        probe.creation_flags(0x0800_0000);
-    }
-    let has_gh = probe.status().map(|s| s.success()).unwrap_or(false);
-    let remote = git_wt(repo, worktree, &["remote"])?;
-    let remote = remote
-        .lines()
-        .find(|r| *r == "origin")
-        .or(remote.lines().next());
-    let Some(remote) = remote.map(str::to_string) else {
-        return Err(GitError::Refused(
-            "這個 repo 沒有設定 remote，無法建立 PR".into(),
-        ));
-    };
+    let has_gh = has_gh();
+    let remote = pick_remote(repo, worktree)?;
     if !has_gh {
         return Ok(format!(
             "找不到 gh，請手動執行：\n  git -C \"{}\" push -u {remote} {branch}",
@@ -62,6 +42,31 @@ pub fn create_pr(
         Some(n) => format!("{out}\n{n}"),
         None => out,
     })
+}
+
+pub(crate) fn has_gh() -> bool {
+    let mut probe = Command::new("gh");
+    probe
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        probe.creation_flags(0x0800_0000);
+    }
+    probe.status().map(|s| s.success()).unwrap_or(false)
+}
+
+pub(crate) fn pick_remote(repo: &Path, worktree: &Path) -> Result<String> {
+    let remote = git_wt(repo, worktree, &["remote"])?;
+    remote
+        .lines()
+        .find(|r| *r == "origin")
+        .or(remote.lines().next())
+        .map(str::to_string)
+        .ok_or_else(|| GitError::Refused("這個 repo 沒有設定 remote，無法建立 PR".into()))
 }
 
 /// PR 的目標 branch。分頁的 base 常是主 repo 當時所在、只在本機的 branch（例如還沒 push 的 feat/…），

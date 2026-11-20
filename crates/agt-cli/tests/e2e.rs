@@ -71,6 +71,19 @@ echo "answer=$x"
 sleep 60
 "#;
 
+/// 假 Agent：做出三個互不相關的變更，並用 .agt/groups/ 分成 one、two 兩組（其餘自成 rest）。
+/// two 的 FILES 最後寫，測試以它出現當作「Agent 做完了」。
+const GROUP_AGENT: &str = r#"
+mkdir -p one .agt/groups/one .agt/groups/two
+echo 1 > one/a.txt
+echo 2 > two.txt
+echo r > rest.txt
+echo one > .agt/groups/one/FILES
+printf '加入 one\n\n內文\n' > .agt/groups/one/COMMIT_MSG
+echo two.txt > .agt/groups/two/FILES
+sleep 60
+"#;
+
 impl Env {
     fn new() -> Env {
         let dir = tempfile::tempdir().unwrap();
@@ -108,6 +121,12 @@ args = ["-c", '''{CONV_AGENT}''', "conv"]
 status_source = "none"
 new_args = ["new", "{{conversation}}"]
 resume_args = ["resume", "{{conversation}}"]
+
+[agents.grp]
+command = '{sh}'
+args = ["-c", '''{GROUP_AGENT}''']
+status_source = "none"
+auto_commit = true
 
 [repos.'{}']
 copy_files = [".env"]
@@ -773,4 +792,145 @@ async fn proto_mismatch_and_hello_required() {
     // Unix 是 EOF（Ok(None)），Windows 的 named pipe 是錯誤（pipe 已關閉）；兩者都表示連線被關閉
     let r = read_frame(&mut s).await;
     assert!(!matches!(r, Ok(Some(_))), "{r:?}");
+}
+
+/// 建立 grp 分頁並等 Agent 寫好分組檔，回傳 (分頁, worktree)。
+async fn grouped_session(env: &Env, c: &Client, task: &str) -> (SessionInfo, PathBuf) {
+    let s = expect_session(c.request(create("grp", &env.repo, task)).await.unwrap()).unwrap();
+    let wt = PathBuf::from(s.worktree.clone().unwrap());
+    let start = Instant::now();
+    while !wt.join(".agt/groups/two/FILES").exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "Agent 沒有寫出分組檔"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    (s, wt)
+}
+
+fn finish(id: &str, action: FinishAction) -> ClientMsg {
+    ClientMsg::Finish {
+        id: id.into(),
+        action,
+        force: false,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grouped_merge_makes_one_commit_per_group() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("tui").await;
+    let (s, wt) = grouped_session(&env, &c, "分組").await;
+    let branch = s.branch.clone().unwrap();
+
+    let reply = c
+        .request(finish(
+            &s.id,
+            FinishAction::Merge {
+                strategy: Some(MergeStrategy::Merge),
+            },
+        ))
+        .await
+        .unwrap();
+    let ReplyBody::Text(out) = reply else {
+        panic!("{reply:?}")
+    };
+    // 結果訊息要讓 UI 看得出分成幾個 commit
+    assert!(out.contains("分成 3 組"), "{out}");
+    assert!(out.contains("[one] 加入 one"), "{out}");
+    assert!(out.contains("[two]") && out.contains("[rest]"), "{out}");
+
+    // base 上：每組一個 merge commit，三組的檔案都在，.agt 不在
+    assert_eq!(
+        git(&env.repo, &["rev-list", "--count", "--merges", "main"]),
+        "3"
+    );
+    for f in ["one/a.txt", "two.txt", "rest.txt"] {
+        assert!(env.repo.join(f).exists(), "{f}");
+    }
+    assert!(!env.repo.join(".agt").exists());
+    let tree = git(&env.repo, &["ls-tree", "-r", "--name-only", "main"]);
+    assert!(!tree.contains(".agt"), "{tree}");
+    // 暫時的分組 branch 已刪除，任務 branch 還在
+    assert!(git(&env.repo, &["branch", "--list", &format!("{branch}-*")]).is_empty());
+    assert!(!git(&env.repo, &["branch", "--list", &branch]).is_empty());
+    // 已處理的組說明被清掉
+    assert!(!wt.join(".agt/groups/one").exists());
+    assert!(!wt.join(".agt/groups/two").exists());
+
+    env.stop(&c).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grouped_merge_squash_is_linear() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("tui").await;
+    let (s, _wt) = grouped_session(&env, &c, "分組 squash").await;
+    c.request(finish(
+        &s.id,
+        FinishAction::Merge {
+            strategy: Some(MergeStrategy::Squash),
+        },
+    ))
+    .await
+    .unwrap();
+    assert_eq!(
+        git(&env.repo, &["rev-list", "--count", "--merges", "main"]),
+        "0"
+    );
+    assert_eq!(git(&env.repo, &["rev-list", "--count", "main"]), "4"); // init + 3 組
+    assert_eq!(
+        git(&env.repo, &["log", "--format=%s", "-3", "main"])
+            .lines()
+            .filter(|l| *l == "加入 one" || l.contains("（two）") || l.contains("（rest）"))
+            .count(),
+        3
+    );
+    env.stop(&c).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grouped_merge_conflict_stops_and_keeps_finished_groups() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("tui").await;
+    let (s, _wt) = grouped_session(&env, &c, "分組衝突").await;
+    // base 先有了不同內容的 two.txt：組 two 合併時衝突
+    std::fs::write(env.repo.join("two.txt"), "base 版本\n").unwrap();
+    git(&env.repo, &["add", "."]);
+    git(&env.repo, &["commit", "-qm", "base two"]);
+
+    let e = c
+        .request(finish(
+            &s.id,
+            FinishAction::Merge {
+                strategy: Some(MergeStrategy::Merge),
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("two"), "{e}");
+    // 組 one 已合進去；衝突停在主工作目錄
+    assert!(env.repo.join("one/a.txt").exists());
+    assert!(!git(&env.repo, &["diff", "--name-only", "--diff-filter=U"]).is_empty());
+    // 收尾失敗要記錄在 agtd.log
+    let log = std::fs::read_to_string(env.home.join("data/agtd.log")).unwrap_or_default();
+    assert!(log.contains(&format!("{}：收尾 merge 失敗", s.id)), "{log}");
+    env.stop(&c).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grouped_pr_without_remote_fails_before_creating_branches() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("tui").await;
+    let (s, _wt) = grouped_session(&env, &c, "分組 pr").await;
+    let branch = s.branch.clone().unwrap();
+    let e = c
+        .request(finish(&s.id, FinishAction::Pr))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("remote"), "{e}");
+    // 沒有 remote：不能留下半成品的分組 branch
+    assert!(git(&env.repo, &["branch", "--list", &format!("{branch}-*")]).is_empty());
+    env.stop(&c).await;
 }
