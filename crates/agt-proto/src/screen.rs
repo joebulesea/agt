@@ -227,7 +227,7 @@ pub struct ScreenDiff {
     pub history: u32,
 }
 
-/// kind 0x02 封包的內容（bincode）。
+/// kind 0x02 封包的內容（postcard）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ScreenUpdate {
     Snapshot { id: String, screen: Screen },
@@ -242,11 +242,11 @@ impl ScreenUpdate {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        bincode::serialize(self).expect("ScreenUpdate 序列化不會失敗")
+        postcard::to_allocvec(self).expect("ScreenUpdate 序列化不會失敗")
     }
 
-    pub fn decode(b: &[u8]) -> Result<Self, bincode::Error> {
-        bincode::deserialize(b)
+    pub fn decode(b: &[u8]) -> Result<Self, postcard::Error> {
+        postcard::from_bytes(b)
     }
 }
 
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn bincode_roundtrip() {
+    fn postcard_roundtrip() {
         let u = ScreenUpdate::Snapshot {
             id: "x".into(),
             screen: screen(&["中文", "ab"]),

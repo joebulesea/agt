@@ -208,6 +208,13 @@ fn replace_file(src: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 舊版的 `agtd` 執行檔與它的 `.old`。
+fn remove_legacy_agtd(dir: &Path) {
+    let name = format!("agtd{}", std::env::consts::EXE_SUFFIX);
+    let _ = fs::remove_file(dir.join(&name));
+    let _ = fs::remove_file(dir.join(format!("{name}.old")));
+}
+
 /// 啟動時清除上次更新留下的 `.old` / `.new`（執行中的刪不掉就保留）。
 pub fn cleanup_old() {
     let Ok(exe) = std::env::current_exe() else {
@@ -314,7 +321,7 @@ pub async fn run(check: bool, version: Option<String>, yes: bool) -> anyhow::Res
         bail!("解壓縮失敗");
     }
     let suffix = std::env::consts::EXE_SUFFIX;
-    let files: Vec<(PathBuf, PathBuf)> = ["agt", "agtd"]
+    let files: Vec<(PathBuf, PathBuf)> = ["agt"]
         .iter()
         .map(|n| {
             let f = format!("{n}{suffix}");
@@ -344,12 +351,14 @@ pub async fn run(check: bool, version: Option<String>, yes: bool) -> anyhow::Res
     }
 
     if was_running {
-        // 用新版的 agtd 重新啟動（舊 daemon 已結束）
+        // 用新版的 agt 重新啟動（舊 daemon 已結束）
         match crate::ensure_daemon("cli").await {
             Ok(_) => println!("daemon 已用新版重新啟動（分頁保留，可用 Ctrl+A → R 接續 Agent）"),
             Err(e) => eprintln!("警告：daemon 沒有自動啟動：{e:#}（執行 agt 會自動啟動）"),
         }
     }
+    // 舊版有獨立的 agtd：已併入 agt（`agt daemon run`），刪掉不再使用的檔案（使用中就留到下次）
+    remove_legacy_agtd(&dir);
     println!("已更新到 {tag}");
     Ok(())
 }
@@ -417,5 +426,18 @@ mod tests {
         let dest2 = d.path().join("agtd");
         replace_file(&src, &dest2).unwrap();
         assert_eq!(fs::read(&dest2).unwrap(), b"new");
+    }
+
+    #[test]
+    fn legacy_agtd_is_removed() {
+        let d = tempfile::tempdir().unwrap();
+        let name = format!("agtd{}", std::env::consts::EXE_SUFFIX);
+        fs::write(d.path().join(&name), b"x").unwrap();
+        fs::write(d.path().join(format!("{name}.old")), b"x").unwrap();
+        fs::write(d.path().join("agt"), b"keep").unwrap();
+        remove_legacy_agtd(d.path());
+        assert!(!d.path().join(&name).exists());
+        assert!(!d.path().join(format!("{name}.old")).exists());
+        assert!(d.path().join("agt").exists());
     }
 }

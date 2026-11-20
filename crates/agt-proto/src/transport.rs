@@ -388,7 +388,7 @@ pub fn spawn_detached(exe: &Path, args: &[&str]) -> io::Result<u32> {
     Ok(child.id())
 }
 
-/// 找到與目前執行檔同目錄的另一個執行檔（例如從 `agt` 找 `agtd`）。
+/// 找到與目前執行檔同目錄的另一個執行檔（測試用：找 `cargo test` 旁邊的 `agt`）。
 pub fn sibling_exe(name: &str) -> PathBuf {
     let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     if let Ok(me) = std::env::current_exe()
@@ -411,8 +411,8 @@ pub fn sibling_exe(name: &str) -> PathBuf {
 
 /// 等待行程 `pid` 結束，最多等 `timeout`；回傳行程是否已結束（找不到該行程也算已結束）。
 ///
-/// 用來在重新啟動 daemon 前確認舊版 agtd 真的結束了：named pipe 關閉後舊程序還會收尾一段時間，
-/// 這段期間它仍持有 lock 檔，Windows 上它的 exe（例如改名後的 `agtd.exe.old`）也還被鎖住。
+/// 用來在重新啟動 daemon 前確認舊版 daemon 真的結束了：named pipe 關閉後舊程序還會收尾一段時間，
+/// 這段期間它仍持有 lock 檔，Windows 上它的 exe（例如改名後的 `agt.exe.old`）也還被鎖住。
 /// 這是阻塞呼叫，在 async 環境中請用 `spawn_blocking`。
 pub fn wait_pid_exit(pid: u32, timeout: std::time::Duration) -> bool {
     #[cfg(windows)]

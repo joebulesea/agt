@@ -20,9 +20,15 @@ RUN useradd -m -u 1000 -s /bin/bash agent \
 
 # 先安裝一份到 /opt/agy 當作種子；更新用的容器會把它複製到 volume 內的 /opt/agt-tools/bin，
 # 之後 agy 在那裡自我更新。
-RUN curl -fsSL https://antigravity.google/cli/install.sh | HOME=/opt/agy-home bash -s -- --dir /opt/agy \
+# 官方沒有公布安裝腳本的雜湊。想要固定內容時，自行在可信環境下載一次並記錄 sha256sum，
+# 建置時加上 --build-arg AGY_INSTALL_SHA256=<雜湊>：腳本內容不同就中止（腳本更新時雜湊要人工更新）。
+ARG AGY_INSTALL_SHA256=
+RUN curl -fsSL -o /tmp/agy-install.sh https://antigravity.google/cli/install.sh \
+ && if [ -n "$AGY_INSTALL_SHA256" ]; then echo "$AGY_INSTALL_SHA256  /tmp/agy-install.sh" | sha256sum -c -; \
+    else echo "警告：沒有設定 AGY_INSTALL_SHA256，安裝腳本未經核對" >&2; fi \
+ && HOME=/opt/agy-home bash /tmp/agy-install.sh --dir /opt/agy \
  && /opt/agy/agy --version \
- && rm -rf /opt/agy-home
+ && rm -rf /opt/agy-home /tmp/agy-install.sh
 
 COPY entrypoint.sh /usr/local/bin/agt-entrypoint
 RUN sed -i 's/\r$//' /usr/local/bin/agt-entrypoint && chmod 755 /usr/local/bin/agt-entrypoint

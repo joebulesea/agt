@@ -1,4 +1,4 @@
-//! `agtd --check-config`（`agt config check`）：不啟動 daemon，檢查設定檔。
+//! `agt config check`：不啟動 daemon，檢查設定檔。
 //!
 //! 錯誤（載入失敗）→ exit 1；警告（設定合法但很可能不是你要的）→ exit 0 並列出。
 //! 只檢查「使用者設定檔裡寫到的 Agent」，內建預設裡沒安裝的 Agent 不會一直警告。
@@ -151,7 +151,7 @@ fn user_agents(file: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// 命令列：`--check-config [--file <路徑>] [--repo <目錄>]`。回傳 exit code。
+/// 命令列參數：`[--file <路徑>] [--repo <目錄>]`。回傳 exit code。
 pub fn run(args: &[String]) -> i32 {
     let paths = Paths::detect();
     let mut file: PathBuf = paths.config_file.clone();

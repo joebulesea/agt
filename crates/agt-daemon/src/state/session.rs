@@ -248,6 +248,14 @@ impl Daemon {
             let e = entries.get(&id).ok_or_else(|| OpError::not_found(&id))?;
             (e.info.clone(), e.session.clone(), e.conversation.clone())
         };
+        if let Some(msg) = self
+            .cfg()
+            .agents
+            .get(&info.agent)
+            .and_then(|a| platform::docker_unavailable(&a.command))
+        {
+            return Err(OpError::new(codes::BAD_REQUEST, msg));
+        }
         let can_resume = self
             .cfg()
             .agents

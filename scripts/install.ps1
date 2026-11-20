@@ -55,7 +55,7 @@ function Install-Agt {
 
         Expand-Archive "$tmp\$name.zip" -DestinationPath $tmp
         $src = Join-Path $tmp $name
-        if (-not ((Test-Path "$src\agt.exe") -and (Test-Path "$src\agtd.exe"))) { Fail '壓縮檔內容不完整' }
+        if (-not (Test-Path "$src\agt.exe")) { Fail '壓縮檔內容不完整' }
 
         $dir = Join-Path $env:APPDATA 'agt'
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -70,7 +70,9 @@ function Install-Agt {
         # 執行中的 exe 無法覆蓋，但可以改名：先清掉上次留下的 .old，再把舊檔改名
         Get-ChildItem $dir -Filter 'agt*.old' -ErrorAction SilentlyContinue |
             ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
-        foreach ($f in 'agt.exe', 'agtd.exe') {
+        # 舊版有獨立的 agtd.exe（已併入 agt.exe）：刪除；使用中就留著
+        Remove-Item (Join-Path $dir 'agtd.exe') -Force -ErrorAction SilentlyContinue
+        foreach ($f in 'agt.exe') {
             $dest = Join-Path $dir $f
             if (Test-Path $dest) {
                 $old = "$dest.old"

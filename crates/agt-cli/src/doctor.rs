@@ -75,13 +75,12 @@ fn check_binaries(r: &mut Report) {
         env!("CARGO_PKG_VERSION"),
         me.display()
     ));
-    let agtd = transport::sibling_exe("agtd");
-    if agtd.is_file() {
-        r.ok(format!("agtd 與 agt 在同一個資料夾（{}）", agtd.display()));
-    } else {
-        r.fail(
-            format!("找不到 agtd（{}）", agtd.display()),
-            "agt 和 agtd 必須放在同一個資料夾；重新安裝，或執行 agt update",
+    // 舊版有獨立的 agtd；已併入 agt（`agt daemon run`），留著的檔案不再使用
+    let legacy = transport::sibling_exe("agtd");
+    if legacy.is_file() {
+        r.warn(
+            format!("舊版的 agtd 還在（{}），已不再使用", legacy.display()),
+            "可以刪除；agt update 或重新安裝時也會一併刪除",
         );
     }
 }
@@ -133,13 +132,16 @@ async fn check_daemon(r: &mut Report) {
 }
 
 fn check_config(r: &mut Report) {
-    let exe = transport::sibling_exe("agtd");
+    let Ok(exe) = std::env::current_exe() else {
+        r.warn("無法執行設定檢查", "找不到目前的執行檔位置");
+        return;
+    };
     let Ok(out) = std::process::Command::new(&exe)
-        .arg("--check-config")
+        .args(["config", "check"])
         .stdin(std::process::Stdio::null())
         .output()
     else {
-        r.warn("無法執行設定檢查", "確認 agtd 存在且可執行");
+        r.warn("無法執行設定檢查", "確認 agt 可執行");
         return;
     };
     let stdout = String::from_utf8_lossy(&out.stdout);

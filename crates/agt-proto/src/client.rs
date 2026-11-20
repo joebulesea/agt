@@ -113,6 +113,18 @@ impl Client {
         })
     }
 
+    /// 不連線的 client（測試用）：送出的封包放進回傳的佇列，`request` 永遠等不到回應。
+    /// 讓 TUI 的 `App` 不需要 daemon 就能建立並測試。
+    pub fn detached() -> (Client, mpsc::UnboundedReceiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let client = Client {
+            tx,
+            pending: Arc::default(),
+            next: Arc::new(AtomicU64::new(1)),
+        };
+        (client, rx)
+    }
+
     fn send_json(&self, req_id: u64, msg: ClientMsg) -> Result<(), ClientError> {
         let body =
             serde_json::to_vec(&Request { req_id, msg }).map_err(|_| ClientError::Unexpected)?;

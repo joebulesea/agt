@@ -28,7 +28,7 @@
 `docker/agy/Dockerfile` 仍以 `curl ... | bash` 安裝 agy。Google 沒有公布安裝腳本或執行檔的 SHA256，沒有可以核對的值。
 
 - [ ] 官方提供版本化的下載網址與雜湊後，改成下載指定版本並核對 SHA256
-- [ ] 在那之前的替代做法：自行在可信環境下載一次、記錄雜湊，之後建置時核對（雜湊需要人工更新）
+- [x] 在那之前的替代做法：`docker build --build-arg AGY_INSTALL_SHA256=<雜湊>` 核對安裝腳本（雜湊需要人工更新；沒設定時建置會印出警告）
 
 ### 共用家目錄
 
@@ -42,20 +42,20 @@
 
 容器可以連外網。Docker 本身無法只允許特定網域，範例設定已說明改用 `claude-sbx`（`sbx policy`）或自行架設 proxy。
 
-- [ ] 提供一個實際可用的 proxy 範例（例如只允許 Agent API 與套件來源的 squid 設定 + `HTTPS_PROXY`）
+- [x] 提供 proxy 範例：`docker/proxy/`（squid + internal 網路；**尚未在實際 Docker 環境測試**）
 
 ### 相依套件的維護性警告
 
 `cargo audit` 目前沒有弱點，但有 4 個不會讓 CI 失敗的警告：`bincode` 1.x、`paste` 不再維護；`lru` 0.12（經由 `ratatui`）有 unsound 的 API。
 
-- [ ] `bincode` 換成 2.x 或其他格式（畫面封包的編碼，需要同時改 client 與 daemon、提高協定版本）
-- [ ] 等 `ratatui` 升級到新版 `lru` 後跟進
+- [x] `bincode` 換成 `postcard`（協定版本 1 → 2）；`paste` 警告仍在（`ratatui` 0.29 的相依）
+- [ ] 升級 `ratatui`：0.30 可以編譯、測試通過且 `lru` / `paste` 警告消失，但（1）`Terminal::clear()` 會查詢游標位置（已找到替代做法）、（2）含中文與 `◀ ▶` 的列，冒煙測試的畫面與 0.29 不同：右邊框偏移、部分空格消失。無法在真實終端機確認是否只是 pyte 的差異，中文環境風險大，先留在 0.29；之後可在實際的 Windows Terminal 上試過再決定
 
 ### 以系統管理員身分執行 daemon
 
 提升權限執行 daemon 時，pipe 擁有者可能是 Administrators 群組，client 目前接受。這條路徑沒有實測。
 
-- [ ] 實測提升權限的 daemon 與一般權限的 client 是否能正常連線，以及是否需要更嚴格的擁有者檢查
+- [ ] 實測提升權限的 daemon 與一般權限的 client 是否能正常連線。程式碼檢查結果：pipe 的 ACL 只含 SYSTEM 與「目前使用者的 SID」（提升權限後仍是同一個 SID）；client 接受擁有者為本人、Administrators、SYSTEM。理論上可行，但沒有在 Windows 上實測；系統管理員本來就能操作你的行程，不另外收緊
 
 ---
 
@@ -75,7 +75,7 @@
 
 ## 測試缺口
 
-- [ ] OSC 52 的 `ask` 對話框只有編譯檢查：TUI 的 `App` 需要 daemon 連線才能建立，現有程式沒有 TUI 單元測試。需要手動在 TUI 中確認，或擴充 `tests/tui_smoke.py`
+- [x] OSC 52 的 `ask` 對話框：`Client::detached()` 讓 `App` 不需要 daemon 就能建立，已有單元測試（`agt-tui` 的 `app::tests`）
 - [ ] Windows 紀錄檔搬移只有單元測試，沒有在真實的 `%APPDATA%` / `%LOCALAPPDATA%` 上實跑
 - [ ] 用第二個 Windows 帳號實測「其他使用者被 pipe ACL 拒絕」（目前只驗證了 ACL 內容）
 - [ ] 各 Agent 在加固參數（`--cap-drop=ALL` 等）與唯讀 tools volume 下的完整登入與使用流程（目前只驗證了容器能啟動、執行檔能執行、版本固定有效）

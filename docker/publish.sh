@@ -46,7 +46,7 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 MSYS_NO_PATHCONV=1 docker run --rm -v agt-target:/target \
   -v "$(cd "$STAGE" && (pwd -W 2>/dev/null || pwd)):/out" agt-dev \
-  sh -c "cp /target/$TARGET/release/agt.exe /target/$TARGET/release/agtd.exe /out/"
+  sh -c "cp /target/$TARGET/release/agt.exe /out/"
 
 # 放到目的資料夾；檔案被鎖住時先把舊檔改名
 install_to() {
@@ -54,16 +54,17 @@ install_to() {
   mkdir -p "$dir"
   # 上次留下、已不再使用的舊檔（還在使用中的刪不掉，保留）
   rm -f "$dir"/agt*.old 2>/dev/null || true
-  for f in agt.exe agtd.exe; do
-    if ! cp "$STAGE/$f" "$dir/$f" 2>/dev/null; then
-      old="$dir/$f.old"
-      # .old 本身也還在使用中（例如 daemon 正從它執行）時，改用不重複的名稱
-      [ -e "$old" ] && old="$dir/$f.$$.old"
-      mv "$dir/$f" "$old"
-      cp "$STAGE/$f" "$dir/$f"
-      echo "    $f 使用中，舊檔改名為 $(basename "$old")"
-    fi
-  done
+  # 舊版有獨立的 agtd.exe（已併入 agt.exe，由 `agt daemon run` 執行）：刪掉；使用中就留著
+  rm -f "$dir/agtd.exe" 2>/dev/null || true
+  f=agt.exe
+  if ! cp "$STAGE/$f" "$dir/$f" 2>/dev/null; then
+    old="$dir/$f.old"
+    # .old 本身也還在使用中（例如 daemon 正從它執行）時，改用不重複的名稱
+    [ -e "$old" ] && old="$dir/$f.$$.old"
+    mv "$dir/$f" "$old"
+    cp "$STAGE/$f" "$dir/$f"
+    echo "    $f 使用中，舊檔改名為 $(basename "$old")"
+  fi
   echo "==> 已放到 $dir"
 }
 
@@ -81,7 +82,7 @@ if [ "$RESTART" = 1 ]; then
     echo "!!> daemon 重新啟動失敗（見上方訊息）；可手動執行 agt daemon restart" >&2
     RESTART_FAILED=1
   fi
-  # 舊版 daemon 已結束：清掉改名留下的 .old（新版 agtd 啟動時也會清；這裡連 dist/ 一起處理）
+  # 舊版 daemon 已結束：清掉改名留下的 .old（新版 daemon 啟動時也會清；這裡連 dist/ 一起處理）
   for dir in "$DIST" "$INSTALL"; do
     for f in "$dir"/agt*.old; do
       [ -e "$f" ] || continue

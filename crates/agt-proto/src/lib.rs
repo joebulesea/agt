@@ -15,7 +15,7 @@ pub use screen::*;
 pub use types::*;
 
 /// 協定版本；只在不相容變更時加一（規格 4.4）。
-pub const PROTO_VERSION: u32 = 1;
+pub const PROTO_VERSION: u32 = 2;
 
 /// 封包類型。
 pub const KIND_JSON: u8 = 0x01;

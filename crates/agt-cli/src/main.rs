@@ -116,7 +116,7 @@ enum Cmd {
         #[arg(long)]
         install: bool,
     },
-    /// 從 GitHub Release 更新 agt 與 agtd（核對 SHA256，並重新啟動 daemon）
+    /// 從 GitHub Release 更新 agt（核對 SHA256，並重新啟動 daemon）
     Update {
         /// 只檢查有沒有新版，不下載
         #[arg(long)]
@@ -172,6 +172,12 @@ enum ConfigCmd {
 
 #[derive(Subcommand)]
 enum DaemonCmd {
+    /// 在這個行程中執行 daemon（通常由 agt 自動在背景啟動，不需要手動執行）
+    Run {
+        /// 日誌輸出到終端機，而不是 agtd.log
+        #[arg(long)]
+        foreground: bool,
+    },
     Start,
     Stop {
         #[arg(long, short)]
@@ -197,6 +203,17 @@ fn main() {
         notify(status, message.clone(), tool.clone(), session.clone());
         return;
     }
+    // daemon 自己建立 runtime，不能在 agt 的 runtime 內執行
+    if let Some(Cmd::Daemon {
+        cmd: DaemonCmd::Run { foreground },
+    }) = &cli.cmd
+    {
+        if let Err(e) = agt_daemon::run_daemon(*foreground) {
+            eprintln!("agt daemon：{e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // 清除上次 `agt update` 留下、當時還在執行所以刪不掉的舊檔
     update::cleanup_old();
     // 從檔案總管雙擊開啟時，結束後視窗會直接關閉；出錯時要先等使用者看完訊息
@@ -214,7 +231,7 @@ fn main() {
         if let Some(ClientError::Remote { code, .. }) = e.downcast_ref::<ClientError>()
             && code == codes::PROTO_MISMATCH
         {
-            eprintln!("提示：daemon 版本不同，請執行 `agt daemon restart`");
+            eprintln!("{}", proto_mismatch_hint());
         }
         if double_click {
             prompt::pause();
@@ -227,15 +244,15 @@ async fn connect_kind(kind: &str) -> Result<Connected, ClientError> {
     Client::connect(&transport::endpoint(), kind).await
 }
 
-/// 連不上就在背景啟動 agtd，最多等 3 秒（規格 4.5）。
+/// 連不上就在背景啟動 daemon（`agt daemon run`），最多等 3 秒（規格 4.5）。
 async fn ensure_daemon(kind: &str) -> anyhow::Result<Connected> {
     match connect_kind(kind).await {
         Ok(c) => return Ok(c),
         Err(e @ ClientError::Remote { .. }) => return Err(e.into()),
         Err(_) => {}
     }
-    let exe = transport::sibling_exe("agtd");
-    transport::spawn_detached(&exe, &[])
+    let exe = std::env::current_exe().context("找不到目前的執行檔位置")?;
+    transport::spawn_detached(&exe, &["daemon", "run"])
         .with_context(|| format!("無法啟動 daemon（{}）", exe.display()))?;
     let start = Instant::now();
     loop {
@@ -249,6 +266,25 @@ async fn ensure_daemon(kind: &str) -> anyhow::Result<Connected> {
             Err(_) => {}
         }
     }
+}
+
+/// 舊版 daemon 還在執行時的處理說明。舊版的 daemon 不認得新協定，`agt daemon restart` 結束不了它，
+/// 要在系統層級結束行程（分頁資料保留在資料庫，之後可用 Ctrl+A → R 接續）。
+fn proto_mismatch_hint() -> String {
+    let (legacy, current) = if cfg!(windows) {
+        (
+            "taskkill /IM agtd.exe /F",
+            "在工作管理員結束「agt.exe」中的背景 daemon（命令列含 `daemon run`）",
+        )
+    } else {
+        ("pkill agtd", "pkill -f 'agt daemon run'")
+    };
+    format!(
+        "提示：正在執行的 daemon 與這個 agt 的版本不同（協定版本不相容），`agt daemon restart` 結束不了它。\n\
+         \x20 • 從舊版（有獨立 agtd 的版本）升級：{legacy}\n\
+         \x20 • 其他版本：{current}\n\
+         \x20 結束後再執行 agt（分頁資料會保留，可用 Ctrl+A → R 接續對話）"
+    )
 }
 
 fn confirm(question: &str) -> bool {
@@ -596,20 +632,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Cmd::Config {
             cmd: ConfigCmd::Check { file, repo },
         }) => {
-            // 設定檔的解析與驗證在 agtd 裡（和 daemon 載入的是同一份程式）
-            let exe = transport::sibling_exe("agtd");
-            let mut c = std::process::Command::new(&exe);
-            c.arg("--check-config");
+            // 設定檔的解析與驗證在 agt-daemon（和 daemon 載入的是同一份程式）
+            let mut args: Vec<String> = vec![];
             if let Some(f) = file {
-                c.args(["--file", &absolute(&f)]);
+                args.extend(["--file".into(), absolute(&f)]);
             }
             if let Some(r) = repo {
-                c.args(["--repo", &absolute(&r)]);
+                args.extend(["--repo".into(), absolute(&r)]);
             }
-            let status = c
-                .status()
-                .with_context(|| format!("無法執行 {}", exe.display()))?;
-            std::process::exit(status.code().unwrap_or(1));
+            std::process::exit(agt_daemon::check_config(&args));
         }
         Some(Cmd::Daemon { cmd }) => daemon(cmd).await,
         Some(Cmd::Notify { .. }) => unreachable!(),
@@ -617,8 +648,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 async fn stop_daemon(yes: bool) -> anyhow::Result<bool> {
-    let Ok(conn) = connect_kind("cli").await else {
-        return Ok(false);
+    let conn = match connect_kind("cli").await {
+        Ok(c) => c,
+        // 舊版 daemon 還在執行：協定版本不同，連不上也沒辦法用協定要求它結束
+        Err(e @ ClientError::Remote { .. }) if e.code() == Some(codes::PROTO_MISMATCH) => {
+            bail!(
+                "有另一個版本的 daemon 還在執行，無法透過協定結束它。\n{}",
+                proto_mismatch_hint()
+            )
+        }
+        Err(_) => return Ok(false),
     };
     let c = conn.client;
     let mut pid = None;
@@ -650,7 +689,7 @@ async fn stop_daemon(yes: bool) -> anyhow::Result<bool> {
     }
     // named pipe 關閉後，舊 daemon 還會收尾一段時間（結束 Agent、關閉 runtime），期間仍持有 lock 檔，
     // Windows 上它的 exe 也還被鎖住。等程序真的結束，接著啟動的新 daemon 才拿得到 lock，
-    // 改名留下的 agtd.exe.old 也才刪得掉。
+    // 改名留下的 agt.exe.old 也才刪得掉。
     if let Some(pid) = pid {
         let exited = tokio::task::spawn_blocking(move || {
             transport::wait_pid_exit(pid, Duration::from_secs(10))
@@ -666,9 +705,18 @@ async fn stop_daemon(yes: bool) -> anyhow::Result<bool> {
 
 async fn daemon(cmd: DaemonCmd) -> anyhow::Result<()> {
     match cmd {
+        // main() 在建立 runtime 之前就處理了
+        DaemonCmd::Run { .. } => {}
         DaemonCmd::Start => {
+            // 先確認是否已在執行，訊息才能分辨「本來就在跑」和「這次才啟動」
+            let running = connect_kind("cli").await.is_ok();
             ensure_daemon("cli").await?;
-            println!("daemon 已在執行");
+            let msg = if running {
+                "daemon 已在執行"
+            } else {
+                "daemon 已啟動"
+            };
+            println!("{msg}");
         }
         DaemonCmd::Stop { yes } => {
             if stop_daemon(yes).await? {
@@ -685,7 +733,7 @@ async fn daemon(cmd: DaemonCmd) -> anyhow::Result<()> {
         DaemonCmd::Status => match connect_kind("cli").await {
             Ok(conn) => {
                 if let ReplyBody::Daemon(i) = conn.client.request(ClientMsg::DaemonStatus).await? {
-                    println!("agtd {}（pid {}）", i.version, i.pid);
+                    println!("agt daemon {}（pid {}）", i.version, i.pid);
                     println!("  socket    ：{}", transport::endpoint());
                     println!("  工作階段  ：{}（執行中 {}）", i.sessions, i.running);
                     println!("  UI 連線   ：{}", i.clients);
@@ -754,4 +802,19 @@ fn notify(status: &str, message: Option<String>, tool: Option<String>, session: 
         };
         let _ = tokio::time::timeout(Duration::from_secs(2), fut).await;
     });
+}
+
+#[cfg(test)]
+mod daemon_hint_tests {
+    use super::*;
+
+    #[test]
+    fn mismatch_hint_explains_manual_stop() {
+        let h = proto_mismatch_hint();
+        assert!(h.contains("結束不了它") && h.contains("agtd"), "{h}");
+        assert!(
+            h.contains(if cfg!(windows) { "taskkill" } else { "pkill" }),
+            "{h}"
+        );
+    }
 }

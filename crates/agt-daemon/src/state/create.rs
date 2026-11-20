@@ -16,6 +16,9 @@ impl Daemon {
                 ),
             )
         })?;
+        if let Some(msg) = platform::docker_unavailable(&settings.command) {
+            return Err(OpError::new(codes::BAD_REQUEST, msg));
+        }
         let dir = PathBuf::from(&req.repo);
         if !dir.is_dir() {
             return Err(OpError::new(

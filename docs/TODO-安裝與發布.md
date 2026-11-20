@@ -17,13 +17,13 @@ agt update                                    # 之後自我更新
 - [ ] **repo 位置與公開與否**：GitHub 公開 repo（Releases 可匿名下載，最簡單）或私有（下載位置需另外放 Cloudflare R2 / S3 等）
 - [ ] **授權條款**：目前 `Cargo.toml` 為 `UNLICENSED`，公開發布前需決定
 - [ ] **支援平台**：第一版建議 Windows x64 + Linux x64；macOS（需公證，Apple 開發者帳號 $99/年）與 ARM 之後再加
-- [ ] **是否把 agtd 併入 agt.exe**（例如 `agt daemon run`）：單一執行檔讓安裝、更新都更簡單，但需要改程式
+- [x] **是否把 agtd 併入 agt.exe**（已完成：`agt daemon run`）（例如 `agt daemon run`）：單一執行檔讓安裝、更新都更簡單，但需要改程式
 
 ## Windows 目錄配置
 
 | 用途 | 位置 |
 | --- | --- |
-| 執行檔（`agt.exe`、`agtd.exe`） | `%APPDATA%\agt\`（已在使用；開發時用 `docker/publish.sh` 安裝） |
+| 執行檔（`agt.exe`） | `%APPDATA%\agt\`（已在使用；開發時用 `docker/publish.sh` 安裝） |
 | 設定檔 | `%APPDATA%\agt\config.toml` |
 | Dockerfile（`agt setup` 產生） | `%APPDATA%\agt\docker\<claude\|agy\|copilot\|codex>\` |
 | 「不要再提醒」清單 | `%APPDATA%\agt\setup-skip.txt` |
@@ -43,7 +43,7 @@ agt update                                    # 之後自我更新
 - [x] 各平台編譯 release 版
   - [x] Windows 改用 GitHub Windows runner + MSVC（目前是 Docker 內 MinGW 交叉編譯 `x86_64-pc-windows-gnu`）
   - [x] Linux x64（必要時用 musl 做靜態連結）
-- [x] 打包：`agt-<版本>-<平台>.zip` / `.tar.gz`，內含 `agt` 與 `agtd`
+- [x] 打包：`agt-<版本>-<平台>.zip` / `.tar.gz`，內含 `agt`
 - [x] 產生 `SHA256SUMS`，連同壓縮檔上傳到 Releases
 - [ ] 提供「最新版本」查詢方式（Releases API 或固定的 `latest.json`）
 - [ ] 版本號管理：建立 CHANGELOG；沿用既有的協定版本檢查（版本不同時提示 `agt daemon restart`）
@@ -70,7 +70,7 @@ agt update                                    # 之後自我更新
 - [x] `agt uninstall`（或文件說明）：
   - [x] 停止 daemon
   - [x] 刪除沙箱 / 容器（`sbx rm agt-*`、`docker rm -f` 標記 `agt=1` 的容器）
-  - [x] 刪除執行檔 `%APPDATA%\agt\agt.exe`、`agtd.exe` 與 PATH 設定
+  - [x] 刪除執行檔 `%APPDATA%\agt\agt.exe`（與舊版留下的 `agtd.exe`）與 PATH 設定
   - [x] 詢問是否刪除設定（`%APPDATA%\agt` 其餘內容）、worktree `~/.agt/worktrees`
 
 ## 5. 之後再做

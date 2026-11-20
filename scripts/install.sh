@@ -56,7 +56,7 @@ fi
 [ "$want" = "$got" ] || die "SHA256 不符（預期 $want，實際 $got），已中止"
 
 tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
-[ -f "$tmp/$name/agt" ] && [ -f "$tmp/$name/agtd" ] || die "壓縮檔內容不完整"
+[ -f "$tmp/$name/agt" ] || die "壓縮檔內容不完整"
 
 # 舊版 daemon 還在執行時先停掉，避免新舊版本混用
 if [ -x "$DIR/agt" ]; then
@@ -65,11 +65,11 @@ fi
 
 mkdir -p "$DIR"
 # 先放成暫存檔再改名：覆蓋執行中的檔案時不會出現 "Text file busy"
-for f in agt agtd; do
-  cp "$tmp/$name/$f" "$DIR/.$f.new"
-  chmod 755 "$DIR/.$f.new"
-  mv -f "$DIR/.$f.new" "$DIR/$f"
-done
+cp "$tmp/$name/agt" "$DIR/.agt.new"
+chmod 755 "$DIR/.agt.new"
+mv -f "$DIR/.agt.new" "$DIR/agt"
+# 舊版有獨立的 agtd（已併入 agt）：刪除
+rm -f "$DIR/agtd" "$DIR/agtd.old"
 echo "==> 已安裝 $version 到 $DIR"
 
 case ":$PATH:" in
