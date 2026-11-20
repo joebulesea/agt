@@ -227,12 +227,15 @@ pub fn run(args: &[String]) -> i32 {
 
 /// 每個 Agent 的 `auto_commit`（`extends` 展開後），例如 `claude-docker  on`。
 fn auto_commit_lines(cfg: &Config) -> Vec<String> {
-    let w = cfg.agents.keys().map(|n| n.chars().count()).max().unwrap_or(0);
+    let w = cfg
+        .agents
+        .keys()
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0);
     cfg.agents
         .iter()
-        .map(|(n, a)| {
-            format!("{n:<w$}  {}", if a.auto_commit { "on" } else { "off" })
-        })
+        .map(|(n, a)| format!("{n:<w$}  {}", if a.auto_commit { "on" } else { "off" }))
         .collect()
 }
 
