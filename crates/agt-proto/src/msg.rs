@@ -77,6 +77,13 @@ pub enum ClientMsg {
     Diff {
         id: String,
     },
+    /// 收尾前的預覽：預計產生幾個 commit / PR 與其內容。
+    FinishPreview {
+        id: String,
+        /// "merge" 或 "pr"（預設）。
+        #[serde(default)]
+        action: String,
+    },
     Rename {
         id: String,
         task: String,

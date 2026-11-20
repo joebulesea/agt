@@ -98,7 +98,7 @@ impl App {
                     true
                 }
             },
-            Popup::Finish { selected } => match k.code {
+            Popup::Finish { selected, .. } => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') => false,
                 KeyCode::Up | KeyCode::Char('k') => {
                     *selected = (*selected + FINISH_ITEMS.len() - 1) % FINISH_ITEMS.len();

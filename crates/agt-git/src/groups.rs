@@ -422,3 +422,107 @@ pub fn merge_groups(
         n = groups.len()
     ))
 }
+
+/// 說明檔前幾個非空白行，當成預覽。
+fn preview_lines(text: &str, max: usize) -> Vec<String> {
+    let all: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let mut out: Vec<String> = all.iter().take(max).map(|l| l.to_string()).collect();
+    if all.len() > max {
+        out.push("…".into());
+    }
+    out
+}
+
+/// 收尾前的預覽：預計會產生幾個 commit / PR，以及各自的標題與說明。
+/// `merge` 為 true 時是合併進 base（不開 PR，`strategy_note` 說明 merge 策略）；否則是 push 並開 PR。
+/// 有 `.agt/groups` 時每組一個 commit（pr 另外各一個 PR，含未被認領的 `rest`）；否則是單一 commit。
+/// 只讀取，不改動任何東西。
+pub fn finish_preview(
+    repo: &Path,
+    worktree: &Path,
+    base: &str,
+    task: &str,
+    merge: bool,
+    strategy: &str,
+    auto_commit: bool,
+) -> Result<String> {
+    let groups = load_groups(worktree)?;
+    let mut out = vec![];
+    if groups.is_empty() {
+        let msg = read_note(worktree, COMMIT_MSG_FILE)?;
+        let title = msg
+            .as_deref()
+            .and_then(subject_line)
+            .unwrap_or_else(|| task.to_string());
+        if merge {
+            // 分支上已有的 commit，加上收尾時會自動 commit 的未提交變更
+            let ahead: usize = git_wt(
+                repo,
+                worktree,
+                &["rev-list", "--count", &format!("{base}..HEAD")],
+            )?
+            .trim()
+            .parse()
+            .unwrap_or(0);
+            let pending = usize::from(auto_commit && is_dirty_wt(repo, worktree, true)?);
+            let n = ahead + pending;
+            let (count, note) = match strategy {
+                "squash" => (1, "squash 成 1 個 commit".to_string()),
+                "rebase" => (n, format!("rebase，{n} 個 commit 接在 base 後面")),
+                "merge" => (n + 1, format!("merge，{n} 個 commit 加 1 個 merge commit")),
+                _ => (n, format!("策略稍後選擇，分支有 {n} 個 commit")),
+            };
+            out.push(format!(
+                "合併進 {base}：預計 {count} 個 commit（{note}）；不開 PR"
+            ));
+        } else {
+            out.push("1 個 commit、1 個 PR".to_string());
+        }
+        out.push(format!("▸ {title}"));
+        if let Some(m) = &msg {
+            // 第一個非空白行是標題，其餘是內文
+            let body = m.trim_start().split_once('\n').map_or("", |x| x.1);
+            out.extend(
+                preview_lines(body, 4)
+                    .into_iter()
+                    .map(|l| format!("    {l}")),
+            );
+        }
+        if !merge && let Some(b) = read_note(worktree, PR_BODY_FILE)? {
+            out.push("  PR 說明：".into());
+            out.extend(preview_lines(&b, 4).into_iter().map(|l| format!("    {l}")));
+        }
+        return Ok(out.join("\n"));
+    }
+    let groups = with_rest(repo, worktree, base, groups)?;
+    let n = groups.len();
+    if merge {
+        let note = match strategy {
+            "merge" => "merge：每組一個 merge commit",
+            "squash" => "squash：每組壓成一個 commit",
+            "rebase" => "rebase：每組一個 commit 接在 base 後面",
+            _ => "合併策略稍後選擇",
+        };
+        out.push(format!(
+            "分成 {n} 組依序合進 {base}：{n} 個 commit（{note}）、不開 PR"
+        ));
+    } else {
+        out.push(format!("分成 {n} 組：{n} 個 commit、{n} 個 PR"));
+    }
+    for g in &groups {
+        out.push(format!(
+            "▸ [{}] {}（{} 個路徑）",
+            g.name,
+            group_title(g, task),
+            g.files.len()
+        ));
+        if !merge && let Some(b) = &g.pr_body {
+            out.extend(preview_lines(b, 2).into_iter().map(|l| format!("    {l}")));
+        }
+    }
+    Ok(out.join("\n"))
+}

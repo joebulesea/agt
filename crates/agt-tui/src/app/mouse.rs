@@ -162,7 +162,7 @@ impl App {
             }
             Click::Item(i) => {
                 match self.popup.as_mut() {
-                    Some(Popup::Finish { selected })
+                    Some(Popup::Finish { selected, .. })
                     | Some(Popup::Strategy { selected })
                     | Some(Popup::Close { selected, .. }) => *selected = i,
                     // 目錄瀏覽器：點一下等於選到該項後按 Enter（進入目錄 / 使用這個目錄）

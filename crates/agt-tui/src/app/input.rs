@@ -104,7 +104,28 @@ impl App {
             }
             KeyCode::Char('m') => {
                 if self.active_info().is_some_and(|s| s.has_worktree()) {
-                    self.popup = Some(Popup::Finish { selected: 0 });
+                    self.popup = Some(Popup::Finish {
+                        selected: 0,
+                        preview: [vec!["讀取中…".into()], vec!["讀取中…".into()]],
+                    });
+                    for action in ["merge", "pr"] {
+                        if let Some(id) = self.active.clone() {
+                            let c = self.client.clone();
+                            self.spawn(async move {
+                                let r = c
+                                    .request(ClientMsg::FinishPreview {
+                                        id: id.clone(),
+                                        action: action.into(),
+                                    })
+                                    .await
+                                    .map(|b| match b {
+                                        ReplyBody::Text(t) => t,
+                                        _ => String::new(),
+                                    });
+                                AppEvent::FinishPreview(id, action, r)
+                            });
+                        }
+                    }
                 } else if self.active.is_some() {
                     self.set_message("這個分頁沒有 worktree", true);
                 }
