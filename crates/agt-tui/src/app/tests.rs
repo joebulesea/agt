@@ -409,10 +409,17 @@ async fn tags_popup_enter_sends_set_tags_and_closes() {
         KeyModifiers::NONE,
     )));
     assert!(app.popup.is_none());
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), sent.recv())
-        .await
-        .expect("應送出請求")
-        .expect("通道已關閉");
-    let text = String::from_utf8_lossy(&frame);
-    assert!(text.contains("SetTags") && text.contains("\"a\""), "{text}");
+    // 跳過 with_active 先送出的 Attach / Resize，找到 SetTags
+    let text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let frame = sent.recv().await.expect("通道已關閉");
+            let text = String::from_utf8_lossy(&frame).into_owned();
+            if text.contains("SetTags") {
+                return text;
+            }
+        }
+    })
+    .await
+    .expect("應送出 SetTags 請求");
+    assert!(text.contains("\"a\""), "{text}");
 }
