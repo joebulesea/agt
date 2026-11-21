@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 mod panes;
+#[cfg(test)]
 pub(crate) use panes::usage_spans;
 mod popup;
 

@@ -282,7 +282,6 @@ fn tpl(name: &str, agent: &str, task: &str, base: Option<&str>) -> agt_proto::Te
         task: task.into(),
         base: base.map(Into::into),
         tags: vec![],
-        usage: None,
     }
 }
 
