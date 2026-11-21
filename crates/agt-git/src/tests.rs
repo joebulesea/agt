@@ -1047,3 +1047,202 @@ fn preview_with_groups_does_not_warn_about_size() {
     assert!(!p.contains('⚠'), "{p}");
     assert!(p.starts_with("分成 3 組"), "{p}");
 }
+
+// ---- 堆疊分組（AFTER）----
+
+fn write_after(wt: &Path, name: &str, after: &str) {
+    let d = wt.join(NOTES_DIR).join("groups").join(name);
+    std::fs::write(d.join(groups::AFTER_FILE), after).unwrap();
+}
+
+/// grouped_worktree 加上：two 接在 one 後面。
+fn stacked_worktree() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, String) {
+    let (repo, wts, wt, branch) = grouped_worktree();
+    write_after(&wt, "two", "one\n");
+    (repo, wts, wt, branch)
+}
+
+#[test]
+fn load_groups_orders_by_after() {
+    let (_r, _w, wt, _b) = grouped_worktree();
+    // a 接在 two 後面、two 接在 one 後面：one → two → a（名稱順序原本是 a、one、two）
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    write_group(&wt, "a", "a.txt\n", None);
+    write_after(&wt, "a", "  two  \n");
+    write_after(&wt, "two", "one\n");
+    let g = load_groups(&wt).unwrap();
+    let names: Vec<&str> = g.iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(names, ["one", "two", "a"]);
+    assert_eq!(g[1].after.as_deref(), Some("one"));
+    assert_eq!(g[2].after.as_deref(), Some("two")); // 去掉空白
+    assert!(g[0].after.is_none());
+
+    // 接在不存在的組後面：讀取時允許（那組可能已經處理完），建 branch 時才檢查
+    write_after(&wt, "a", "gone\n");
+    let g = load_groups(&wt).unwrap();
+    assert_eq!(
+        g.iter().find(|g| g.name == "a").unwrap().after.as_deref(),
+        Some("gone")
+    );
+}
+
+#[test]
+fn load_groups_rejects_bad_after_and_cycles() {
+    let (_r, _w, wt, _b) = grouped_worktree();
+    for bad in ["rest", "two", "a b", "../x"] {
+        write_after(&wt, "two", bad);
+        assert!(refused(load_groups(&wt)).contains("AFTER"), "{bad}");
+    }
+    write_after(&wt, "two", "one");
+    write_after(&wt, "one", "two");
+    let e = refused(load_groups(&wt));
+    assert!(
+        e.contains("循環") && e.contains("one") && e.contains("two"),
+        "{e}"
+    );
+}
+
+#[test]
+fn stacked_group_branch_builds_on_its_dependency() {
+    let (repo, _w, wt, branch) = stacked_worktree();
+    let root = repo.path();
+    let gitdir = trusted_gitdir(root, &wt).unwrap();
+    let g = load_groups(&wt).unwrap();
+    let (one, two) = (&g[0], &g[1]);
+
+    // 接的那組還沒有 branch：拒絕並說明
+    let e = groups::make_group_branch(root, &wt, &gitdir, &branch, "main", two, "任務")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("找不到 one 的 branch"), "{e}");
+
+    let (ob, _) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", one, "任務").unwrap();
+    let (tb, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", two, "任務").unwrap();
+    assert!(made);
+    // two 的親代是 one 的 branch，比 one 多一個 commit，內容包含兩組、不含 rest
+    assert_eq!(
+        git(root, &["rev-parse", &format!("{tb}^")]).unwrap(),
+        git(root, &["rev-parse", &ob]).unwrap()
+    );
+    assert_eq!(
+        count(root, &["rev-list", "--count", &format!("{ob}..{tb}")]),
+        1
+    );
+    let files = git(root, &["ls-tree", "-r", "--name-only", &tb]).unwrap();
+    assert!(
+        files.contains("one/a.txt") && files.contains("two.txt"),
+        "{files}"
+    );
+    assert!(!files.contains("rest.txt"), "{files}");
+    // PR 的差異（相對 one 的 branch）只有 two 自己的檔案
+    assert_eq!(
+        git(root, &["diff", "--name-only", &ob, &tb]).unwrap(),
+        "two.txt"
+    );
+
+    // 沒有新變更：不多 commit
+    let (_, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", two, "任務").unwrap();
+    assert!(!made);
+}
+
+#[test]
+fn stacked_group_catches_up_with_merge_commit_when_dependency_moves() {
+    let (repo, _w, wt, branch) = stacked_worktree();
+    let root = repo.path();
+    let gitdir = trusted_gitdir(root, &wt).unwrap();
+    let g = load_groups(&wt).unwrap();
+    let (one, two) = (&g[0], &g[1]);
+    let (ob, _) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", one, "任務").unwrap();
+    let (tb, _) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", two, "任務").unwrap();
+    let old_two = git(root, &["rev-parse", &tb]).unwrap();
+
+    // one 又改了：one 追加 commit，two 以 merge commit 併入 one 的新內容（不改寫歷史）
+    std::fs::write(wt.join("one/a.txt"), "changed\n").unwrap();
+    groups::make_group_branch(root, &wt, &gitdir, &branch, "main", one, "任務").unwrap();
+    let (_, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", two, "任務").unwrap();
+    assert!(made);
+    assert_eq!(
+        git(root, &["rev-parse", &format!("{tb}^1")]).unwrap(),
+        old_two
+    );
+    assert_eq!(
+        git(root, &["rev-parse", &format!("{tb}^2")]).unwrap(),
+        git(root, &["rev-parse", &ob]).unwrap()
+    );
+    assert_eq!(
+        git(root, &["show", &format!("{tb}:one/a.txt")]).unwrap(),
+        "changed"
+    );
+    assert_eq!(
+        git(root, &["diff", "--name-only", &ob, &tb]).unwrap(),
+        "two.txt"
+    );
+    // 再跑一次：已追上，沒有新變更
+    let (_, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", two, "任務").unwrap();
+    assert!(!made);
+}
+
+#[test]
+fn merge_groups_handles_stacked_groups_with_every_strategy() {
+    for strategy in [Strategy::Merge, Strategy::Squash, Strategy::Rebase] {
+        let (repo, _w, wt, branch) = stacked_worktree();
+        let root = repo.path();
+        let g = load_groups(&wt).unwrap();
+        let out = merge_groups(root, &wt, &branch, "main", "任務", strategy, g).unwrap();
+        assert!(out.contains("分成 3 組"), "{strategy:?}: {out}");
+        for f in ["one/a.txt", "one/b.txt", "two.txt", "rest.txt"] {
+            assert!(root.join(f).exists(), "{strategy:?}: {f}");
+        }
+        let merges = count(root, &["rev-list", "--count", "--merges", "main"]);
+        let all = count(root, &["rev-list", "--count", "main"]);
+        match strategy {
+            Strategy::Merge => assert_eq!(merges, 3, "{strategy:?}"),
+            _ => {
+                assert_eq!(merges, 0, "{strategy:?}");
+                assert_eq!(all, 4, "{strategy:?}"); // init + 3 組
+            }
+        }
+        let branches = git(root, &["branch", "--list", &format!("{branch}-*")]).unwrap();
+        assert!(branches.is_empty(), "{strategy:?}: {branches}");
+    }
+}
+
+#[test]
+fn merge_groups_rebase_keeps_every_commit_of_an_updated_group_branch() {
+    // 分組 branch 在之前收尾 pr 時已追加過 commit（one 有兩個 commit、two 有追上的 merge commit）
+    let (repo, _w, wt, branch) = stacked_worktree();
+    let root = repo.path();
+    let gitdir = trusted_gitdir(root, &wt).unwrap();
+    let g = load_groups(&wt).unwrap();
+    groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &g[0], "任務").unwrap();
+    groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &g[1], "任務").unwrap();
+    std::fs::write(wt.join("one/b.txt"), "1b changed\n").unwrap();
+    let g = load_groups(&wt).unwrap();
+    merge_groups(root, &wt, &branch, "main", "任務", Strategy::Rebase, g).unwrap();
+    assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 0);
+    // init + one 的 2 個 commit + two + rest
+    assert_eq!(count(root, &["rev-list", "--count", "main"]), 5);
+    assert_eq!(
+        std::fs::read_to_string(root.join("one/b.txt")).unwrap(),
+        "1b changed\n"
+    );
+    assert!(root.join("two.txt").exists() && root.join("rest.txt").exists());
+}
+
+#[test]
+fn preview_shows_which_group_a_stacked_group_follows() {
+    let (repo, _w, wt, _b) = stacked_worktree();
+    let p = preview(repo.path(), &wt, false, "ask", false);
+    assert!(
+        p.contains("[two] 任務（two）（1 個路徑，接在 [one] 後面）"),
+        "{p}"
+    );
+    assert!(p.contains("[one] 加入 one（1 個路徑）"), "{p}");
+}

@@ -13,8 +13,8 @@ agt 建立分頁時會在 worktree 寫入 `.agt/README.md`：給 Agent 看的收
 
 - 變更可以獨立審查、獨立合併（例如「修 bug」與「重構另一個模組」）。
 - 各組不要改到同一個檔案；同一個檔案只能屬於一組。
-- 各組各自從 base 建立，彼此不包含對方的變更：某組用到另一組新增的程式碼時，那組單獨建出來會無法編譯。
-- 做不到上面兩點的拆分（多個主題改到同一個檔案，或彼此有依賴）：放在同一組，並在 `PR_BODY.md` 說明包含哪些主題。**不要**另外寫拆分計畫（例如 `.agt/split/`），agt 不會使用它。
+- 各組預設各自從 base 建立，彼此不包含對方的變更。某組用到另一組新增的程式碼時，在它的 `AFTER` 寫上那一組（見下方「堆疊：AFTER」）。
+- 多個主題改到同一個檔案：放在同一組，並在 `PR_BODY.md` 說明包含哪些主題。**不要**另外寫拆分計畫（例如 `.agt/split/`），agt 不會使用它。
 - 只有一個主題時，不要分組。
 
 ## 目錄結構
@@ -31,7 +31,8 @@ agt 建立分頁時會在 worktree 寫入 `.agt/README.md`：給 Agent 看的收
     └── scrollbar/
         ├── FILES
         ├── COMMIT_MSG
-        └── PR_BODY.md
+        ├── PR_BODY.md
+        └── AFTER          # （選用）接在 diff-tabs 後面
 ```
 
 ### FILES
@@ -49,6 +50,18 @@ crates/agt-tui/src/app/
 `PR_BODY.md` 是 Markdown（做了什麼、為什麼、如何測試）。兩者都可省略，
 省略時 commit 與 PR 標題用「任務名稱（組名）」。
 
+### 堆疊：AFTER
+
+選用。內容是另一組的組名（一行），表示這組用到那組新增的程式碼，要接在那組後面：
+
+- 這組的 branch 從那組的 branch 建立（內容 = 那組的 branch + 這組的檔案），單獨建出來也能編譯。
+- 收尾 pr 時，這組 PR 的 base 是那組的 branch，PR 只顯示這組自己的差異。那組的 PR 合併並刪除 branch 後，
+  GitHub 會自動把這組 PR 的 base 改回原本的 branch。
+- 收尾 merge 時，依 `AFTER` 的順序合進 base（被接的組先合）。
+- 可以串成一條鏈（a ← b ← c）；不能接在自己、`rest` 後面，也不能形成循環。
+- 那組後來又追加了 commit（例如再次收尾 pr）：這組會多一個 merge commit 把那組的新內容併進來，不改寫歷史、不需要 force push。
+- `AFTER` 指向的組已經處理完（說明檔被刪掉）也可以，只要那組的 branch 還在；branch 不在時收尾會停下並說明。
+
 ## 規則
 
 - 組名只能用英數字與 `.`、`_`、`-`，最長 40 字，不能以 `.` 或 `-` 開頭，**不能叫 `rest`**。
@@ -64,8 +77,8 @@ crates/agt-tui/src/app/
 
 | 動作 | 每組的結果 |
 | --- | --- |
-| **pr** | 建立 branch `<任務 branch>-<組名>`（內容 = merge-base + 該組檔案，只有一個 commit），各自 push 並開 PR；已有 PR 時只追加 commit、更新說明，不 force push。各 PR 互不包含對方的變更 |
-| **merge** | 依組名順序合進 base：merge＝每組一個 merge commit、squash＝每組一個 commit、rebase＝逐組 cherry-pick。任一組衝突就停下，已合進去的組保留 |
+| **pr** | 建立 branch `<任務 branch>-<組名>`（內容 = merge-base + 該組檔案，只有一個 commit；有 `AFTER` 時改為接在那組的 branch 後面），各自 push 並開 PR（有 `AFTER` 時 PR 的 base 是那組的 branch）；已有 PR 時只追加 commit、更新說明，不 force push。沒有 `AFTER` 的 PR 互不包含對方的變更 |
+| **merge** | 依組名順序合進 base（有 `AFTER` 時被接的組先合）：merge＝每組一個 merge commit、squash＝每組一個 commit、rebase＝逐組 cherry-pick 該組的 commit。任一組衝突就停下，已合進去的組保留 |
 
 收尾前，收尾視窗會預覽預計產生的 commit / PR。以下情況會在最前面以紅色 `⚠` 提醒：
 
