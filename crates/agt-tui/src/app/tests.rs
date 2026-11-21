@@ -32,6 +32,7 @@ fn session(id: &str) -> SessionInfo {
         created_at: 0,
         shared: false,
         tags: vec![],
+        usage: None,
     }
 }
 
@@ -281,6 +282,7 @@ fn tpl(name: &str, agent: &str, task: &str, base: Option<&str>) -> agt_proto::Te
         task: task.into(),
         base: base.map(Into::into),
         tags: vec![],
+        usage: None,
     }
 }
 
@@ -422,4 +424,53 @@ async fn tags_popup_enter_sends_set_tags_and_closes() {
     .await
     .expect("應送出 SetTags 請求");
     assert!(text.contains("\"a\""), "{text}");
+}
+
+#[test]
+fn status_bar_usage_shows_active_context_and_latest_quota() {
+    use agt_proto::usage::{Quota, Usage};
+    let (mut app, _sent) = test_app("on");
+    let now = 1_000_000;
+    let text = |app: &App| {
+        crate::ui::usage_spans(app, ratatui::style::Style::new(), now)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect::<String>()
+    };
+    let mut a = session("aaaa1111");
+    a.usage = Some(Usage {
+        context_percent: Some(85.4),
+        five_hour: Some(Quota {
+            used_percent: 10.0,
+            resets_at: now + 3600,
+        }),
+        updated_at: 1,
+        ..Default::default()
+    });
+    let mut b = session("bbbb2222");
+    b.usage = Some(Usage {
+        context_percent: Some(12.0),
+        five_hour: Some(Quota {
+            used_percent: 23.5,
+            resets_at: now + 2 * 3600 + 15 * 60,
+        }),
+        seven_day: Some(Quota {
+            used_percent: 41.0,
+            resets_at: now - 1, // 已經重置：不顯示
+        }),
+        updated_at: 2, // 比 a 新：額度用這份
+        ..Default::default()
+    });
+    app.sessions = vec![a, b];
+    // 沒有選分頁：只有額度
+    assert_eq!(text(&app), "5h 24% 2h15m");
+    app.active = Some("aaaa1111".into());
+    assert_eq!(text(&app), "ctx 85% · 5h 24% 2h15m");
+    // 達到 80% 用紅色
+    let spans = crate::ui::usage_spans(&app, ratatui::style::Style::new(), now);
+    assert_eq!(spans[0].style.fg, Some(crate::theme::theme().red));
+    assert_ne!(spans[2].style.fg, Some(crate::theme::theme().red));
+    // 沒有任何用量
+    app.sessions.iter_mut().for_each(|s| s.usage = None);
+    assert_eq!(text(&app), "");
 }

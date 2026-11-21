@@ -10,7 +10,17 @@ pub const GUIDE_FILE: &str = "README.md";
 pub const AGENT_GUIDE: &str = include_str!("agent_guide.md");
 
 /// `.agt/` 底下 agt 認得的項目，其餘的會在收尾預覽時提醒。
-const KNOWN_NOTES: [&str; 4] = [GUIDE_FILE, COMMIT_MSG_FILE, PR_BODY_FILE, GROUPS_DIR];
+/// 後四個是 Claude Code 的 status line 用的（用量資料與沙箱裡的腳本，見 agt-agents 的 `claude.rs`）。
+const KNOWN_NOTES: [&str; 8] = [
+    GUIDE_FILE,
+    COMMIT_MSG_FILE,
+    PR_BODY_FILE,
+    GROUPS_DIR,
+    "usage.json",
+    "usage.json.tmp",
+    "statusline.sh",
+    "statusline.js",
+];
 
 /// 沒有分組時，改動超過這麼多行（新增 + 刪除，不含未追蹤的檔案）就提醒。
 pub const LARGE_CHANGE_LINES: usize = 1500;

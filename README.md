@@ -74,7 +74,7 @@ PowerShell：在 `$PROFILE` 加上 `agt completions powershell | Out-String | In
 
 `agt gc` 用來清理殘留的 worktree：它會比對 git worktree 與資料庫，列出已沒有對應分頁的副本，加上 `--prune` 才會實際刪除。
 
-新增分頁時（`Ctrl+A` → `n`）Base 欄位留空會使用主 repo 目前的 HEAD branch，畫面上會顯示實際的 branch；它不是 remote 的預設 branch 時以黃字提醒，避免 PR 開到 feature branch。底部狀態列最右邊顯示 agt 的版本號。Agent 結束後（例如 `/exit`），畫面上會出現可點擊的「重新啟動，接續對話（`R`）」與「開新對話（`N`）」按鈕。
+新增分頁時（`Ctrl+A` → `n`）Base 欄位留空會使用主 repo 目前的 HEAD branch，畫面上會顯示實際的 branch；它不是 remote 的預設 branch 時以黃字提醒，避免 PR 開到 feature branch。底部狀態列最右邊顯示 agt 的版本號；Claude Code 的分頁會在版本號前面顯示用量：目前分頁的 context 用量（`ctx 45%`），以及 Pro / Max 訂閱方案的 5 小時、每週額度與重置倒數（`5h 23% 2h15m · 7d 41% 3d4h`），達到 80% 時變成紅色。資料來自 Claude Code 的 status line：agt 建立分頁時在 worktree 的 `.claude/settings.local.json` 寫入 `statusLine`（主機上是 `agt statusline`，沙箱裡是 agt 放在 `.agt/` 的腳本），寫到 `.agt/usage.json` 由 daemon 讀取；你在 `~/.claude/settings.json` 或專案設定裡已有自己的 `statusLine` 時不會覆寫（那個分頁就沒有用量）。Agent 結束後（例如 `/exit`），畫面上會出現可點擊的「重新啟動，接續對話（`R`）」與「開新對話（`N`）」按鈕。
 
 範本與標籤：設定檔的 `[templates.<名稱>]` 可以預先填好新增分頁的 `agent`、`task`、`base` 與 `tags`（另有 `description`）；新增表單按 `F3`（或 `Ctrl+T`）切換範本，命令列用 `agt new --template <名稱>`（可省略 Agent）。你自己填的值優先，標籤會合併。要多帶參數（例如指定模型）請另外定義 Agent 變體（`extends` / `extra_args`），再讓範本指向它。分頁可以有最多 8 個標籤（不含空白與逗號，最長 24 字元，不分大小寫去重）：`Ctrl+A` → `t` 編輯，或 `agt tag <id> --add/--remove/--set/--clear`；標籤顯示在左側欄分頁的第三行，`agt ls --tag <標籤>` 可篩選。
 

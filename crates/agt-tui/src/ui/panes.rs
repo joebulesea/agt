@@ -398,6 +398,57 @@ pub(super) fn draw_exit_hint(buf: &mut Buffer, app: &mut App, area: Rect) {
     );
 }
 
+/// 狀態列右邊的用量：目前分頁的 context，以及最新一份訂閱額度（5 小時、每週，附重置倒數）。
+/// 達到 [`USAGE_WARN_PERCENT`] 的項目用紅色。沒有任何資料時回傳空的。
+/// 額度是整個帳號共用的，取所有分頁裡最近一次回報的那份；已經重置的時間窗不顯示。
+pub(crate) fn usage_spans(app: &App, bar: Style, now: i64) -> Vec<Span<'static>> {
+    use agt_proto::usage::{USAGE_WARN_PERCENT, format_remaining};
+    let level = |p: f64| {
+        if p >= USAGE_WARN_PERCENT {
+            bar.fg(theme().red).add_modifier(Modifier::BOLD)
+        } else {
+            bar.fg(theme().text)
+        }
+    };
+    let mut parts: Vec<Vec<Span<'static>>> = vec![];
+    if let Some(p) = app
+        .active_info()
+        .and_then(|s| s.usage.as_ref())
+        .and_then(|u| u.context_percent)
+    {
+        parts.push(vec![Span::styled(format!("ctx {}%", p.round()), level(p))]);
+    }
+    let quota = app
+        .sessions
+        .iter()
+        .filter_map(|s| s.usage.as_ref())
+        .filter(|u| u.five_hour.is_some() || u.seven_day.is_some())
+        .max_by_key(|u| u.updated_at);
+    if let Some(u) = quota {
+        for (name, q) in [("5h", u.five_hour), ("7d", u.seven_day)] {
+            let Some(q) = q else { continue };
+            let Some(rem) = format_remaining(q.resets_at, now) else {
+                continue;
+            };
+            parts.push(vec![
+                Span::styled(
+                    format!("{name} {}%", q.used_percent.round()),
+                    level(q.used_percent),
+                ),
+                Span::styled(format!(" {rem}"), bar.fg(theme().gray)),
+            ]);
+        }
+    }
+    let mut out = vec![];
+    for (i, p) in parts.into_iter().enumerate() {
+        if i > 0 {
+            out.push(Span::styled(" · ", bar.fg(theme().dark_gray)));
+        }
+        out.extend(p);
+    }
+    out
+}
+
 pub(super) fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
     let count = |st: AgentStatus| app.sessions.iter().filter(|s| s.status == st).count();
     let running =
@@ -517,6 +568,32 @@ pub(super) fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
             x += hint.width() as u16;
         }
         left_w = x.min(end) - area.x;
+    }
+    // 沒有訊息時：用量放在版本號前面；放不下時先拿掉版本號，再放不下就都不顯示
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let usage = if is_version {
+        usage_spans(app, bar, now)
+    } else {
+        vec![]
+    };
+    if let (false, Some((text, style))) = (usage.is_empty(), &right) {
+        let room = area.width.saturating_sub(left_w + 3) as usize;
+        let mut spans = usage;
+        let usage_w = Line::from(spans.clone()).width();
+        if usage_w + 2 + text.width() <= room {
+            spans.push(Span::styled("  ", bar));
+            spans.push(Span::styled(text.clone(), *style));
+        }
+        let line = Line::from(spans);
+        let w = line.width();
+        if w <= room {
+            let x = area.x + area.width - w as u16 - 1;
+            buf.set_line(x, area.y, &line, w as u16);
+        }
+        return;
     }
     if let Some((text, style)) = right {
         let room = area.width.saturating_sub(left_w + 3) as usize;

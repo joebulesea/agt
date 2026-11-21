@@ -128,6 +128,10 @@ pub struct SessionInfo {
     /// 標籤（見 `tags::normalize`）。
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Agent 回報的用量（context、訂閱額度）；目前只有 Claude Code 會回報（見 `usage`）。
+    /// 只存在記憶體，不寫進資料庫。
+    #[serde(default)]
+    pub usage: Option<crate::usage::Usage>,
 }
 
 impl SessionInfo {
