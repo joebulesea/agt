@@ -49,7 +49,9 @@ pub struct Theme {
     pub status_idle: Option<Color>,
 }
 
-pub const NAMES: [&str; 3] = ["dark", "light", "colorblind"];
+/// 所有主題名稱（只有測試用到；設定檔的驗證用 `agt_daemon::config::THEMES`）。
+#[cfg(test)]
+const NAMES: [&str; 3] = ["dark", "light", "colorblind"];
 
 impl Theme {
     pub const DARK: Theme = Theme {
