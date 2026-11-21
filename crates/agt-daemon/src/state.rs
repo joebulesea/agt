@@ -139,6 +139,8 @@ pub struct Daemon {
     git_polls: Mutex<HashMap<String, (Instant, AgentStatus)>>,
     /// 每個分頁上次讀到的 `.agt/usage.json` 修改時間（見 [`usage`]）。
     usage_seen: Mutex<HashMap<String, std::time::SystemTime>>,
+    /// 用量達到 80% 的通知紀錄（每個分頁、每個額度時間窗只通知一次）。
+    usage_alerts: Mutex<usage::AlertState>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -231,6 +233,7 @@ impl Daemon {
             busy: Mutex::new(Default::default()),
             git_polls: Mutex::new(Default::default()),
             usage_seen: Mutex::new(Default::default()),
+            usage_alerts: Mutex::new(Default::default()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),
