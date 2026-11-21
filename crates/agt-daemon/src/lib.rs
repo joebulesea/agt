@@ -187,11 +187,19 @@ async fn serve(d: Arc<Daemon>) -> anyhow::Result<()> {
             loop {
                 t.tick().await;
                 let d = d.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    d.poll_git();
-                    d.check_long_running();
-                })
-                .await;
+                let _ = tokio::task::spawn_blocking(move || d.poll_git()).await;
+            }
+        });
+    }
+
+    // 長時間執行提醒：獨立計時，不受 git 輪詢變慢影響（只讀記憶體中的狀態，不會阻塞）
+    {
+        let d = d.clone();
+        tokio::spawn(async move {
+            let mut t = tokio::time::interval(Duration::from_secs(3));
+            loop {
+                t.tick().await;
+                d.check_long_running();
             }
         });
     }
