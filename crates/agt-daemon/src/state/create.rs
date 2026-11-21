@@ -149,6 +149,10 @@ impl Daemon {
                         if let Err(e) = agt_git::add_exclude(&wt, agt_git::NOTES_EXCLUDE) {
                             tracing::warn!("無法加入 info/exclude：{e}");
                         }
+                        // 給 Agent 看的收尾規則（commit 訊息、PR 說明、多個主題時如何分組）
+                        if let Err(e) = agt_git::write_guide(&wt) {
+                            tracing::warn!("無法寫入 .agt/{}：{e}", agt_git::GUIDE_FILE);
+                        }
                         info.worktree = Some(wt.to_string_lossy().into_owned());
                         info.branch = Some(branch);
                         info.base_branch = Some(base);

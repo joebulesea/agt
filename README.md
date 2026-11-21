@@ -175,7 +175,7 @@ Claude Code 以 Sonnet 執行、由 Opus 擔任顧問（`--model sonnet --adviso
 
 #### 分組收尾
 
-任務包含多個互不相關的主題時，Agent 可在 `.agt/groups/<組名>/` 放 `FILES`、`COMMIT_MSG`、`PR_BODY.md`，收尾（pr 或 merge）時每組各自一個 commit（pr 則各自一個 PR），未被認領的變更自成 `rest` 組。格式與規則見 [Agent 分組收尾說明](docs/Agent-分組收尾說明.md)，內含可貼進 Agent 提示的版本。
+任務包含多個互不相關的主題時，Agent 可在 `.agt/groups/<組名>/` 放 `FILES`、`COMMIT_MSG`、`PR_BODY.md`，收尾（pr 或 merge）時每組各自一個 commit（pr 則各自一個 PR），未被認領的變更自成 `rest` 組。agt 建立分頁時會在 worktree 寫入 `.agt/README.md`（給 Agent 看的收尾規則），提示只需要叫 Agent 先讀它；收尾視窗會提醒 `.agt/` 裡不認得的項目，以及改動很大卻沒有分組的情況。格式與規則見 [Agent 分組收尾說明](docs/Agent-分組收尾說明.md)，內含可貼進 Agent 提示的版本。
 
 ## 環境變數
 
