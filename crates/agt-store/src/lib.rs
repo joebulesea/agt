@@ -164,6 +164,8 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // WAL 下 NORMAL 不必每筆交易都等硬碟同步（狀態切換很頻繁）；斷電時最多少掉最後幾筆交易，資料庫不會損壞
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         Self::init(conn)
     }
 
@@ -594,6 +596,23 @@ mod tests {
             s.set_conversation("u1", "c1").unwrap();
             s.trust_setup("/r", "npm i").unwrap();
         }
+    }
+
+    #[test]
+    fn file_store_uses_wal_with_synchronous_normal() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("agt.db")).unwrap();
+        let mode: String = s
+            .conn
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal");
+        // 0 = OFF、1 = NORMAL、2 = FULL
+        let sync: i64 = s
+            .conn
+            .pragma_query_value(None, "synchronous", |r| r.get(0))
+            .unwrap();
+        assert_eq!(sync, 1);
     }
 
     #[test]
