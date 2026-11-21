@@ -8,6 +8,9 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// 收尾檢查函式（見 [`agt_git::GroupCheck`]）。
 type CheckFn = Box<dyn Fn(&str, &Path) -> Result<(), String>>;
 
+/// 由檢查目錄組出要執行的指令。
+type ArgvFn = Box<dyn Fn(&Path) -> Vec<String>>;
+
 /// 把收尾檢查的略過說明附在結果後面。
 fn with_note(out: String, note: Option<String>) -> String {
     match note {
@@ -183,7 +186,7 @@ impl Daemon {
             return Ok((None, None));
         };
         let agent = cfg.agents.get(&info.agent).cloned().unwrap_or_default();
-        let argv: Box<dyn Fn(&Path) -> Vec<String>> = if !agent.check_command.is_empty() {
+        let argv: ArgvFn = if !agent.check_command.is_empty() {
             let cmd = agent.check_command.clone();
             let session = info.id.clone();
             let script = script.clone();
