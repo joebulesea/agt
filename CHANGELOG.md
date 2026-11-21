@@ -9,6 +9,10 @@
 
 ## 未發布
 
+### 改善
+
+- 資料庫改用 `synchronous = NORMAL`（WAL 模式），分頁狀態頻繁切換時不再每筆寫入都等硬碟同步
+
 ### 修正
 
 - `agt update`：沒有設定 `AGT_REPO` 時預設使用 `joebulesea/agt`（與安裝腳本相同），本機用 `docker/publish.sh` 編譯的版本不再出現「不知道要從哪個 GitHub repo 更新」
