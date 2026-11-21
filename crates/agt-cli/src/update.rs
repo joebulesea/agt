@@ -10,15 +10,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// 發布用的 repo（`<owner>/<repo>`）：環境變數 `AGT_REPO` 優先，其次是建置時的 `AGT_REPO`
-/// （release workflow 會設成 github.repository）。
+/// （release workflow 會設成 github.repository），都沒有時用 `DEFAULT_REPO`（與安裝腳本相同；
+/// 例如用 `docker/publish.sh` 在本機編譯的版本）。
 fn repo() -> anyhow::Result<String> {
+    const DEFAULT_REPO: &str = "joebulesea/agt";
     let r = std::env::var("AGT_REPO")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| option_env!("AGT_REPO").map(str::to_string))
-        .unwrap_or_default();
-    if r.is_empty() || r.matches('/').count() != 1 {
-        bail!("不知道要從哪個 GitHub repo 更新：請設定環境變數 AGT_REPO=<owner>/<repo>");
+        .or_else(|| {
+            option_env!("AGT_REPO")
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| DEFAULT_REPO.to_string());
+    let mut parts = r.split('/');
+    if !matches!((parts.next(), parts.next(), parts.next()), (Some(o), Some(n), None) if !o.is_empty() && !n.is_empty())
+    {
+        bail!("AGT_REPO 必須是 <owner>/<repo>（目前是 {r}）");
     }
     Ok(r)
 }
