@@ -1080,6 +1080,35 @@ fn update_check_json() {
 }
 
 /// 刪除資料夾；Windows 上 daemon 的背景 git 輪詢可能暫時佔著，失敗時重試。
+/// 等假 Agent（`FAKE_AGENT`）在 worktree 裡 commit 完。commit 到一半就結束它（Windows 上尤其常見）
+/// 會留下 `index.lock`，之後在這個 worktree 執行 git 會失敗。
+async fn wait_agent_commit(wt: &Path) {
+    for _ in 0..150 {
+        let o = Command::new("git")
+            .current_dir(wt)
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        if String::from_utf8_lossy(&o.stdout).trim() == "agent work" && !index_lock(wt).exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("假 Agent 沒有在 15 秒內 commit 完：{}", wt.display());
+}
+
+/// worktree 的 index.lock 位置（`.git` 是指向 gitdir 的檔案）。
+fn index_lock(wt: &Path) -> PathBuf {
+    let o = Command::new("git")
+        .current_dir(wt)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .unwrap();
+    let dir = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+    let dir = if dir.is_absolute() { dir } else { wt.join(dir) };
+    dir.join("index.lock")
+}
+
 async fn remove_dir_retry(p: &Path) {
     let mut tries = 0;
     while let Err(e) = std::fs::remove_dir_all(p) {
@@ -1416,6 +1445,8 @@ async fn gc_json_mixed_items_and_output_hygiene() {
     let m = expect_session(c.request(create("fake", &env.repo, "lost")).await.unwrap()).unwrap();
     let wk = PathBuf::from(k.worktree.clone().unwrap());
     let wm = PathBuf::from(m.worktree.clone().unwrap());
+    // 等它 commit 完再結束，否則可能留下 index.lock，後面的 git reset 會失敗
+    wait_agent_commit(&wk).await;
     c.request(ClientMsg::Kill {
         id: k.id.clone(),
         cleanup: false,
