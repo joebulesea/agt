@@ -11,6 +11,7 @@
 
 ### 新增
 
+- 用量提醒：Claude Code 分頁的 context 用量、訂閱方案的 5 小時或每週額度達到 80% 時發系統通知（沿用 `notify` 設定）。context 每個分頁通知一次，降回 80% 以下（例如 `/compact` 之後）再超過時會再通知，正在看的分頁不通知；額度是整個帳號共用的，每個時間窗只通知一次。提醒也寫進分頁的事件記錄（`usage_alert`）
 - 狀態列顯示用量：Claude Code 的分頁在狀態列右邊顯示目前分頁的 context 用量，以及 Pro / Max 訂閱方案的 5 小時、每週額度與重置倒數，達到 80% 時變成紅色。資料來自 Claude Code 的 status line：建立分頁時在 worktree 的 `.claude/settings.local.json` 寫入 `statusLine`（主機上是新的 `agt statusline`，沙箱裡是 `.agt/statusline.sh`，有 node 時另外在 Claude 畫面上顯示一行摘要），JSON 寫到 `.agt/usage.json`，daemon 每 3 秒檢查修改時間、有變化才讀取（視為不可信：限制大小、不跟隨連結、只取數字並限制範圍）。已有使用者自己的 `statusLine` 時不覆寫。`SessionInfo` 新增 `usage` 欄位（`agt ls --json` 也看得到），協定版本不變
 - 同一個檔案分到不同組：分組目錄可放 `SNAPSHOT/<路徑>`（這個檔案在這組 branch 上的完整內容），前面的組放只含自己修改的版本，後面的組用 `AFTER` 接上去並在 FILES 拿最終內容，PR 只顯示各自的部分。只有 SNAPSHOT 的組可以省略 FILES；拿最終內容的組沒有接在 SNAPSHOT 的組後面時拒絕並說明；只有 SNAPSHOT 的檔案最終內容歸 `rest`，`rest` 自動接在那組後面。收尾預覽列出每組的 SNAPSHOT 數量。說明見 `docs/Agent-分組收尾說明.md`，`.agt/README.md` 的規則也已更新
 - 收尾檢查：設定檔 `[repos."<路徑>"] finish_check`（例如 `"cargo build --workspace"`），分組收尾時在每組 branch 的乾淨 checkout 各執行一次，任何一組失敗就不 push、不合併，並顯示哪一組失敗與輸出的最後 40 行。沙箱 Agent（docker / sbx / podman）在 Agent 的 `check_command`（例如同一個映像檔的容器）裡執行，沒設定時略過，不在主機上執行它寫的程式碼。只從使用者設定檔讀取，`.agt.toml` 裡的不會生效；`agt config check` 會提醒這些情況，收尾預覽也會說明是否執行檢查
