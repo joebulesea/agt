@@ -89,13 +89,17 @@ pub fn merge_hooks(existing: Option<&str>, agt_exe: &Path) -> agt_core::Result<S
     if !hooks.is_object() {
         *hooks = json!({});
     }
-    let hooks: &mut Map<String, Value> = hooks.as_object_mut().unwrap();
+    let hooks: &mut Map<String, Value> = hooks
+        .as_object_mut()
+        .ok_or_else(|| agt_core::Error::msg("hooks 不是 JSON 物件"))?;
     for (event, status) in HOOKS {
         let list = hooks.entry(event.to_string()).or_insert_with(|| json!([]));
         if !list.is_array() {
             *list = json!([]);
         }
-        let arr = list.as_array_mut().unwrap();
+        let arr = list
+            .as_array_mut()
+            .ok_or_else(|| agt_core::Error::msg(format!("hooks.{event} 不是 JSON 陣列")))?;
         // 移除先前由 agt 安裝的項目
         arr.retain(|group| {
             !group["hooks"].as_array().is_some_and(|hs| {

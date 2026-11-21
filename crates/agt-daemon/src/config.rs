@@ -16,14 +16,53 @@ pub struct General {
     pub sidebar_width: u16,
     pub worktree_root: String,
     pub notify: bool,
+    /// 哪些狀態要發系統通知（`notify = true` 時才有作用）：waiting | done | error | exited
+    pub notify_on: Vec<String>,
+    /// 分頁連續執行中／思考中超過這麼多秒就提醒一次；0 = 關閉（`notify = true` 時才有作用）
+    pub long_running_notify_secs: u64,
     pub idle_shutdown_secs: u64,
     pub scrollback_lines: usize,
     pub merge_strategy: String,
     pub log_output: bool,
     /// 分頁中的程式以 OSC 52 寫入剪貼簿時：off | ask | on
     pub osc52: String,
+    /// TUI 配色：dark | light | colorblind
+    pub theme: String,
     /// 收尾（merge / pr）前要求確認的額外路徑，加在內建清單之外。
     pub sensitive_paths: Vec<String>,
+}
+
+/// 新增分頁的範本：`[templates.<名稱>]`。
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateConfig {
+    /// 範本的用途說明（顯示在新增表單）
+    #[serde(default)]
+    pub description: String,
+    /// 使用的 Agent（必須是設定檔中有的 Agent）
+    pub agent: String,
+    /// 預設的任務名稱
+    #[serde(default)]
+    pub task: String,
+    /// 預設的 base branch
+    #[serde(default)]
+    pub base: Option<String>,
+    /// 建立時加上的標籤
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// `theme` 可用的值（與 agt-tui 的主題名稱一致）。
+pub const THEMES: [&str; 3] = ["dark", "light", "colorblind"];
+
+/// `notify_on` 可用的值，對應 `AgentStatus::as_str()`。
+pub const NOTIFY_ON_VALUES: [&str; 4] = ["waiting", "done", "error", "exited"];
+
+impl General {
+    /// 分頁變成 `to` 時是否要發系統通知。
+    pub fn should_notify(&self, to: agt_proto::AgentStatus) -> bool {
+        self.notify && self.notify_on.iter().any(|v| v == to.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
@@ -45,6 +84,11 @@ pub struct Config {
     pub agents: BTreeMap<String, AgentSettings>,
     #[serde(default)]
     pub repos: BTreeMap<String, RepoConfig>,
+    /// 覆寫主題中個別顏色，例如 `cyan = "#00afaf"`、`yellow = "208"`
+    #[serde(default)]
+    pub colors: BTreeMap<String, String>,
+    #[serde(default)]
+    pub templates: BTreeMap<String, TemplateConfig>,
 }
 
 /// 只用來檢查使用者設定檔（每個欄位都可省略），以取得精確的行號。
@@ -59,6 +103,10 @@ struct PartialConfig {
     agents: BTreeMap<String, AgentSettings>,
     #[serde(default)]
     repos: BTreeMap<String, RepoConfig>,
+    #[serde(default)]
+    colors: BTreeMap<String, String>,
+    #[serde(default)]
+    templates: BTreeMap<String, TemplateConfig>,
 }
 
 #[derive(Deserialize)]
@@ -69,11 +117,14 @@ struct PartialGeneral {
     sidebar_width: Option<u16>,
     worktree_root: Option<String>,
     notify: Option<bool>,
+    notify_on: Option<Vec<String>>,
+    long_running_notify_secs: Option<u64>,
     idle_shutdown_secs: Option<u64>,
     scrollback_lines: Option<usize>,
     merge_strategy: Option<String>,
     log_output: Option<bool>,
     osc52: Option<String>,
+    theme: Option<String>,
     sensitive_paths: Option<Vec<String>>,
 }
 
@@ -410,8 +461,8 @@ impl Config {
     }
 
     pub fn defaults() -> Config {
-        let v: toml::Value = toml::from_str(DEFAULT_TOML).unwrap();
-        v.try_into().unwrap()
+        let v: toml::Value = toml::from_str(DEFAULT_TOML).expect("內建預設設定必須合法");
+        v.try_into().expect("內建預設設定必須符合 Config 結構")
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -431,6 +482,47 @@ impl Config {
                 self.general.osc52
             ));
         }
+        if !THEMES.contains(&self.general.theme.as_str()) {
+            return Err(format!(
+                "general.theme 必須是 dark、light 或 colorblind，而不是 {:?}",
+                self.general.theme
+            ));
+        }
+        for (name, t) in &self.templates {
+            if name.is_empty()
+                || name.chars().count() > 32
+                || name.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err(format!(
+                    "templates 的名稱不能是空的、含空白或超過 32 字元：{name:?}"
+                ));
+            }
+            if !self.agents.contains_key(&t.agent) {
+                return Err(format!(
+                    "templates.{name}.agent：找不到 Agent {:?}（可用：{}）",
+                    t.agent,
+                    self.agents.keys().cloned().collect::<Vec<_>>().join("、")
+                ));
+            }
+            agt_proto::tags::normalize(&t.tags)
+                .map_err(|e| format!("templates.{name}.tags：{e}"))?;
+        }
+        for (k, v) in &self.colors {
+            if !agt_proto::colors::COLOR_KEYS.contains(&k.as_str()) {
+                return Err(format!(
+                    "colors.{k} 不是可覆寫的名稱（可用：{}）",
+                    agt_proto::colors::COLOR_KEYS.join("、")
+                ));
+            }
+            agt_proto::colors::parse_color(v).map_err(|e| format!("colors.{k}：{e}"))?;
+        }
+        for v in &self.general.notify_on {
+            if !NOTIFY_ON_VALUES.contains(&v.as_str()) {
+                return Err(format!(
+                    "general.notify_on 只能包含 waiting、done、error、exited，而不是 {v:?}"
+                ));
+            }
+        }
         if self.general.sidebar_width < 10 {
             return Err("general.sidebar_width 至少要 10".into());
         }
@@ -446,6 +538,20 @@ impl Config {
             sidebar_width: self.general.sidebar_width,
             merge_strategy: self.general.merge_strategy.clone(),
             osc52: self.general.osc52.clone(),
+            theme: self.general.theme.clone(),
+            colors: self.colors.clone(),
+            templates: self
+                .templates
+                .iter()
+                .map(|(name, t)| agt_proto::TemplateInfo {
+                    name: name.clone(),
+                    description: t.description.clone(),
+                    agent: t.agent.clone(),
+                    task: t.task.clone(),
+                    base: t.base.clone(),
+                    tags: t.tags.clone(),
+                })
+                .collect(),
             agents: self.agents.keys().cloned().collect(),
             auto_commit_agents: self
                 .agents

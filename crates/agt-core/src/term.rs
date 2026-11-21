@@ -2,6 +2,7 @@
 //! 升級 `alacritty_terminal` 時只需要改這個檔案（規格 14.1）。
 
 use agt_proto::screen::{Cell, Color, Cursor, Row, Screen, flags, modes};
+use agt_proto::sync::MutexExt;
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
@@ -51,7 +52,7 @@ impl EventListener for Listener {
             Event::ClipboardStore(_, text) => TermEvent::Clipboard(text),
             _ => return,
         };
-        self.0.lock().unwrap().push(ev);
+        self.0.lock_or_recover().push(ev);
     }
 }
 
@@ -82,7 +83,7 @@ impl Terminal {
     /// 餵入 PTY 輸出，回傳需要處理的事件。
     pub fn advance(&mut self, bytes: &[u8]) -> Vec<TermEvent> {
         self.parser.advance(&mut self.term, bytes);
-        std::mem::take(&mut *self.events.0.lock().unwrap())
+        std::mem::take(&mut *self.events.0.lock_or_recover())
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {

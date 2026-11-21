@@ -65,6 +65,7 @@ impl App {
             ServerMsg::ConfigStatus { error, ui } => {
                 if let Some(ui) = ui {
                     self.prefix = Prefix::parse(&ui.prefix_key);
+                    crate::theme::set(&ui.theme, &ui.colors);
                     self.ui = ui;
                     self.sent_size = None;
                 }

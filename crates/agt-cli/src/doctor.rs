@@ -17,6 +17,17 @@ enum Level {
     Fail,
 }
 
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
+            Level::Info => "info",
+            Level::Warn => "warn",
+            Level::Fail => "fail",
+        }
+    }
+}
+
 struct Item {
     level: Level,
     text: String,
@@ -49,6 +60,27 @@ impl Report {
     fn count(&self, l: Level) -> usize {
         self.0.iter().filter(|i| i.level == l).count()
     }
+}
+
+/// `agt doctor --json` 的輸出：`{ok, failures, warnings, items: [{level, text, hint}]}`。
+/// `level` 是 ok | info | warn | fail；`ok` 在沒有 fail 時為 true。
+fn to_json(r: &Report) -> serde_json::Value {
+    let items: Vec<_> =
+        r.0.iter()
+            .map(|i| {
+                serde_json::json!({
+                    "level": i.level.as_str(),
+                    "text": i.text,
+                    "hint": i.hint,
+                })
+            })
+            .collect();
+    serde_json::json!({
+        "ok": r.count(Level::Fail) == 0,
+        "failures": r.count(Level::Fail),
+        "warnings": r.count(Level::Warn),
+        "items": items,
+    })
 }
 
 /// 從 `git --version` 的輸出取出 (major, minor)。
@@ -307,7 +339,7 @@ fn check_tools(r: &mut Report) {
     }
 }
 
-pub async fn run() -> anyhow::Result<()> {
+pub async fn run(json: bool) -> anyhow::Result<()> {
     let mut r = Report::default();
     check_binaries(&mut r);
     check_daemon(&mut r).await;
@@ -315,6 +347,13 @@ pub async fn run() -> anyhow::Result<()> {
     check_data(&mut r);
     check_tools(&mut r);
 
+    if json {
+        println!("{}", serde_json::to_string_pretty(&to_json(&r))?);
+        if r.count(Level::Fail) > 0 {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     for i in &r.0 {
         let mark = match i.level {
             Level::Ok => "✓",
@@ -361,6 +400,21 @@ mod tests {
         let (n, last) = recent_errors(&log2, 5);
         assert_eq!(n, 1);
         assert!(last.unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn json_report_shape() {
+        let mut r = Report::default();
+        r.ok("a");
+        r.warn("c", "h");
+        let v = to_json(&r);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["warnings"], 1);
+        assert_eq!(v["items"][0]["level"], "ok");
+        assert!(v["items"][0]["hint"].is_null());
+        assert_eq!(v["items"][1]["hint"], "h");
+        r.fail("d", "h");
+        assert_eq!(to_json(&r)["ok"], false);
     }
 
     #[test]

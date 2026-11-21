@@ -76,14 +76,12 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
         }
         let active = app.active.as_deref() == Some(&s.id);
         let sym_style = if s.status == AgentStatus::WaitingInput && !app.blink_on {
-            Style::new().fg(Color::DarkGray)
+            Style::new().fg(theme().dark_gray)
         } else {
             status_style(s.status)
         };
         let row_style = if active {
-            Style::new()
-                .bg(Color::Indexed(236))
-                .add_modifier(Modifier::BOLD)
+            Style::new().bg(theme().sel_bg).add_modifier(Modifier::BOLD)
         } else {
             Style::new()
         };
@@ -109,7 +107,7 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
                 area.x,
                 y,
                 pad(&format!("▼ {name}{base}"), w),
-                Style::new().fg(Color::Blue),
+                Style::new().fg(theme().blue),
             );
             y += 1;
             if y >= bottom {
@@ -131,7 +129,7 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
             area.x,
             y,
             &num,
-            Style::new().fg(Color::DarkGray).patch(row_style),
+            Style::new().fg(theme().dark_gray).patch(row_style),
         );
         buf.set_string(area.x + 2, y, s.status.symbol(), sym_style.patch(row_style));
         let agent = truncate(&s.agent, 7);
@@ -144,7 +142,7 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
                 area.x + w as u16 - 2,
                 y,
                 "✎",
-                Style::new().fg(Color::Yellow).patch(row_style),
+                Style::new().fg(theme().yellow).patch(row_style),
             );
         }
         y += 1;
@@ -171,24 +169,41 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
                     area.x + 6,
                     y,
                     truncate(&detail, w.saturating_sub(6 + auto_tag.width())),
-                    Style::new().fg(Color::DarkGray).patch(row_style),
+                    Style::new().fg(theme().dark_gray).patch(row_style),
                 );
                 if auto && w > 6 + auto_tag.width() {
                     buf.set_string(
                         area.x + (w - auto_tag.width()) as u16,
                         y,
                         auto_tag,
-                        Style::new().fg(Color::Green).patch(row_style),
+                        Style::new().fg(theme().green).patch(row_style),
                     );
                 }
                 y += 1;
             }
         }
+        // 第三行（有標籤時）：#標籤 #標籤
+        if !s.tags.is_empty() && y < bottom {
+            let text = s
+                .tags
+                .iter()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&text, w.saturating_sub(6)),
+                Style::new().fg(theme().cyan).patch(row_style),
+            );
+            y += 1;
+        }
     }
 }
 
 pub(super) fn draw_title(buf: &mut Buffer, app: &mut App, area: Rect) {
-    let border = Style::new().fg(Color::DarkGray);
+    let border = Style::new().fg(theme().dark_gray);
     buf.set_string(area.x, area.y, "─".repeat(area.width as usize), border);
     let Some(s) = app.active_info() else { return };
     let mut parts = vec![s.agent.clone()];
@@ -241,7 +256,7 @@ pub(super) fn draw_title(buf: &mut Buffer, app: &mut App, area: Rect) {
         area.y,
         &shown,
         Style::new()
-            .fg(Color::DarkGray)
+            .fg(theme().dark_gray)
             .add_modifier(Modifier::UNDERLINED),
     );
     app.click_hits.push(ClickHit {
@@ -346,7 +361,7 @@ pub(super) fn draw_exit_hint(buf: &mut Buffer, app: &mut App, area: Rect) {
             area.x,
             y,
             truncate(&short, area.width as usize),
-            Style::new().fg(Color::Black).bg(Color::Yellow),
+            Style::new().fg(theme().on_accent).bg(theme().yellow),
         );
         app.click_hits.push(ClickHit {
             rect: Rect::new(area.x, y, area.width.min(short.width() as u16), 1),
@@ -356,7 +371,12 @@ pub(super) fn draw_exit_hint(buf: &mut Buffer, app: &mut App, area: Rect) {
     }
     buf.set_string(area.x, y, " ".repeat(area.width as usize), Style::new());
     let mut x = area.x;
-    buf.set_string(x, y, note, Style::new().fg(Color::Black).bg(Color::Yellow));
+    buf.set_string(
+        x,
+        y,
+        note,
+        Style::new().fg(theme().on_accent).bg(theme().yellow),
+    );
     x += note.width() as u16 + 1;
     x += button(
         buf,
@@ -373,7 +393,7 @@ pub(super) fn draw_exit_hint(buf: &mut Buffer, app: &mut App, area: Rect) {
         x,
         y,
         &fresh,
-        Style::new().fg(Color::Black).bg(Color::Indexed(37)),
+        Style::new().fg(theme().on_accent).bg(theme().tab_on_bg),
         Click::Command('N'),
     );
 }
@@ -384,34 +404,34 @@ pub(super) fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
         count(AgentStatus::Running) + count(AgentStatus::Thinking) + count(AgentStatus::Starting);
     let waiting = count(AgentStatus::WaitingInput);
     let done = count(AgentStatus::Done);
-    let bar = Style::new().bg(Color::Indexed(235)).fg(Color::Gray);
+    let bar = Style::new().bg(theme().bar_bg).fg(theme().gray);
     buf.set_string(area.x, area.y, " ".repeat(area.width as usize), bar);
     let mut spans = vec![
-        Span::styled(format!(" {running} running"), bar.fg(Color::Green)),
+        Span::styled(format!(" {running} running"), bar.fg(theme().green)),
         Span::styled(" · ", bar),
         Span::styled(
             format!("{waiting} waiting"),
             if waiting > 0 {
-                bar.fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                bar.fg(theme().yellow).add_modifier(Modifier::BOLD)
             } else {
                 bar
             },
         ),
         Span::styled(" · ", bar),
         Span::styled(format!("{done} done"), bar),
-        Span::styled(" │ ", bar.fg(Color::DarkGray)),
+        Span::styled(" │ ", bar.fg(theme().dark_gray)),
     ];
     if app.prefix_armed {
         spans.push(Span::styled(
             format!("{} ▸ 等待指令（? 說明）", app.prefix.label()),
-            bar.fg(Color::Black).bg(Color::Yellow),
+            bar.fg(theme().on_accent).bg(theme().yellow),
         ));
     } else if let Some(sc) = &app.scroll {
         match &sc.searching {
-            Some(q) => spans.push(Span::styled(format!("搜尋：{q}▏"), bar.fg(Color::Cyan))),
+            Some(q) => spans.push(Span::styled(format!("搜尋：{q}▏"), bar.fg(theme().cyan))),
             None => spans.push(Span::styled(
                 "滾動模式：↑↓ PgUp PgDn · / 搜尋 · n 下一個 · q 離開",
-                bar.fg(Color::Cyan),
+                bar.fg(theme().cyan),
             )),
         }
     }
@@ -420,18 +440,18 @@ pub(super) fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
         Some((
             m.clone(),
             if *err {
-                bar.fg(Color::Red)
+                bar.fg(theme().red)
             } else {
-                bar.fg(Color::White)
+                bar.fg(theme().text)
             },
         ))
     } else if let Some(e) = &app.config_error {
-        Some((format!("設定檔錯誤：{e}"), bar.fg(Color::Red)))
+        Some((format!("設定檔錯誤：{e}"), bar.fg(theme().red)))
     } else {
         // 沒有訊息時在最右邊顯示版本號
         Some((
             format!("v{}", env!("CARGO_PKG_VERSION")),
-            bar.fg(Color::Gray),
+            bar.fg(theme().gray),
         ))
     };
     // 版本號放不下就不顯示（不截斷）；訊息則截斷後顯示
@@ -442,8 +462,8 @@ pub(super) fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
     if show_buttons {
         // 可點擊的按鈕；沒有分頁時，只對分頁有效的按鈕改用暗色
         let has_active = app.active.is_some();
-        let on = Style::new().fg(Color::Black).bg(Color::Indexed(37));
-        let off = Style::new().fg(Color::Indexed(244)).bg(Color::Indexed(238));
+        let on = Style::new().fg(theme().on_accent).bg(theme().tab_on_bg);
+        let off = Style::new().fg(theme().tab_off_fg).bg(theme().tab_off_bg);
         let items: [(&str, char, bool); 7] = [
             (" + 新增 ", 'n', true),
             (" Diff ", 'd', has_active),
@@ -460,8 +480,8 @@ pub(super) fn draw_status(buf: &mut Buffer, app: &mut App, area: Rect) {
             let label = format!(" 複製網址 {} u ", app.prefix.label());
             if x + label.width() as u16 <= end {
                 let style = Style::new()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
+                    .fg(theme().on_accent)
+                    .bg(theme().yellow)
                     .add_modifier(Modifier::BOLD);
                 x += button(
                     buf,

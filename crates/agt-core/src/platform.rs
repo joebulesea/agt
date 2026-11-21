@@ -310,7 +310,10 @@ pub fn kill_tree(pid: u32) {
 }
 
 /// 送出系統通知（Windows Toast、macOS 通知中心、freedesktop）。失敗時只記錄。
-pub fn notify(title: &str, body: &str) {
+///
+/// `session` 是這則通知所屬的分頁 id：Windows 上點擊通知會開一個新的終端機視窗執行
+/// `agt attach <id>`（需要 daemon 還在執行才收得到點擊）；其他平台沒有點擊動作。
+pub fn notify(title: &str, body: &str, session: Option<&str>) {
     // 內容可能來自 Agent（hook 的訊息、分頁名稱）：去掉控制字元、限制長度
     let clip = |s: &str, max: usize| {
         let s = agt_proto::text::printable_line(s);
@@ -321,17 +324,72 @@ pub fn notify(title: &str, body: &str) {
     };
     let title = clip(title, 100);
     let body = clip(body, 300);
-    std::thread::spawn(move || {
-        let r = notify_rust::Notification::new()
-            .appname("agt")
-            .summary(&title)
-            .body(&body)
-            .timeout(notify_rust::Timeout::Milliseconds(6000))
-            .show();
-        if let Err(e) = r {
-            tracing::debug!("系統通知失敗：{e}");
-        }
-    });
+    let session = session.map(str::to_owned);
+    std::thread::spawn(move || show_toast(&title, &body, session.as_deref()));
+}
+
+#[cfg(not(windows))]
+fn show_toast(title: &str, body: &str, _session: Option<&str>) {
+    let r = notify_rust::Notification::new()
+        .appname("agt")
+        .summary(title)
+        .body(body)
+        .timeout(notify_rust::Timeout::Milliseconds(6000))
+        .show();
+    if let Err(e) = r {
+        tracing::debug!("系統通知失敗：{e}");
+    }
+}
+
+#[cfg(windows)]
+fn show_toast(title: &str, body: &str, session: Option<&str>) {
+    use tauri_winrt_notification::{Duration, Toast};
+    let mut toast = Toast::new(Toast::POWERSHELL_APP_ID)
+        .title(title)
+        .text1(body)
+        .duration(Duration::Short);
+    if let Some(id) = session {
+        let id = id.to_owned();
+        toast = toast.on_activated(move |_| {
+            open_attach_window(&id);
+            Ok(())
+        });
+    }
+    if let Err(e) = toast.show() {
+        tracing::debug!("系統通知失敗：{e:?}");
+    }
+}
+
+/// 點擊通知後開新的終端機視窗執行 `agt attach <id>`：優先用 Windows Terminal，沒有就開新的 console。
+#[cfg(windows)]
+fn open_attach_window(id: &str) {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let Ok(exe) = std::env::current_exe() else {
+        tracing::debug!("點擊通知：找不到 agt 的位置");
+        return;
+    };
+    // 參數直接交給 CreateProcess，不經過 shell；id 是 daemon 產生的，仍只接受安全字元
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return;
+    }
+    if Command::new("wt.exe")
+        .arg("--")
+        .arg(&exe)
+        .args(["attach", id])
+        .spawn()
+        .is_ok()
+    {
+        return;
+    }
+    if let Err(e) = Command::new(&exe)
+        .args(["attach", id])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+    {
+        tracing::debug!("點擊通知：無法開啟終端機：{e}");
+    }
 }
 
 /// 把檔案權限設為只有使用者可讀寫（Unix）。Windows 的使用者目錄預設已限制存取。

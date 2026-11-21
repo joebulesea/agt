@@ -5,7 +5,7 @@
 
 use crate::config::{Config, Paths};
 use agt_agents::AgentSettings;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Agent 指令參數裡可用的變數。
@@ -151,64 +151,135 @@ fn user_agents(file: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// 命令列參數：`[--file <路徑>] [--repo <目錄>]`。回傳 exit code。
+/// `collect` 的結果：載入後的設定與警告。
+struct Checked {
+    cfg: Config,
+    exists: bool,
+    warnings: Vec<String>,
+    worktree_root: PathBuf,
+}
+
+/// 載入設定並做可疑項目檢查（含 `--repo` 的 `.agt.toml`）。錯誤是要顯示給使用者的訊息。
+/// `cmd_exists`：指令是否找得到（測試時可替換）。
+fn collect(
+    file: &Path,
+    repo: Option<&Path>,
+    paths: &Paths,
+    cmd_exists: &dyn Fn(&str) -> bool,
+) -> Result<Checked, String> {
+    let cfg = Config::load(file)?;
+    let mut warnings = lint(&cfg, &user_agents(file), paths, cmd_exists);
+    if let Some(root) = repo {
+        let r = cfg.repo(paths, root)?;
+        for f in &r.copy_files {
+            if escapes_repo(f) {
+                warnings.push(format!("copy_files：{f:?} 必須是 repo 內的相對路徑"));
+            }
+        }
+    }
+    let worktree_root = paths.expand(&cfg.general.worktree_root);
+    Ok(Checked {
+        exists: file.exists(),
+        cfg,
+        warnings,
+        worktree_root,
+    })
+}
+
+/// `--json` 成功時的輸出。
+fn json_report(c: &Checked, file: &Path, repo: Option<&Path>) -> serde_json::Value {
+    let auto_commit: BTreeMap<&String, bool> = c
+        .cfg
+        .agents
+        .iter()
+        .map(|(n, a)| (n, a.auto_commit))
+        .collect();
+    serde_json::json!({
+        "ok": true,
+        "config_file": file.display().to_string(),
+        "config_exists": c.exists,
+        "repo": repo.map(|r| r.display().to_string()),
+        "worktree_root": c.worktree_root.display().to_string(),
+        "agents": c.cfg.agents.keys().collect::<Vec<_>>(),
+        "templates": c.cfg.templates.keys().collect::<Vec<_>>(),
+        "auto_commit": auto_commit,
+        "warnings": c.warnings,
+    })
+}
+
+/// 命令列參數：`[--file <路徑>] [--repo <目錄>] [--json]`。回傳 exit code。
+///
+/// `--json`：stdout 只輸出一份 JSON（成功：`{ok: true, config_file, config_exists, repo, worktree_root,
+/// agents, templates, auto_commit: {名稱: bool}, warnings}`；失敗：`{ok: false, error}`），exit code 規則不變。
 pub fn run(args: &[String]) -> i32 {
     let paths = Paths::detect();
     let mut file: PathBuf = paths.config_file.clone();
     let mut repo: Option<PathBuf> = None;
+    let mut json = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--file" => match it.next() {
                 Some(v) => file = PathBuf::from(v),
-                None => return usage("--file 需要路徑"),
+                None => return usage("--file 需要路徑", json),
             },
             "--repo" => match it.next() {
                 Some(v) => repo = Some(PathBuf::from(v)),
-                None => return usage("--repo 需要目錄"),
+                None => return usage("--repo 需要目錄", json),
             },
+            "--json" => json = true,
             _ => {}
         }
     }
-    if file.exists() {
-        println!("設定檔：{}", file.display());
-    } else {
-        println!("設定檔 {} 不存在，使用內建預設值", file.display());
-    }
-    let cfg = match Config::load(&file) {
-        Ok(c) => c,
-        Err(e) => {
+    let fail = |e: &str| {
+        if json {
+            println!("{}", serde_json::json!({"ok": false, "error": e}));
+        } else {
             eprintln!("錯誤：{e}");
-            return 1;
         }
+        1
     };
-    let mut warnings = lint(&cfg, &user_agents(&file), &paths, &|c| {
-        agt_core::platform::which(c).is_some()
-    });
-    if let Some(root) = repo {
-        println!("repo：{}", root.display());
-        match cfg.repo(&paths, &root) {
-            Ok(r) => {
-                for f in &r.copy_files {
-                    if escapes_repo(f) {
-                        warnings.push(format!("copy_files：{f:?} 必須是 repo 內的相對路徑"));
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("錯誤：{e}");
-                return 1;
-            }
+    if !json {
+        if file.exists() {
+            println!("設定檔：{}", file.display());
+        } else {
+            println!("設定檔 {} 不存在，使用內建預設值", file.display());
         }
     }
-    println!(
-        "worktree 位置：{}",
-        paths.expand(&cfg.general.worktree_root).display()
-    );
+    let checked = match collect(&file, repo.as_deref(), &paths, &|c| {
+        agt_core::platform::which(c).is_some()
+    }) {
+        Ok(c) => c,
+        Err(e) => return fail(&e),
+    };
+    if json {
+        let report = json_report(&checked, &file, repo.as_deref());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_default()
+        );
+        return 0;
+    }
+    if let Some(root) = &repo {
+        println!("repo：{}", root.display());
+    }
+    let Checked {
+        cfg,
+        warnings,
+        worktree_root,
+        ..
+    } = checked;
+    println!("worktree 位置：{}", worktree_root.display());
     println!(
         "Agent：{}",
         cfg.agents.keys().cloned().collect::<Vec<_>>().join("、")
     );
+    if !cfg.templates.is_empty() {
+        println!(
+            "範本：{}",
+            cfg.templates.keys().cloned().collect::<Vec<_>>().join("、")
+        );
+    }
     // `extends` 展開後的實際值，auto_commit 沒有生效時從這裡看得出來
     println!("auto_commit（收尾前自動 commit）：");
     for line in auto_commit_lines(&cfg) {
@@ -239,8 +310,12 @@ fn auto_commit_lines(cfg: &Config) -> Vec<String> {
         .collect()
 }
 
-fn usage(msg: &str) -> i32 {
-    eprintln!("錯誤：{msg}");
+fn usage(msg: &str, json: bool) -> i32 {
+    if json {
+        println!("{}", serde_json::json!({"ok": false, "error": msg}));
+    } else {
+        eprintln!("錯誤：{msg}");
+    }
     2
 }
 
@@ -262,6 +337,98 @@ mod tests {
             home: PathBuf::from("/nonexistent"),
             logs_dir: None,
         }
+    }
+
+    fn write_config(toml: &str) -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("config.toml");
+        std::fs::write(&f, toml).unwrap();
+        (d, f)
+    }
+
+    #[test]
+    fn json_report_for_valid_config() {
+        let (_d, f) = write_config(
+            "[agents.mine]\ncommand = \"mine-cmd\"\nauto_commit = true\n\n[agents.mine.env]\nX = \"{typo}\"\n",
+        );
+        // 指令一律找不到 → 有警告
+        let c = collect(&f, None, &paths(), &|_| false).unwrap();
+        let v = json_report(&c, &f, None);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["config_exists"], true);
+        assert_eq!(v["config_file"], f.display().to_string());
+        assert!(v["repo"].is_null());
+        assert!(v["agents"].as_array().unwrap().iter().any(|a| a == "mine"));
+        assert_eq!(v["auto_commit"]["mine"], true);
+        assert_eq!(v["auto_commit"]["shell"], false);
+        let w: Vec<&str> = v["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert!(w.iter().any(|m| m.contains("agents.mine.command")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("{typo}")), "{w:?}");
+    }
+
+    #[test]
+    fn json_report_without_warnings() {
+        let (_d, f) = write_config("");
+        let c = collect(&f, None, &paths(), &|_| true).unwrap();
+        let v = json_report(&c, &f, None);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["warnings"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn missing_file_uses_defaults() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("nope.toml");
+        let c = collect(&f, None, &paths(), &|_| true).unwrap();
+        let v = json_report(&c, &f, None);
+        assert_eq!(v["config_exists"], false);
+        assert!(!v["agents"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_config_is_an_error() {
+        let (_d, f) = write_config("[general]\nsidebar_width = 3\n");
+        let e = collect(&f, None, &paths(), &|_| true).err().unwrap();
+        assert!(e.contains("sidebar_width"), "{e}");
+        let (_d2, f2) = write_config("[general\n");
+        assert!(collect(&f2, None, &paths(), &|_| true).is_err());
+    }
+
+    #[test]
+    fn repo_is_reported_and_checked() {
+        let (_d, f) = write_config("");
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join(".agt.toml"),
+            "copy_files = [\"../secret\"]\n",
+        )
+        .unwrap();
+        let c = collect(&f, Some(repo.path()), &paths(), &|_| true).unwrap();
+        let v = json_report(&c, &f, Some(repo.path()));
+        assert_eq!(v["repo"], repo.path().display().to_string());
+        assert!(
+            v["warnings"][0].as_str().unwrap().contains("copy_files"),
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn missing_option_value_is_usage_error_exit_2() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 參數錯誤在載入設定之前就回傳，不受使用者的設定檔影響
+        assert_eq!(run(&a(&["--file"])), 2);
+        assert_eq!(run(&a(&["--repo"])), 2);
+        assert_eq!(run(&a(&["--json", "--file"])), 2);
+        assert_eq!(run(&a(&["--json", "--repo"])), 2);
+        // 設定檔本身的錯誤是 1，不是 2
+        let (_d, f) = write_config("[general]\nsidebar_width = 3\n");
+        assert_eq!(run(&a(&["--file", f.to_str().unwrap()])), 1);
+        assert_eq!(run(&a(&["--json", "--file", f.to_str().unwrap()])), 1);
     }
 
     #[test]

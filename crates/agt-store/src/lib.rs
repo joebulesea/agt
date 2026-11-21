@@ -70,6 +70,10 @@ CREATE TABLE trusted_setups (
     r#"
 ALTER TABLE sessions ADD COLUMN conversation_id TEXT;
 "#,
+    // 4：分頁標籤（以逗號連接；標籤本身不會含逗號）
+    r#"
+ALTER TABLE sessions ADD COLUMN tags TEXT;
+"#,
 ];
 
 pub fn now() -> i64 {
@@ -100,6 +104,7 @@ pub struct SessionRow {
     pub exit_code: Option<i32>,
     /// 目前的對話 ID；NULL = 建立於支援接續對話之前的分頁。
     pub conversation_id: Option<String>,
+    pub tags: Vec<String>,
 }
 
 pub struct Store {
@@ -107,7 +112,26 @@ pub struct Store {
 }
 
 const SESSION_COLS: &str = "s.id, s.short_id, s.agent, r.path, r.name, s.task, s.worktree_path, s.branch, \
-     s.base_branch, s.status, s.pid, s.created_at, s.ended_at, s.finish_action, s.cwd, s.shared, s.exit_code, s.conversation_id";
+     s.base_branch, s.status, s.pid, s.created_at, s.ended_at, s.finish_action, s.cwd, s.shared, s.exit_code, s.conversation_id, s.tags";
+
+/// 標籤在資料庫的存放格式：以逗號連接（標籤本身不會含逗號，驗證在 `agt_proto::tags`）。
+fn join_tags(tags: &[String]) -> Option<String> {
+    if tags.is_empty() {
+        None
+    } else {
+        Some(tags.join(","))
+    }
+}
+
+fn parse_tags(s: Option<&str>) -> Vec<String> {
+    s.map(|s| {
+        s.split(',')
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
 
 fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
@@ -129,6 +153,7 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         shared: r.get::<_, i64>(15)? != 0,
         exit_code: r.get(16)?,
         conversation_id: r.get(17)?,
+        tags: parse_tags(r.get::<_, Option<String>>(18)?.as_deref()),
     })
 }
 
@@ -199,8 +224,8 @@ impl Store {
         };
         self.conn.execute(
             "INSERT INTO sessions (id, short_id, agent, repo_id, task, worktree_path, branch, base_branch,
-                status, pid, created_at, ended_at, finish_action, cwd, shared, exit_code, conversation_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                status, pid, created_at, ended_at, finish_action, cwd, shared, exit_code, conversation_id, tags)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 s.id,
                 s.short_id,
@@ -218,7 +243,8 @@ impl Store {
                 s.cwd,
                 s.shared as i64,
                 s.exit_code,
-                s.conversation_id
+                s.conversation_id,
+                join_tags(&s.tags)
             ],
         )?;
         Ok(())
@@ -245,6 +271,11 @@ impl Store {
         ))?;
         let rows = st.query_map([], row_to_session)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 所有工作階段（含已關閉、尚未被清除的）。
+    pub fn all_sessions(&self) -> Result<Vec<SessionRow>> {
+        self.query_sessions("")
     }
 
     /// 尚未關閉的工作階段（左側欄的分頁）。
@@ -279,6 +310,15 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET conversation_id = ?2 WHERE id = ?1",
             params![id, conversation_id],
+        )?;
+        Ok(())
+    }
+
+    /// 取代標籤（呼叫端已用 `agt_proto::tags::normalize` 驗證）。
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET tags = ?2 WHERE id = ?1",
+            params![id, join_tags(tags)],
         )?;
         Ok(())
     }
@@ -463,6 +503,28 @@ mod tests {
             created_at: now(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tags_are_stored_and_replaced() {
+        let s = Store::open_in_memory().unwrap();
+        let mut r = row("id1", "aaaa");
+        r.tags = vec!["bug".into(), "ui".into()];
+        s.insert_session(&r).unwrap();
+        assert_eq!(s.get_session("id1").unwrap().unwrap().tags, ["bug", "ui"]);
+        s.set_tags("id1", &["x".to_string()]).unwrap();
+        assert_eq!(s.get_session("id1").unwrap().unwrap().tags, ["x"]);
+        s.set_tags("id1", &[]).unwrap();
+        assert!(s.get_session("id1").unwrap().unwrap().tags.is_empty());
+        // 沒有標籤的分頁（舊資料列、NULL）
+        s.insert_session(&row("id2", "bbbb")).unwrap();
+        assert!(s.get_session("id2").unwrap().unwrap().tags.is_empty());
+        assert!(
+            s.open_sessions()
+                .unwrap()
+                .iter()
+                .all(|r| r.id != "id1" || r.tags.is_empty())
+        );
     }
 
     #[test]

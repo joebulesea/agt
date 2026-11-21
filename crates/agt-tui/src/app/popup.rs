@@ -185,6 +185,20 @@ impl App {
                 }
                 _ => true,
             },
+            Popup::Tags { input } => match k.code {
+                KeyCode::Esc => false,
+                KeyCode::Enter => {
+                    if let Some(id) = self.active.clone() {
+                        let tags = agt_proto::tags::split_input(input);
+                        self.simple(ClientMsg::SetTags { id, tags }, "已更新標籤");
+                    }
+                    false
+                }
+                _ => {
+                    edit_text(input, &k);
+                    true
+                }
+            },
             Popup::New(form) if form.browser.is_some() => {
                 form.browser_key(&k);
                 true
@@ -198,6 +212,15 @@ impl App {
                 }
                 KeyCode::F(2) => {
                     form.open_browser(&self.cwd);
+                    true
+                }
+                // F3 或 Ctrl+T：切換範本
+                KeyCode::F(3) => {
+                    form.next_template();
+                    true
+                }
+                KeyCode::Char('t') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    form.next_template();
                     true
                 }
                 KeyCode::Tab | KeyCode::Down => {
@@ -230,6 +253,8 @@ impl App {
                         trust_setup: false,
                         cols: Some(self.main_area.width.max(20)),
                         rows: Some(self.main_area.height.max(5)),
+                        template: form.template_name().map(str::to_string),
+                        tags: vec![],
                     };
                     self.create(req);
                     false

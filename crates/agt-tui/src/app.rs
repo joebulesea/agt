@@ -58,9 +58,42 @@ pub struct NewForm {
     pub field: usize,
     /// 開啟中的目錄瀏覽器（選擇 Repo 用）。
     pub browser: Option<crate::dirs::DirBrowser>,
+    /// 設定檔中的範本（依名稱排序）與目前選的那一個（`None` = 不套用）。
+    pub templates: Vec<agt_proto::TemplateInfo>,
+    pub template: Option<usize>,
 }
 
 impl NewForm {
+    /// 切到下一個範本（最後一個之後回到「不套用」），並把範本的 Agent、任務、base 填進表單。
+    /// 回到「不套用」時不清除已填的欄位。
+    pub fn next_template(&mut self) {
+        if self.templates.is_empty() {
+            return;
+        }
+        self.template = match self.template {
+            None => Some(0),
+            Some(i) if i + 1 < self.templates.len() => Some(i + 1),
+            Some(_) => None,
+        };
+        let Some(t) = self.template.and_then(|i| self.templates.get(i)) else {
+            return;
+        };
+        if let Some(p) = self.agents.iter().position(|a| *a == t.agent) {
+            self.agent = p;
+        }
+        self.task = t.task.clone();
+        if let Some(b) = &t.base {
+            self.base = b.clone();
+        }
+    }
+
+    /// 目前選的範本名稱。
+    pub fn template_name(&self) -> Option<&str> {
+        self.template
+            .and_then(|i| self.templates.get(i))
+            .map(|t| t.name.as_str())
+    }
+
     /// 開啟目錄瀏覽器，從目前 Repo 欄位的路徑開始。
     pub fn open_browser(&mut self, cwd: &str) {
         self.field = 1;
@@ -173,6 +206,10 @@ pub enum Popup {
     Rename {
         input: String,
     },
+    /// 編輯標籤：以空白或逗號分隔。
+    Tags {
+        input: String,
+    },
 }
 
 pub const FINISH_ITEMS: [(&str, &str); 4] = [
@@ -268,6 +305,7 @@ impl App {
         cwd: String,
         tx: mpsc::UnboundedSender<AppEvent>,
     ) -> App {
+        crate::theme::set(&ui.theme, &ui.colors);
         App {
             client,
             prefix: Prefix::parse(&ui.prefix_key),
@@ -409,7 +447,7 @@ impl App {
 
 fn text_field(p: &mut Popup) -> Option<&mut String> {
     match p {
-        Popup::Rename { input } => Some(input),
+        Popup::Rename { input } | Popup::Tags { input } => Some(input),
         Popup::New(f) => match f.field {
             1 => Some(&mut f.repo),
             2 => Some(&mut f.task),

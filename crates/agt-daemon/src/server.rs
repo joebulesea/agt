@@ -371,6 +371,9 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
         ClientMsg::Rename { id, task } => {
             reply(out, req_id, d.rename(&id, &task).map(ReplyBody::Session))
         }
+        ClientMsg::SetTags { id, tags } => {
+            reply(out, req_id, d.set_tags(&id, &tags).map(ReplyBody::Session))
+        }
         ClientMsg::Scroll { id, delta } => {
             let r = d.resolve(&id).map(|id| {
                 if let Some(s) = d.session(&id) {

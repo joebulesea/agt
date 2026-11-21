@@ -250,7 +250,61 @@ impl Drop for TempDir {
     }
 }
 
-pub async fn run(check: bool, version: Option<String>, yes: bool) -> anyhow::Result<()> {
+/// `agt update --check --json`：只查詢，輸出
+/// `{current, latest, tag, status, update_available}`（`status`：up_to_date | update_available |
+/// ahead（目前版本比最新發布版新）| downgrade（用 `--version` 指定了較舊的版本））。
+/// 失敗時 stdout 輸出 `{error}`，exit 1。
+fn check_json(version: Option<String>) -> anyhow::Result<()> {
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let repo = repo()?;
+        let explicit = version.is_some();
+        let tag = match version {
+            Some(v) => normalize(&v),
+            None => latest_version(&repo)?,
+        };
+        check_report(env!("CARGO_PKG_VERSION"), &tag, explicit)
+    })();
+    match result {
+        Ok(v) => {
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            Ok(())
+        }
+        Err(e) => {
+            println!("{}", serde_json::json!({"error": format!("{e:#}")}));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `--check --json` 的內容（不連網，方便測試）。`explicit`：版本是用 `--version` 指定的。
+fn check_report(current: &str, tag: &str, explicit: bool) -> anyhow::Result<serde_json::Value> {
+    if parse_version(tag).is_none() {
+        bail!("版本格式不正確：{tag}（需要 X.Y.Z）");
+    }
+    let status = match compare(current, tag) {
+        Some(Ordering::Equal) => "up_to_date",
+        Some(Ordering::Greater) if explicit => "downgrade",
+        Some(Ordering::Greater) => "ahead",
+        _ => "update_available",
+    };
+    Ok(serde_json::json!({
+        "current": current,
+        "latest": tag.trim_start_matches('v'),
+        "tag": tag,
+        "status": status,
+        "update_available": status == "update_available",
+    }))
+}
+
+pub async fn run(
+    check: bool,
+    json: bool,
+    version: Option<String>,
+    yes: bool,
+) -> anyhow::Result<()> {
+    if check && json {
+        return check_json(version);
+    }
     let repo = repo()?;
     let (target, ext) = platform()?;
     let current = env!("CARGO_PKG_VERSION");
@@ -351,8 +405,9 @@ pub async fn run(check: bool, version: Option<String>, yes: bool) -> anyhow::Res
     }
 
     if was_running {
-        // 用新版的 agt 重新啟動（舊 daemon 已結束）
-        match crate::ensure_daemon("cli").await {
+        // 用新裝好的 agt 重新啟動（舊 daemon 已結束）；不能用 current_exe()，Linux 上它指向已刪除的舊檔
+        let new_agt = &files[0].1;
+        match crate::ensure_daemon_with("cli", Some(new_agt)).await {
             Ok(_) => println!("daemon 已用新版重新啟動（分頁保留，可用 Ctrl+A → R 接續 Agent）"),
             Err(e) => eprintln!("警告：daemon 沒有自動啟動：{e:#}（執行 agt 會自動啟動）"),
         }
@@ -366,6 +421,184 @@ pub async fn run(check: bool, version: Option<String>, yes: bool) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_report_statuses() {
+        let r = |cur, tag, explicit| check_report(cur, tag, explicit).unwrap();
+        let v = r("0.2.1", "v0.3.0", false);
+        assert_eq!(v["status"], "update_available");
+        assert_eq!(v["update_available"], true);
+        assert_eq!(v["current"], "0.2.1");
+        assert_eq!(v["latest"], "0.3.0");
+        assert_eq!(v["tag"], "v0.3.0");
+
+        let v = r("0.3.0", "v0.3.0", false);
+        assert_eq!(v["status"], "up_to_date");
+        assert_eq!(v["update_available"], false);
+
+        // 目前版本比最新發布版新（例如開發版）
+        let v = r("0.4.0", "v0.3.0", false);
+        assert_eq!(v["status"], "ahead");
+        assert_eq!(v["update_available"], false);
+
+        // 用 --version 指定較舊的版本
+        let v = r("0.4.0", "v0.3.0", true);
+        assert_eq!(v["status"], "downgrade");
+        assert_eq!(v["update_available"], false);
+
+        // 指定較新的版本仍是 update_available
+        assert_eq!(r("0.2.1", "v0.9.0", true)["status"], "update_available");
+    }
+
+    #[test]
+    fn check_report_compares_numerically_and_with_prerelease() {
+        let st = |cur, tag| check_report(cur, tag, false).unwrap()["status"].clone();
+        // 0.10.0 > 0.9.0（不是字串比較）
+        assert_eq!(st("0.9.0", "v0.10.0"), "update_available");
+        assert_eq!(st("0.10.0", "v0.9.0"), "ahead");
+        // 預發行版低於同號的正式版
+        assert_eq!(st("0.3.0-rc.1", "v0.3.0"), "update_available");
+        assert_eq!(st("0.3.0", "v0.3.0-rc.1"), "ahead");
+    }
+
+    #[test]
+    fn check_report_rejects_bad_version() {
+        for tag in ["vabc", "v1.2", "v1.2.x", ""] {
+            let e = check_report("0.2.1", tag, true).unwrap_err().to_string();
+            assert!(e.contains("版本格式不正確"), "{tag}: {e}");
+        }
+    }
+
+    #[test]
+    fn check_report_exact_json_snapshot() {
+        // 欄位名稱與型別是對外的格式：整份比對，不多不少
+        let v = check_report("0.2.1", "v0.3.0", false).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "current": "0.2.1",
+                "latest": "0.3.0",
+                "tag": "v0.3.0",
+                "status": "update_available",
+                "update_available": true,
+            })
+        );
+        assert_eq!(v.as_object().unwrap().len(), 5);
+        assert!(v["update_available"].is_boolean());
+    }
+
+    #[test]
+    fn update_available_is_true_only_for_that_status() {
+        let cases = [
+            ("0.2.1", "v0.3.0"),
+            ("0.3.0", "v0.3.0"),
+            ("0.4.0", "v0.3.0"),
+            ("0.3.0-rc.1", "v0.3.0"),
+            ("0.3.0", "v0.3.0-rc.1"),
+            ("1.0.0", "v0.99.99"),
+            ("0.0.1", "v0.0.2"),
+        ];
+        for (cur, tag) in cases {
+            for explicit in [false, true] {
+                let v = check_report(cur, tag, explicit).unwrap();
+                let status = v["status"].as_str().unwrap();
+                assert!(
+                    ["up_to_date", "update_available", "ahead", "downgrade"].contains(&status),
+                    "{cur} {tag}: {status}"
+                );
+                assert_eq!(
+                    v["update_available"],
+                    status == "update_available",
+                    "{cur} -> {tag} (explicit={explicit})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_only_changes_the_newer_current_case() {
+        let st = |cur, tag, explicit| {
+            check_report(cur, tag, explicit).unwrap()["status"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // 相同或較舊的目標：--version 有沒有指定都一樣
+        for explicit in [false, true] {
+            assert_eq!(st("0.3.0", "v0.3.0", explicit), "up_to_date");
+            assert_eq!(st("0.2.0", "v0.3.0", explicit), "update_available");
+        }
+        // 目前版本較新：自動查到的是 ahead，使用者指定的才是 downgrade
+        assert_eq!(st("0.4.0", "v0.3.0", false), "ahead");
+        assert_eq!(st("0.4.0", "v0.3.0", true), "downgrade");
+    }
+
+    #[test]
+    fn build_metadata_is_ignored_in_comparison() {
+        let st = |cur, tag| check_report(cur, tag, false).unwrap()["status"].clone();
+        assert_eq!(st("0.3.0+abc", "v0.3.0"), "up_to_date");
+        assert_eq!(st("0.3.0", "v0.3.0+meta"), "up_to_date");
+        assert_eq!(st("0.3.0+a", "v0.3.0+b"), "up_to_date");
+        // 輸出的 latest / tag 保留原文（含 +meta），只去掉開頭的 v
+        let v = check_report("0.2.0", "v0.3.0+meta", false).unwrap();
+        assert_eq!(v["latest"], "0.3.0+meta");
+        assert_eq!(v["tag"], "v0.3.0+meta");
+    }
+
+    #[test]
+    fn prerelease_identifiers_are_not_ordered_among_themselves() {
+        // 目前只區分「預發行／正式」，不比較 rc.1 與 rc.2 的先後（已知限制，改變時請一併更新）
+        let st = |cur, tag| check_report(cur, tag, false).unwrap()["status"].clone();
+        assert_eq!(st("0.3.0-rc.1", "v0.3.0-rc.2"), "up_to_date");
+        // 但預發行版的數字部分仍會比較
+        assert_eq!(st("0.3.0-rc.1", "v0.4.0-rc.1"), "update_available");
+    }
+
+    #[test]
+    fn tag_is_reported_as_given() {
+        // check_report 不再正規化：呼叫端（check_json）已經用 normalize 補上 v
+        let v = check_report("0.2.0", "v0.3.0", false).unwrap();
+        assert_eq!(v["tag"], "v0.3.0");
+        let v = check_report("0.2.0", "0.3.0", false).unwrap();
+        assert_eq!(v["tag"], "0.3.0");
+        assert_eq!(v["latest"], "0.3.0");
+    }
+
+    #[test]
+    fn normalize_cases() {
+        assert_eq!(normalize("1.2.3"), "v1.2.3");
+        assert_eq!(normalize("v1.2.3"), "v1.2.3");
+        assert_eq!(normalize("vv1.2.3"), "v1.2.3");
+        assert_eq!(normalize("  v1.2.3 \n"), "v1.2.3");
+        // 大寫 V 不處理：之後會被當成格式錯誤，而不是悄悄接受
+        assert_eq!(normalize("V1.2.3"), "vV1.2.3");
+        assert!(check_report("0.2.0", &normalize("V1.2.3"), true).is_err());
+    }
+
+    #[test]
+    fn more_malformed_versions_are_rejected() {
+        for tag in [
+            "v1.2.3.4",
+            "v1..3",
+            "v.1.2",
+            "v-1.2.3",
+            "v1.2.-3",
+            "  ",
+            "v99999999999999999999.0.0",
+        ] {
+            assert!(check_report("0.2.1", tag, true).is_err(), "{tag:?}");
+        }
+        // 很大但沒有溢位的數字是合法的
+        let v = check_report("0.2.1", "v18446744073709551615.0.0", false).unwrap();
+        assert_eq!(v["status"], "update_available");
+    }
+
+    #[test]
+    fn error_message_names_the_bad_tag_and_expected_format() {
+        let e = check_report("0.2.1", "v1.2", true).unwrap_err().to_string();
+        assert!(e.contains("v1.2"), "{e}");
+        assert!(e.contains("X.Y.Z"), "{e}");
+    }
 
     #[test]
     fn sha256_known_vectors() {

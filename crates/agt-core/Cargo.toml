@@ -12,13 +12,19 @@ agt-proto.workspace = true
 tokio.workspace = true
 portable-pty.workspace = true
 alacritty_terminal.workspace = true
-notify-rust.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+notify-rust.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+# Windows toast 的點擊回呼（notify-rust 在 Windows 也是用它，版本由 Cargo.lock 固定為同一份）
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.8"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -6,6 +6,7 @@ impl Daemon {
     /// 建立工作階段（規格 7.1）。任何一步失敗都會回滾已完成的步驟（setup 除外）。
     pub fn create(self: &Arc<Self>, req: CreateSession) -> OpResult<SessionInfo> {
         let cfg = self.cfg();
+        let req = apply_template(&cfg, req)?;
         let settings = cfg.agents.get(&req.agent).cloned().ok_or_else(|| {
             OpError::new(
                 codes::BAD_REQUEST,
@@ -58,6 +59,8 @@ impl Daemon {
             dirty: false,
             created_at: agt_store::now(),
             shared: false,
+            tags: agt_proto::tags::normalize(&req.tags)
+                .map_err(|e| OpError::new(codes::BAD_REQUEST, e))?,
         };
         let mut created_wt: Option<(PathBuf, PathBuf, String)> = None; // (repo, worktree, branch)
         let mut setup: Option<String> = None;
@@ -198,6 +201,7 @@ impl Daemon {
             cwd: Some(info.cwd.clone()),
             shared: info.shared,
             conversation_id: Some(conversation.clone()),
+            tags: info.tags.clone(),
             ..Default::default()
         };
         if let Err(e) = self.store().insert_session(&row) {
@@ -210,7 +214,7 @@ impl Daemon {
             "status",
             json!({"to": "starting", "source": "daemon"}),
         );
-        self.entries.lock().unwrap().insert(
+        self.entries.lock_or_recover().insert(
             info.id.clone(),
             Entry {
                 info: info.clone(),
@@ -269,5 +273,122 @@ impl Daemon {
             restarted,
             gitdir,
         }
+    }
+}
+
+/// 套用 `req.template`：`agent`、`task`、`base_branch` 沒填的部分用範本的值，標籤合併（範本的在前）。
+/// 找不到範本時回報錯誤並列出可用的範本。
+pub(super) fn apply_template(cfg: &Config, mut req: CreateSession) -> OpResult<CreateSession> {
+    let Some(name) = req.template.clone() else {
+        return Ok(req);
+    };
+    let Some(t) = cfg.templates.get(&name) else {
+        return Err(OpError::new(
+            codes::BAD_REQUEST,
+            format!(
+                "找不到範本：{name}（可用：{}）",
+                if cfg.templates.is_empty() {
+                    "沒有設定任何範本".to_string()
+                } else {
+                    cfg.templates.keys().cloned().collect::<Vec<_>>().join("、")
+                }
+            ),
+        ));
+    };
+    if req.agent.trim().is_empty() {
+        req.agent = t.agent.clone();
+    }
+    if req.task.trim().is_empty() {
+        req.task = t.task.clone();
+    }
+    if req
+        .base_branch
+        .as_deref()
+        .is_none_or(|b| b.trim().is_empty())
+    {
+        req.base_branch = t.base.clone();
+    }
+    let mut tags = t.tags.clone();
+    tags.extend(req.tags);
+    req.tags = tags;
+    Ok(req)
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    fn req(agent: &str, task: &str) -> CreateSession {
+        CreateSession {
+            agent: agent.into(),
+            repo: ".".into(),
+            task: task.into(),
+            base_branch: None,
+            share: None,
+            trust_setup: false,
+            cols: None,
+            rows: None,
+            template: None,
+            tags: vec![],
+        }
+    }
+
+    fn cfg_with_template() -> Config {
+        let mut c = Config::defaults();
+        c.templates.insert(
+            "fix".into(),
+            crate::config::TemplateConfig {
+                description: "修 bug".into(),
+                agent: "shell".into(),
+                task: "修正：".into(),
+                base: Some("develop".into()),
+                tags: vec!["bug".into()],
+            },
+        );
+        c
+    }
+
+    #[test]
+    fn no_template_leaves_request_unchanged() {
+        let c = cfg_with_template();
+        let r = req("claude", "mine");
+        assert_eq!(apply_template(&c, r.clone()).unwrap(), r);
+    }
+
+    #[test]
+    fn template_fills_only_empty_fields_and_merges_tags() {
+        let c = cfg_with_template();
+        let mut r = req("", "");
+        r.template = Some("fix".into());
+        r.tags = vec!["urgent".into()];
+        let out = apply_template(&c, r).unwrap();
+        assert_eq!(out.agent, "shell");
+        assert_eq!(out.task, "修正：");
+        assert_eq!(out.base_branch.as_deref(), Some("develop"));
+        assert_eq!(out.tags, ["bug", "urgent"]);
+
+        // 使用者填的值優先
+        let mut r = req("claude", "自訂任務");
+        r.template = Some("fix".into());
+        r.base_branch = Some("main".into());
+        let out = apply_template(&c, r).unwrap();
+        assert_eq!(out.agent, "claude");
+        assert_eq!(out.task, "自訂任務");
+        assert_eq!(out.base_branch.as_deref(), Some("main"));
+        assert_eq!(out.tags, ["bug"]);
+    }
+
+    #[test]
+    fn unknown_template_lists_available_ones() {
+        let mut r = req("shell", "t");
+        r.template = Some("nope".into());
+        let e = apply_template(&cfg_with_template(), r.clone()).unwrap_err();
+        assert!(
+            e.message.contains("nope") && e.message.contains("fix"),
+            "{}",
+            e.message
+        );
+        let e = apply_template(&Config::defaults(), r).unwrap_err();
+        assert!(e.message.contains("沒有設定任何範本"), "{}", e.message);
     }
 }

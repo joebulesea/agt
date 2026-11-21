@@ -31,6 +31,7 @@ fn session(id: &str) -> SessionInfo {
         dirty: false,
         created_at: 0,
         shared: false,
+        tags: vec![],
     }
 }
 
@@ -268,4 +269,157 @@ fn diff_popup_scroll_is_limited_to_current_tab() {
         copied.contains("（無）") && !copied.contains("+one"),
         "{copied}"
     );
+}
+
+// ---- 範本與標籤 ----
+
+fn tpl(name: &str, agent: &str, task: &str, base: Option<&str>) -> agt_proto::TemplateInfo {
+    agt_proto::TemplateInfo {
+        name: name.into(),
+        description: String::new(),
+        agent: agent.into(),
+        task: task.into(),
+        base: base.map(Into::into),
+        tags: vec![],
+    }
+}
+
+fn app_with_templates() -> App {
+    let (client, _sent) = Client::detached();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let ui = UiConfig {
+        templates: vec![
+            tpl("fix", "shell", "修正：", Some("develop")),
+            tpl("review", "claude", "審查", None),
+        ],
+        ..UiConfig::default()
+    };
+    App::new(client, ui, None, ".".into(), tx)
+}
+
+fn f3() -> Event {
+    Event::Key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE))
+}
+
+fn new_form(app: &App) -> &NewForm {
+    match &app.popup {
+        Some(Popup::New(f)) => f,
+        _ => panic!("新增表單沒有開啟"),
+    }
+}
+
+#[test]
+fn template_cycling_fills_the_form_and_wraps_around() {
+    let mut app = app_with_templates();
+    app.on_event(ctrl('a'));
+    app.on_event(key('n'));
+    assert_eq!(new_form(&app).template_name(), None);
+
+    app.on_event(f3());
+    let f = new_form(&app);
+    assert_eq!(f.template_name(), Some("fix"));
+    assert_eq!(f.agents[f.agent], "shell");
+    assert_eq!((f.task.as_str(), f.base.as_str()), ("修正：", "develop"));
+
+    // 第二個範本沒有 base：不會清掉前一個範本填的 base
+    app.on_event(f3());
+    let f = new_form(&app);
+    assert_eq!(f.template_name(), Some("review"));
+    assert_eq!(f.agents[f.agent], "claude");
+    assert_eq!((f.task.as_str(), f.base.as_str()), ("審查", "develop"));
+
+    // 最後一個之後回到「不套用」，已填的欄位保留
+    app.on_event(f3());
+    let f = new_form(&app);
+    assert_eq!(f.template_name(), None);
+    assert_eq!(f.task, "審查");
+
+    // Ctrl+T 同樣可以切換
+    app.on_event(ctrl('t'));
+    assert_eq!(new_form(&app).template_name(), Some("fix"));
+}
+
+#[test]
+fn template_key_is_a_noop_without_templates() {
+    let (mut app, _sent) = with_active("ask");
+    app.on_event(ctrl('a'));
+    app.on_event(key('n'));
+    app.on_event(f3());
+    assert_eq!(new_form(&app).template_name(), None);
+    assert!(new_form(&app).task.is_empty());
+}
+
+#[test]
+fn template_with_unknown_agent_keeps_current_agent() {
+    let mut f = NewForm {
+        agents: vec!["claude".into(), "shell".into()],
+        agent: 1,
+        repo: String::new(),
+        task: String::new(),
+        base: String::new(),
+        field: 2,
+        browser: None,
+        templates: vec![tpl("x", "gone", "t", None)],
+        template: None,
+    };
+    f.next_template();
+    assert_eq!(f.agent, 1);
+    assert_eq!(f.task, "t");
+}
+
+#[test]
+fn tags_popup_starts_with_current_tags_and_escape_cancels() {
+    let (mut app, _sent) = test_app("ask");
+    let mut s = session("aaaa");
+    s.tags = vec!["bug".into(), "ui".into()];
+    app.upsert(s);
+    app.select(Some("aaaa".into()));
+    app.on_event(ctrl('a'));
+    app.on_event(key('t'));
+    match &app.popup {
+        Some(Popup::Tags { input }) => assert_eq!(input, "bug ui"),
+        _ => panic!("標籤視窗沒有開啟"),
+    }
+    app.on_event(key('x'));
+    match &app.popup {
+        Some(Popup::Tags { input }) => assert_eq!(input, "bug uix"),
+        _ => panic!(),
+    }
+    app.on_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert!(app.popup.is_none());
+}
+
+#[test]
+fn tags_popup_needs_an_active_session() {
+    let (mut app, _sent) = test_app("ask");
+    app.on_event(ctrl('a'));
+    app.on_event(key('t'));
+    assert!(app.popup.is_none());
+}
+
+#[tokio::test]
+async fn tags_popup_enter_sends_set_tags_and_closes() {
+    let (mut app, mut sent) = with_active("ask");
+    app.on_event(ctrl('a'));
+    app.on_event(key('t'));
+    app.on_event(key('#'));
+    app.on_event(key('a'));
+    app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.popup.is_none());
+    // 跳過 with_active 先送出的 Attach / Resize，找到 SetTags
+    let text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let frame = sent.recv().await.expect("通道已關閉");
+            let text = String::from_utf8_lossy(&frame).into_owned();
+            if text.contains("SetTags") {
+                return text;
+            }
+        }
+    })
+    .await
+    .expect("應送出 SetTags 請求");
+    assert!(text.contains("\"a\""), "{text}");
 }

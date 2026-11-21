@@ -279,3 +279,122 @@ fn repo_config_layers() {
     assert_eq!(r.copy_files, vec![".env"]);
     assert_eq!(r.setup.as_deref(), Some("npm install"));
 }
+
+#[test]
+fn theme_validates() {
+    let mut c = Config::defaults();
+    assert_eq!(c.general.theme, "dark");
+    for t in ["dark", "light", "colorblind"] {
+        c.general.theme = t.into();
+        c.validate().unwrap();
+        assert_eq!(c.ui().theme, t);
+    }
+    c.general.theme = "neon".into();
+    let e = c.validate().unwrap_err();
+    assert!(e.contains("theme") && e.contains("neon"), "{e}");
+}
+
+#[test]
+fn colors_validate_and_reach_ui() {
+    let mut c = Config::defaults();
+    assert!(c.colors.is_empty());
+    c.colors.insert("cyan".into(), "#00afaf".into());
+    c.colors.insert("yellow".into(), "208".into());
+    c.validate().unwrap();
+    assert_eq!(c.ui().colors["cyan"], "#00afaf");
+    c.colors.insert("cyann".into(), "red".into());
+    assert!(c.validate().unwrap_err().contains("cyann"));
+    c.colors.remove("cyann");
+    c.colors.insert("red".into(), "purple".into());
+    assert!(c.validate().unwrap_err().contains("colors.red"));
+}
+
+#[test]
+fn colors_section_loads_from_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("config.toml");
+    std::fs::write(&f, "[colors]\ncyan = \"#112233\"\n").unwrap();
+    let c = Config::load(&f).unwrap();
+    assert_eq!(c.colors["cyan"], "#112233");
+}
+
+#[test]
+fn long_running_notify_defaults_off_and_loads() {
+    assert_eq!(Config::defaults().general.long_running_notify_secs, 0);
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("config.toml");
+    std::fs::write(&f, "[general]\nlong_running_notify_secs = 600\n").unwrap();
+    assert_eq!(
+        Config::load(&f).unwrap().general.long_running_notify_secs,
+        600
+    );
+}
+
+#[test]
+fn notify_on_filters_statuses() {
+    use agt_proto::AgentStatus::*;
+    let mut c = Config::defaults();
+    assert!(c.general.should_notify(WaitingInput));
+    assert!(c.general.should_notify(Done));
+    assert!(c.general.should_notify(Error));
+    assert!(!c.general.should_notify(Running));
+    assert!(!c.general.should_notify(Exited));
+    c.general.notify_on.push("exited".into());
+    c.validate().unwrap();
+    assert!(c.general.should_notify(Exited));
+    c.general.notify_on = vec!["waiting".into()];
+    assert!(c.general.should_notify(WaitingInput));
+    assert!(!c.general.should_notify(Done));
+    assert!(!c.general.should_notify(Error));
+    // notify = false 一律不通知
+    c.general.notify = false;
+    assert!(!c.general.should_notify(WaitingInput));
+}
+
+#[test]
+fn notify_on_rejects_unknown_value() {
+    let mut c = Config::defaults();
+    c.general.notify_on = vec!["waiting".into(), "bogus".into()];
+    let e = c.validate().unwrap_err();
+    assert!(e.contains("notify_on") && e.contains("bogus"), "{e}");
+}
+
+#[test]
+fn templates_load_validate_and_reach_ui() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("config.toml");
+    std::fs::write(
+        &f,
+        "[templates.fix]\ndescription = \"修 bug\"\nagent = \"shell\"\ntask = \"修正：\"\nbase = \"develop\"\ntags = [\"bug\", \"#ui\"]\n",
+    )
+    .unwrap();
+    let c = Config::load(&f).unwrap();
+    let t = &c.templates["fix"];
+    assert_eq!((t.agent.as_str(), t.task.as_str()), ("shell", "修正："));
+    let ui = c.ui();
+    assert_eq!(ui.templates.len(), 1);
+    assert_eq!(ui.templates[0].name, "fix");
+    assert_eq!(ui.templates[0].base.as_deref(), Some("develop"));
+}
+
+#[test]
+fn templates_reject_bad_definitions() {
+    let base = |body: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("config.toml");
+        std::fs::write(&f, body).unwrap();
+        Config::load(&f).map(|_| ())
+    };
+    // 找不到 Agent
+    let e = base("[templates.x]\nagent = \"nope\"\n").unwrap_err();
+    assert!(e.contains("templates.x.agent") && e.contains("nope"), "{e}");
+    // 標籤不合法
+    let e = base("[templates.x]\nagent = \"shell\"\ntags = [\"a b\"]\n").unwrap_err();
+    assert!(e.contains("templates.x.tags"), "{e}");
+    // 缺少 agent、未知欄位
+    assert!(base("[templates.x]\ntask = \"t\"\n").is_err());
+    assert!(base("[templates.x]\nagent = \"shell\"\nbogus = 1\n").is_err());
+    // 名稱不能含空白
+    assert!(base("[templates.\"a b\"]\nagent = \"shell\"\n").is_err());
+    assert!(base("").is_ok());
+}

@@ -4,8 +4,11 @@
 
 pub mod client;
 pub mod codec;
+pub mod colors;
 pub mod msg;
 pub mod screen;
+pub mod sync;
+pub mod tags;
 pub mod text;
 pub mod transport;
 pub mod types;
