@@ -2281,7 +2281,7 @@ async fn session_tags() {
     let mut want = vec![ia.clone(), ib.clone()];
     want.sort();
     assert_eq!(both, want);
-    assert_eq!(ids(&env, "#x"), [ib.clone()]);
+    assert_eq!(ids(&env, "#x"), std::slice::from_ref(&ib));
     assert!(ids(&env, "none").is_empty());
     let (_, out, _) = agt_raw(&env, &["ls"]);
     assert!(out.contains("#bug"), "{out}");
@@ -2316,7 +2316,7 @@ async fn session_tags() {
     // --clear
     let (_, out, _) = agt_raw(&env, &["tag", &ia, "--clear"]);
     assert!(out.contains("沒有標籤"), "{out}");
-    assert!(ids(&env, "bug") == [ib.clone()]);
+    assert!(ids(&env, "bug") == std::slice::from_ref(&ib));
 
     env.stop(&c2).await;
 }
