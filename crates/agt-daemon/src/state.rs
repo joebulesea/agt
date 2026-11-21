@@ -22,6 +22,7 @@ mod create;
 mod finish;
 mod gc;
 mod session;
+mod usage;
 
 #[derive(Debug)]
 pub struct OpError {
@@ -136,6 +137,8 @@ pub struct Daemon {
     busy: Mutex<busy::BusyTracker>,
     /// 每個分頁上次輪詢 git 的時間與當時的狀態（見 [`gc::should_poll_git`]）。
     git_polls: Mutex<HashMap<String, (Instant, AgentStatus)>>,
+    /// 每個分頁上次讀到的 `.agt/usage.json` 修改時間（見 [`usage`]）。
+    usage_seen: Mutex<HashMap<String, std::time::SystemTime>>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -166,6 +169,7 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         created_at: r.created_at,
         shared: r.shared,
         tags: r.tags.clone(),
+        usage: None,
     }
 }
 
@@ -226,6 +230,7 @@ impl Daemon {
             tamper_warned: Mutex::new(Default::default()),
             busy: Mutex::new(Default::default()),
             git_polls: Mutex::new(Default::default()),
+            usage_seen: Mutex::new(Default::default()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),

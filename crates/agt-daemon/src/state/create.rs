@@ -61,6 +61,7 @@ impl Daemon {
             shared: false,
             tags: agt_proto::tags::normalize(&req.tags)
                 .map_err(|e| OpError::new(codes::BAD_REQUEST, e))?,
+            usage: None,
         };
         let mut created_wt: Option<(PathBuf, PathBuf, String)> = None; // (repo, worktree, branch)
         let mut setup: Option<String> = None;

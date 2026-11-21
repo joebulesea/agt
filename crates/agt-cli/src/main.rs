@@ -6,6 +6,7 @@ mod log;
 mod prompt;
 mod setup;
 mod stats;
+mod statusline;
 mod uninstall;
 mod update;
 
@@ -125,6 +126,8 @@ enum Cmd {
         #[arg(long)]
         session: Option<String>,
     },
+    /// 由 Claude Code 的 statusLine 呼叫：把 stdin 的 JSON 交給 agt（`.agt/usage.json`），並輸出一行摘要
+    Statusline,
     /// 關閉分頁
     Kill {
         id: String,
@@ -280,6 +283,11 @@ fn main() {
     }) = &cli.cmd
     {
         notify(status, message.clone(), tool.clone(), session.clone());
+        return;
+    }
+    // status line 每次回覆都會執行，同樣要快速且靜默
+    if let Some(Cmd::Statusline) = &cli.cmd {
+        statusline::run();
         return;
     }
     // 補全腳本只需要命令定義，不連 daemon、不建立 runtime
@@ -890,7 +898,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             std::process::exit(agt_daemon::check_config(&args));
         }
         Some(Cmd::Daemon { cmd }) => daemon(cmd).await,
-        Some(Cmd::Notify { .. } | Cmd::Completions { .. }) => unreachable!(),
+        Some(Cmd::Notify { .. } | Cmd::Statusline | Cmd::Completions { .. }) => unreachable!(),
     }
 }
 
@@ -1398,6 +1406,7 @@ mod tag_tests {
             created_at: 0,
             shared: false,
             tags: v(tags),
+            usage: None,
         }
     }
 

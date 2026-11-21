@@ -192,14 +192,20 @@ async fn serve(d: Arc<Daemon>) -> anyhow::Result<()> {
         });
     }
 
-    // 長時間執行提醒：獨立計時，不受 git 輪詢變慢影響（只讀記憶體中的狀態，不會阻塞）
+    // 長時間執行提醒與用量（.agt/usage.json）：獨立計時，不受 git 輪詢變慢影響。
+    // 用量要讀檔（只有修改時間變了才讀，檔案很小），放在 blocking 執行緒。
     {
         let d = d.clone();
         tokio::spawn(async move {
             let mut t = tokio::time::interval(Duration::from_secs(3));
             loop {
                 t.tick().await;
-                d.check_long_running();
+                let d = d.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    d.check_long_running();
+                    d.poll_usage();
+                })
+                .await;
             }
         });
     }
