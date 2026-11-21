@@ -134,6 +134,8 @@ pub struct Daemon {
     tamper_warned: Mutex<std::collections::HashSet<String>>,
     /// 連續忙碌（執行中／思考中）的計時，用來提醒長時間執行的分頁。
     busy: Mutex<busy::BusyTracker>,
+    /// 每個分頁上次輪詢 git 的時間與當時的狀態（見 [`gc::should_poll_git`]）。
+    git_polls: Mutex<HashMap<String, (Instant, AgentStatus)>>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -223,6 +225,7 @@ impl Daemon {
             restart_lock: Mutex::new(()),
             tamper_warned: Mutex::new(Default::default()),
             busy: Mutex::new(Default::default()),
+            git_polls: Mutex::new(Default::default()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),

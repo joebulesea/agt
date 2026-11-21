@@ -2,6 +2,31 @@
 
 use super::*;
 
+/// 閒置分頁輪詢 git 的間隔。忙碌或有人在看的分頁每一輪（3 秒）都查。
+pub(super) const IDLE_GIT_POLL: Duration = Duration::from_secs(30);
+
+/// 這一輪要不要對分頁執行 git。每個有 worktree 的分頁每次要啟動 2 個 git 行程，
+/// 分頁多時（Windows 上啟動行程很慢、大 repo 的 `git status` 也慢）會拖慢整輪輪詢。
+/// - 從沒查過、狀態變了（例如 Agent 剛做完，可能剛 commit）、忙碌中、有人在看：查
+/// - 其他（等待輸入、完成、已結束且沒人看）：距上次超過 [`IDLE_GIT_POLL`] 才查，
+///   使用者在 Agent 之外手動改 worktree 時最多晚這麼久反映
+pub(super) fn should_poll_git(
+    now: Instant,
+    last: Option<(Instant, AgentStatus)>,
+    status: AgentStatus,
+    viewers: usize,
+) -> bool {
+    match last {
+        None => true,
+        Some((at, prev)) => {
+            prev != status
+                || status.is_busy()
+                || viewers > 0
+                || now.saturating_duration_since(at) >= IDLE_GIT_POLL
+        }
+    }
+}
+
 impl Daemon {
     /// 孤兒偵測（規格 7.5）：比對 `git worktree list` 與資料庫。
     pub fn gc(&self, prune: bool) -> OpResult<Vec<GcItem>> {
@@ -135,7 +160,8 @@ impl Daemon {
 
     /// 定期更新 git 資訊，有變化時推播 `WorktreeChanged`。
     pub fn poll_git(&self) {
-        let targets: Vec<(String, String, String, String)> = self
+        let now = Instant::now();
+        let candidates: Vec<(String, String, String, String, AgentStatus, usize)> = self
             .entries
             .lock_or_recover()
             .values()
@@ -145,9 +171,27 @@ impl Daemon {
                     e.info.repo_path.clone()?,
                     e.info.worktree.clone()?,
                     e.info.base_branch.clone()?,
+                    e.info.status,
+                    e.session.as_ref().map_or(0, |s| s.viewers()),
                 ))
             })
             .collect();
+        let targets: Vec<(String, String, String, String)> = {
+            let mut polls = self.git_polls.lock_or_recover();
+            // 已關閉的分頁不再保留紀錄
+            polls.retain(|id, _| candidates.iter().any(|c| &c.0 == id));
+            candidates
+                .into_iter()
+                .filter(|(id, _, _, _, status, viewers)| {
+                    let poll = should_poll_git(now, polls.get(id).copied(), *status, *viewers);
+                    if poll {
+                        polls.insert(id.clone(), (now, *status));
+                    }
+                    poll
+                })
+                .map(|(id, repo, wt, base, _, _)| (id, repo, wt, base))
+                .collect()
+        };
         for (id, repo, wt, base) in targets {
             if !Path::new(&wt).is_dir() {
                 continue;
@@ -192,5 +236,61 @@ impl Daemon {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use AgentStatus::*;
+
+    #[test]
+    fn first_poll_always_runs() {
+        assert!(should_poll_git(Instant::now(), None, Exited, 0));
+    }
+
+    #[test]
+    fn idle_unwatched_session_waits_for_interval() {
+        let t0 = Instant::now();
+        let last = Some((t0, WaitingInput));
+        assert!(!should_poll_git(
+            t0 + Duration::from_secs(3),
+            last,
+            WaitingInput,
+            0
+        ));
+        assert!(!should_poll_git(
+            t0 + IDLE_GIT_POLL - Duration::from_secs(1),
+            last,
+            WaitingInput,
+            0
+        ));
+        assert!(should_poll_git(t0 + IDLE_GIT_POLL, last, WaitingInput, 0));
+        let exited = Some((t0, Exited));
+        assert!(!should_poll_git(
+            t0 + Duration::from_secs(3),
+            exited,
+            Exited,
+            0
+        ));
+    }
+
+    #[test]
+    fn busy_watched_or_changed_session_polls_every_round() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(3);
+        assert!(should_poll_git(t1, Some((t0, Running)), Running, 0));
+        assert!(should_poll_git(t1, Some((t0, Thinking)), Thinking, 0));
+        assert!(should_poll_git(t1, Some((t0, Done)), Done, 1));
+        // 剛做完（可能剛 commit）：狀態一變就查
+        assert!(should_poll_git(t1, Some((t0, Running)), WaitingInput, 0));
+        assert!(should_poll_git(t1, Some((t0, Running)), Exited, 0));
+    }
+
+    #[test]
+    fn clock_going_backwards_does_not_panic() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(60);
+        assert!(!should_poll_git(t0, Some((later, Done)), Done, 0));
     }
 }
