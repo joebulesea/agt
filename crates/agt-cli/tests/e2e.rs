@@ -2267,8 +2267,8 @@ async fn session_tags() {
     assert!(out.contains("#x #y #bug"), "{out}");
 
     // 篩選與文字輸出
-    let ids = |tag: &str| -> Vec<String> {
-        let (code, v) = agt_json(&env, &["ls", "--json", "--tag", tag]);
+    let ids = |env: &Env, tag: &str| -> Vec<String> {
+        let (code, v) = agt_json(env, &["ls", "--json", "--tag", tag]);
         assert_eq!(code, 0, "{v}");
         v.as_array()
             .unwrap()
@@ -2276,13 +2276,13 @@ async fn session_tags() {
             .map(|s| s["short_id"].as_str().unwrap().to_string())
             .collect()
     };
-    let mut both = ids("BUG");
+    let mut both = ids(&env, "BUG");
     both.sort();
     let mut want = vec![ia.clone(), ib.clone()];
     want.sort();
     assert_eq!(both, want);
-    assert_eq!(ids("#x"), [ib.clone()]);
-    assert!(ids("none").is_empty());
+    assert_eq!(ids(&env, "#x"), [ib.clone()]);
+    assert!(ids(&env, "none").is_empty());
     let (_, out, _) = agt_raw(&env, &["ls"]);
     assert!(out.contains("#bug"), "{out}");
 
@@ -2316,7 +2316,7 @@ async fn session_tags() {
     // --clear
     let (_, out, _) = agt_raw(&env, &["tag", &ia, "--clear"]);
     assert!(out.contains("沒有標籤"), "{out}");
-    assert!(ids("bug") == [ib.clone()]);
+    assert!(ids(&env, "bug") == [ib.clone()]);
 
     env.stop(&c2).await;
 }

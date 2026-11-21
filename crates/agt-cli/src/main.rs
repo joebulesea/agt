@@ -692,7 +692,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let edit = TagEdit {
                 add: split(&add),
                 remove: split(&remove),
-                set: set.as_deref().map(|s| agt_proto::tags::split_input(s)),
+                set: set.as_deref().map(agt_proto::tags::split_input),
                 clear,
             };
             if edit.is_noop() {
@@ -1223,7 +1223,7 @@ mod gc_json_tests {
         // 協定上 branch / session 有預設值：舊版 daemon 沒送這兩欄也要能讀
         let it: GcItem =
             serde_json::from_str(r#"{"kind":"orphan_worktree","repo":"/r","path":"/p"}"#).unwrap();
-        assert_eq!((it.branch, it.session), (None, None));
+        assert_eq!((&it.branch, &it.session), (&None, &None));
         // 再輸出時補成 null，欄位不會缺
         let v = gc_json(false, &[it]);
         assert!(v["items"][0]["branch"].is_null());
