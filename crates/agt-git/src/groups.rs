@@ -5,6 +5,9 @@
 //! - `COMMIT_MSG`：這組的 commit 訊息（第一行是標題，也當 PR 標題）
 //! - `PR_BODY.md`：這組的 PR 說明
 //! - `AFTER`：（選用）這組接在哪一組後面（組名）。用到另一組新增的程式碼時使用
+//! - `SNAPSHOT/<路徑>`：（選用）某個檔案在這組 branch 上的內容。多個主題改到同一個檔案時，
+//!   前面的組放「只含自己修改」的版本，檔案的最終內容（worktree 裡的）歸 `FILES` 列了它的那一組，
+//!   沒有任何組列它時歸 `rest`
 //!
 //! 沒有被任何分組認領的變更自成一組 `rest`。每組的 branch 是 `<任務 branch>-<名稱>`，
 //! 內容 = merge-base 加上該組的檔案，所以各 PR 互不包含對方的變更。
@@ -18,6 +21,12 @@ use std::path::{Path, PathBuf};
 pub const GROUPS_DIR: &str = "groups";
 /// 分組裡記錄「接在哪一組後面」的檔案。
 pub const AFTER_FILE: &str = "AFTER";
+/// 分組裡放檔案中間版本的目錄（`SNAPSHOT/<路徑>`）。
+pub const SNAPSHOT_DIR: &str = "SNAPSHOT";
+/// 單一 SNAPSHOT 檔案的大小上限。
+const SNAPSHOT_MAX: u64 = 8 * 1024 * 1024;
+/// 一組最多幾個 SNAPSHOT 檔案。
+const SNAPSHOT_COUNT_MAX: usize = 500;
 
 #[derive(Debug, Clone)]
 pub struct Group {
@@ -27,6 +36,8 @@ pub struct Group {
     pub pr_body: Option<String>,
     /// 接在哪一組後面（`AFTER`）。None = 從 merge-base 建立。
     pub after: Option<String>,
+    /// `SNAPSHOT/` 底下的檔案（相對於專案根目錄的路徑，依名稱排序）。
+    pub snapshots: Vec<String>,
 }
 
 fn valid_name(n: &str) -> bool {
@@ -94,8 +105,17 @@ pub fn load_groups(worktree: &Path) -> Result<Vec<Group>> {
             }
             files.push(l.to_string());
         }
-        if files.is_empty() {
-            return Err(GitError::Refused(format!("分組 {name} 的 FILES 是空的")));
+        let snapshots = list_snapshots(&root.join(&name), &name)?;
+        if files.is_empty() && snapshots.is_empty() {
+            return Err(GitError::Refused(format!(
+                "分組 {name} 的 FILES 是空的（也沒有 SNAPSHOT）"
+            )));
+        }
+        // 同一組裡同一個檔案只能有一種來源：FILES（worktree 的最終內容）或 SNAPSHOT（中間版本）
+        if let Some(s) = snapshots.iter().find(|s| claims(&files, s)) {
+            return Err(GitError::Refused(format!(
+                "分組 {name} 的 SNAPSHOT/{s} 也在這組的 FILES 裡；同一個檔案在一組裡只能用其中一種"
+            )));
         }
         let after = read_note(worktree, &rel(AFTER_FILE))?.and_then(|s| {
             s.lines()
@@ -114,11 +134,49 @@ pub fn load_groups(worktree: &Path) -> Result<Vec<Group>> {
             commit_msg: read_note(worktree, &rel(COMMIT_MSG_FILE))?,
             pr_body: read_note(worktree, &rel(PR_BODY_FILE))?,
             after,
+            snapshots,
             name,
             files,
         });
     }
-    order_by_after(out)
+    let out = order_by_after(out)?;
+    check_snapshot_order(&out)?;
+    Ok(out)
+}
+
+/// `name` 經由 AFTER 一路接在哪些組後面（不含自己；指向已不存在的組時停下）。
+fn ancestors(groups: &[Group], name: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut cur = groups.iter().find(|g| g.name == name);
+    while let Some(a) = cur.and_then(|g| g.after.clone()) {
+        if out.contains(&a) {
+            break; // 不會發生（已檢查過循環），保險
+        }
+        cur = groups.iter().find(|g| g.name == a);
+        out.push(a);
+    }
+    out
+}
+
+/// 有某個檔案 SNAPSHOT 的組，必須排在拿那個檔案最終內容（FILES 列了它）的組前面：
+/// 最終內容那組要經由 AFTER 接在每個有它 SNAPSHOT 的組後面。否則兩邊都從 base 各自新增 / 修改
+/// 同一個檔案，PR 互相衝突，merge 也會停在衝突。
+fn check_snapshot_order(groups: &[Group]) -> Result<()> {
+    for y in groups {
+        for p in &y.snapshots {
+            for x in groups.iter().filter(|x| claims(&x.files, p)) {
+                if !ancestors(groups, &x.name).contains(&y.name) {
+                    return Err(GitError::Refused(format!(
+                        "分組 {x} 的 FILES 有 {p} 的最終內容，但沒有接在有它 SNAPSHOT 的 {y} 後面；\
+                         請在 .agt/groups/{x}/AFTER 寫 {y}（或接在 {y} 後面的組）",
+                        x = x.name,
+                        y = y.name
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 依 `AFTER` 排序：被接的組排在前面，其餘維持名稱順序。有循環時拒絕。
@@ -188,6 +246,86 @@ fn check_groups(
     Ok(())
 }
 
+/// 列出一組 `SNAPSHOT/` 底下的檔案（相對路徑，以 `/` 分隔）。目錄與檔案都不能是連結，
+/// 路徑規則與 FILES 相同，單一檔案不超過 [`SNAPSHOT_MAX`]。
+fn list_snapshots(group_dir: &Path, name: &str) -> Result<Vec<String>> {
+    let root = group_dir.join(SNAPSHOT_DIR);
+    if std::fs::symlink_metadata(&root).is_err() {
+        return Ok(vec![]);
+    }
+    let refuse = |why: String| GitError::Refused(format!("分組 {name} 的 SNAPSHOT：{why}"));
+    if !real_dir(&root) {
+        return Err(refuse("是連結或不是目錄".into()));
+    }
+    let mut out = vec![];
+    let mut stack = vec![(root, String::new())];
+    while let Some((dir, prefix)) = stack.pop() {
+        for e in std::fs::read_dir(&dir)? {
+            let e = e?;
+            let fname = e
+                .file_name()
+                .into_string()
+                .map_err(|_| refuse("檔名不是 UTF-8".into()))?;
+            let rel = if prefix.is_empty() {
+                fname
+            } else {
+                format!("{prefix}/{fname}")
+            };
+            if !valid_path(&rel) {
+                return Err(refuse(format!("路徑「{rel}」不合規定")));
+            }
+            let m = std::fs::symlink_metadata(e.path())?;
+            if m.file_type().is_symlink() {
+                return Err(refuse(format!("{rel} 是連結")));
+            } else if m.is_dir() {
+                stack.push((e.path(), rel));
+            } else if m.is_file() {
+                if m.len() > SNAPSHOT_MAX {
+                    return Err(refuse(format!("{rel} 超過 8MB")));
+                }
+                out.push(rel);
+                if out.len() > SNAPSHOT_COUNT_MAX {
+                    return Err(refuse(format!("超過 {SNAPSHOT_COUNT_MAX} 個檔案")));
+                }
+            } else {
+                return Err(refuse(format!("{rel} 不是一般檔案")));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// 讀取 SNAPSHOT 檔案（不跟隨連結；讀取時再檢查一次大小，避免列出之後被換掉）。
+fn read_snapshot(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let refuse = |why: &str| GitError::Refused(format!("{} {why}，不處理", path.display()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        opts.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(crate::notes::libc_o_nofollow());
+    }
+    let mut f = opts.open(path).map_err(|_| refuse("無法開啟"))?;
+    let meta = f.metadata()?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(refuse("是連結或不是一般檔案"));
+    }
+    let mut buf = Vec::new();
+    f.by_ref().take(SNAPSHOT_MAX + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > SNAPSHOT_MAX {
+        return Err(refuse("超過 8MB"));
+    }
+    Ok(buf)
+}
+
 /// 分組的 branch 名稱。
 pub(crate) fn group_branch(branch: &str, name: &str) -> String {
     format!("{branch}-{name}")
@@ -202,13 +340,16 @@ pub(crate) fn claims(files: &[String], path: &str) -> bool {
     })
 }
 
-/// 以暫存 index 在 `parent` 上疊加 `files` 的目前內容，回傳 tree；沒有疊加任何東西時 tree 與 parent 相同。
+/// 以暫存 index 在 `parent` 上疊加 `files` 的目前內容與 `snapshots`（`snap_root` 底下的中間版本），
+/// 回傳 tree；沒有疊加任何東西時 tree 與 parent 相同。
 fn build_tree(
     repo: &Path,
     wt: &Path,
     gitdir: &Path,
     parent: &str,
     files: &[String],
+    snapshots: &[String],
+    snap_root: &Path,
 ) -> Result<String> {
     let index = gitdir.join("AGT_GROUP_INDEX");
     let _ = std::fs::remove_file(&index);
@@ -219,6 +360,13 @@ fn build_tree(
     };
     let r = (|| {
         run_idx(&["read-tree", parent])?;
+        for p in snapshots {
+            stage_snapshot(&run_idx, gitdir, p, &snap_root.join(p))?;
+        }
+        if files.is_empty() {
+            // 只有 SNAPSHOT 的組：不能執行沒有路徑的 `git add -A`（會加入整個 worktree）
+            return run_idx(&["write-tree"]);
+        }
         let mut args = vec!["--literal-pathspecs", "add", "-A", "--"];
         args.extend(files.iter().map(String::as_str));
         run_idx(&args).map_err(|e| match e {
@@ -244,6 +392,41 @@ fn build_tree(
     })();
     let _ = std::fs::remove_file(&index);
     r
+}
+
+/// 把一個 SNAPSHOT 檔案寫進暫存 index（`path` 的內容換成 `file`）。檔案模式沿用 parent 裡的
+/// （例如可執行檔），新檔案用 100644。內容經過與 `git add` 相同的轉換（`--path` 套用 .gitattributes）。
+fn stage_snapshot(
+    run_idx: &dyn Fn(&[&str]) -> Result<String>,
+    gitdir: &Path,
+    path: &str,
+    file: &Path,
+) -> Result<()> {
+    let bytes = read_snapshot(file)?;
+    // 先複製到可信任的位置再交給 git：不讓 git 去開 Agent 控制的路徑（可能在檢查後被換成連結）
+    let staged = gitdir.join("AGT_SNAPSHOT");
+    std::fs::write(&staged, &bytes)?;
+    let staged_s = staged.to_string_lossy().into_owned();
+    let sha = run_idx(&["hash-object", "-w", "--path", path, &staged_s]);
+    let _ = std::fs::remove_file(&staged);
+    let sha = sha?;
+    let current = run_idx(&["--literal-pathspecs", "ls-files", "-s", "--", path])?;
+    let mode = match current.split_whitespace().next() {
+        Some(m @ ("100644" | "100755")) => m.to_string(),
+        Some(m) if !m.is_empty() => {
+            return Err(GitError::Refused(format!(
+                "SNAPSHOT/{path}：原本不是一般檔案（mode {m}），不能用 SNAPSHOT 取代"
+            )));
+        }
+        _ => "100644".to_string(),
+    };
+    run_idx(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("{mode},{sha},{path}"),
+    ])?;
+    Ok(())
 }
 
 /// 建立 / 更新一組的 branch（只疊加新 commit，不改寫歷史）。回傳 (branch 名稱, 是否有新 commit)。
@@ -291,7 +474,16 @@ pub(crate) fn make_group_branch(
             (mb.clone(), vec![mb])
         }
     };
-    let tree = build_tree(repo, wt, gitdir, &tree_base, &g.files)?;
+    let snap_root = groups_root(wt).join(&g.name).join(SNAPSHOT_DIR);
+    let tree = build_tree(
+        repo,
+        wt,
+        gitdir,
+        &tree_base,
+        &g.files,
+        &g.snapshots,
+        &snap_root,
+    )?;
     let base_tree = git_wt(repo, wt, &["rev-parse", &format!("{tree_base}^{{tree}}")])?;
     if tree == base_tree && !catch_up {
         if existing.is_none() {
@@ -456,12 +648,36 @@ fn with_rest(repo: &Path, wt: &Path, base: &str, mut groups: Vec<Group>) -> Resu
         .filter(|p| !groups.iter().any(|g| claims(&g.files, p)))
         .collect();
     if !rest.is_empty() {
+        // rest 拿到的檔案若有別組的 SNAPSHOT（中間版本），rest 要接在那些組後面，
+        // 否則它從 merge-base 建立，會和那些組衝突。有好幾組時，它們要排成一條 AFTER 鏈。
+        let snapped: Vec<&Group> = groups
+            .iter()
+            .filter(|g| g.snapshots.iter().any(|s| rest.contains(s)))
+            .collect();
+        let after = match snapped.last() {
+            None => None,
+            Some(last) => {
+                let chain = ancestors(&groups, &last.name);
+                if let Some(other) = snapped
+                    .iter()
+                    .find(|g| g.name != last.name && !chain.contains(&g.name))
+                {
+                    return Err(GitError::Refused(format!(
+                        "有些檔案沒有任何組的 FILES 列出（會歸 rest），但 {} 和 {} 都有它們的 SNAPSHOT，彼此又沒有用 AFTER 接起來；\
+                         請把最終內容放進其中一組的 FILES，並用 AFTER 接在其他組後面",
+                        other.name, last.name
+                    )));
+                }
+                Some(last.name.clone())
+            }
+        };
         groups.push(Group {
             name: "rest".into(),
             files: rest,
             commit_msg: None,
             pr_body: None,
-            after: None,
+            after,
+            snapshots: vec![],
         });
     }
     Ok(groups)
@@ -543,6 +759,21 @@ pub fn merge_groups(
                 )))
             }
         };
+        // 這組自己的 commit（不含它接的那組、也不含追上那組時的 merge commit），由舊到新。
+        // 分組 branch 在之前收尾 pr 時可能已經追加過好幾個 commit，只取最後一個會漏掉內容。
+        let own_commits = || -> Result<Vec<String>> {
+            let list = git_wt(
+                repo,
+                worktree,
+                &[
+                    "rev-list",
+                    "--reverse",
+                    "--no-merges",
+                    &format!("{start}..{tip}"),
+                ],
+            )?;
+            Ok(list.split_whitespace().map(str::to_string).collect())
+        };
         match strategy {
             Strategy::Merge => {
                 let msg = format!("Merge {gb}: {title}");
@@ -551,8 +782,16 @@ pub fn merge_groups(
                 }
             }
             Strategy::Squash => {
-                if let Err(e) = git(repo, &["merge", "--squash", gb]) {
-                    return Err(conflict("squash").unwrap_or(e));
+                // 逐一套用這組的 commit 但先不 commit，最後壓成一個。不用 `merge --squash`：
+                // 它以 merge-base 為基準，接在別組後面的組（尤其是用 SNAPSHOT 分開同一個檔案時）
+                // 會把前一組已經合進去的修改再算一次而衝突；cherry-pick 以每個 commit 的親代為基準。
+                let commits = own_commits()?;
+                if !commits.is_empty() {
+                    let mut args = vec!["cherry-pick", "--no-commit"];
+                    args.extend(commits.iter().map(String::as_str));
+                    if let Err(e) = git(repo, &args) {
+                        return Err(conflict("squash").unwrap_or(e));
+                    }
                 }
                 if is_dirty(repo, false)? {
                     let text = g.commit_msg.clone().unwrap_or_else(|| format!("{title}\n"));
@@ -571,22 +810,10 @@ pub fn merge_groups(
                 }
             }
             Strategy::Rebase => {
-                // 這組自己的 commit（不含它接的那組、也不含追上那組時的 merge commit），依序接上去。
-                // 分組 branch 在之前收尾 pr 時可能已經追加過好幾個 commit，只取最後一個會漏掉內容。
-                let list = git_wt(
-                    repo,
-                    worktree,
-                    &[
-                        "rev-list",
-                        "--reverse",
-                        "--no-merges",
-                        &format!("{start}..{tip}"),
-                    ],
-                )?;
-                let commits: Vec<&str> = list.split_whitespace().collect();
+                let commits = own_commits()?;
                 if !commits.is_empty() {
                     let mut args = vec!["cherry-pick", "--allow-empty"];
-                    args.extend(commits);
+                    args.extend(commits.iter().map(String::as_str));
                     if let Err(e) = git(repo, &args) {
                         return Err(conflict("cherry-pick").unwrap_or(e));
                     }
@@ -709,8 +936,12 @@ pub fn finish_preview(
             .as_ref()
             .map(|a| format!("，接在 [{a}] 後面"))
             .unwrap_or_default();
+        let snaps = match g.snapshots.len() {
+            0 => String::new(),
+            n => format!("，{n} 個 SNAPSHOT"),
+        };
         out.push(format!(
-            "▸ [{}] {}（{} 個路徑{stacked}）",
+            "▸ [{}] {}（{} 個路徑{snaps}{stacked}）",
             g.name,
             group_title(g, task),
             g.files.len()
