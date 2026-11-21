@@ -125,6 +125,9 @@ pub struct SessionInfo {
     /// 與其他工作階段共用 worktree（`--share`）。
     #[serde(default)]
     pub shared: bool,
+    /// 標籤（見 `tags::normalize`）。
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl SessionInfo {
@@ -198,6 +201,24 @@ pub struct UiConfig {
     /// 設定檔 `[colors]`：覆寫主題中個別顏色（名稱見 `colors::COLOR_KEYS`）
     #[serde(default)]
     pub colors: BTreeMap<String, String>,
+    /// 設定檔 `[templates.<名稱>]`，依名稱排序。
+    #[serde(default)]
+    pub templates: Vec<TemplateInfo>,
+}
+
+/// 新增分頁的範本（設定檔 `[templates.<名稱>]`）：預先填好 Agent、任務名稱、base 與標籤。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemplateInfo {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub agent: String,
+    #[serde(default)]
+    pub task: String,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 fn default_theme() -> String {
@@ -225,6 +246,7 @@ impl Default for UiConfig {
             auto_commit_agents: Vec::new(),
             theme: default_theme(),
             colors: BTreeMap::new(),
+            templates: Vec::new(),
         }
     }
 }

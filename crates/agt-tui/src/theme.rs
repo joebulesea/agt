@@ -38,6 +38,15 @@ pub struct Theme {
     /// 按鈕：不可用
     pub tab_off_fg: Color,
     pub tab_off_bg: Color,
+    /// 個別狀態的顏色覆寫；`None` = 沿用對應的角色色（running = green、thinking = cyan、
+    /// waiting = yellow、done = gray、error = red、starting = blue、idle／exited = dark_gray）
+    pub status_running: Option<Color>,
+    pub status_thinking: Option<Color>,
+    pub status_waiting: Option<Color>,
+    pub status_done: Option<Color>,
+    pub status_error: Option<Color>,
+    pub status_starting: Option<Color>,
+    pub status_idle: Option<Color>,
 }
 
 pub const NAMES: [&str; 3] = ["dark", "light", "colorblind"];
@@ -59,6 +68,13 @@ impl Theme {
         tab_on_bg: Color::Indexed(37),
         tab_off_fg: Color::Indexed(244),
         tab_off_bg: Color::Indexed(238),
+        status_running: None,
+        status_thinking: None,
+        status_waiting: None,
+        status_done: None,
+        status_error: None,
+        status_starting: None,
+        status_idle: None,
     };
 
     /// 亮色背景的終端機：顏色改用較深的色階，彩色背景上的文字改為白色。
@@ -78,6 +94,13 @@ impl Theme {
         tab_on_bg: Color::Indexed(30),
         tab_off_fg: Color::Indexed(240),
         tab_off_bg: Color::Indexed(252),
+        status_running: None,
+        status_thinking: None,
+        status_waiting: None,
+        status_done: None,
+        status_error: None,
+        status_starting: None,
+        status_idle: None,
     };
 
     /// 色覺友善（紅綠色盲）：避開紅／綠對比，改用橘與藍（Okabe-Ito 色系）。
@@ -96,6 +119,20 @@ impl Theme {
                 continue;
             };
             let c = crate::ui::color(c, tc);
+            let status = match k.as_str() {
+                "status_running" => Some(&mut self.status_running),
+                "status_thinking" => Some(&mut self.status_thinking),
+                "status_waiting" => Some(&mut self.status_waiting),
+                "status_done" => Some(&mut self.status_done),
+                "status_error" => Some(&mut self.status_error),
+                "status_starting" => Some(&mut self.status_starting),
+                "status_idle" => Some(&mut self.status_idle),
+                _ => None,
+            };
+            if let Some(slot) = status {
+                *slot = Some(c);
+                continue;
+            }
             let slot = match k.as_str() {
                 "cyan" => &mut self.cyan,
                 "yellow" => &mut self.yellow,
@@ -183,6 +220,34 @@ mod tests {
         assert_eq!(t.cyan, Color::Indexed(5));
         assert_eq!(t.red, Theme::LIGHT.red);
         assert_eq!(t.yellow, Theme::LIGHT.yellow);
+    }
+
+    #[test]
+    fn status_overrides_are_separate_from_role_colors() {
+        let mut m = BTreeMap::new();
+        m.insert("status_error".to_string(), "208".to_string());
+        let t = Theme::DARK.with_overrides(&m);
+        assert_eq!(t.status_error, Some(Color::Indexed(208)));
+        // 角色色 red 不受影響，其他狀態仍沿用角色色
+        assert_eq!(t.red, Color::Red);
+        assert_eq!(t.status_running, None);
+        // 改角色色時，沒有個別設定的狀態會跟著變（由 status_style 在使用時決定）
+        let mut m = BTreeMap::new();
+        m.insert("green".to_string(), "34".to_string());
+        let t = Theme::DARK.with_overrides(&m);
+        assert_eq!(t.green, Color::Indexed(34));
+        assert_eq!(t.status_running, None);
+    }
+
+    #[test]
+    fn every_color_key_is_applied() {
+        // COLOR_KEYS 與 with_overrides 必須同步：每個名稱都要真的改到主題
+        for k in agt_proto::colors::COLOR_KEYS {
+            let mut m = BTreeMap::new();
+            m.insert(k.to_string(), "#010203".to_string());
+            let t = Theme::DARK.with_overrides(&m);
+            assert_ne!(t, Theme::DARK, "{k} 沒有生效");
+        }
     }
 
     #[test]

@@ -15,6 +15,7 @@ path = "src/main.rs"
 agt-proto.workspace = true
 agt-tui.workspace = true
 agt-daemon.workspace = true
+agt-store.workspace = true
 tokio.workspace = true
 clap.workspace = true
 clap_complete.workspace = true

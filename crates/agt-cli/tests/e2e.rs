@@ -128,6 +128,12 @@ args = ["-c", '''{GROUP_AGENT}''']
 status_source = "none"
 auto_commit = true
 
+[templates.fix]
+description = "修 bug"
+agent = "fake"
+task = "修正"
+tags = ["bug"]
+
 [repos.'{}']
 copy_files = [".env"]
 "#,
@@ -220,6 +226,8 @@ fn create(agent: &str, repo: &Path, task: &str) -> ClientMsg {
         trust_setup: false,
         cols: Some(80),
         rows: Some(24),
+        template: None,
+        tags: vec![],
     })
 }
 
@@ -1948,6 +1956,251 @@ esac
         env.daemon = None;
         env.stop(&c2).await;
     }
+}
+
+/// `agt log`：匯出終端機紀錄（去掉控制序列、tail、Markdown、寫檔與覆寫保護、--raw 限制）。
+#[tokio::test(flavor = "multi_thread")]
+async fn log_export() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("cli").await;
+    let s = expect_session(c.request(create("fake", &env.repo, "log task")).await.unwrap()).unwrap();
+    let id = s.short_id.clone();
+
+    // 等 Agent 印出第一行（紀錄檔由 daemon 寫入）
+    let mut out = String::new();
+    for _ in 0..50 {
+        let (code, o, _) = agt_raw(&env, &["log", &id]);
+        if code == Some(0) && o.contains("中文輸出") {
+            out = o;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(out.contains("agent in") && out.contains("中文輸出"), "{out:?}");
+    assert!(!out.contains('\x1b'), "控制序列應被去掉：{out:?}");
+
+    // --tail
+    let (code, o, _) = agt_raw(&env, &["log", &id, "--tail", "1"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(o.lines().count(), 1, "{o:?}");
+
+    // Markdown
+    let (code, o, err) = agt_raw(&env, &["log", &id, "--format", "md"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(o.starts_with("# agt 分頁紀錄：log task\n"), "{o}");
+    assert!(o.contains(&format!("- 分頁：{id}")) && o.contains("```text"), "{o}");
+
+    // 寫到檔案：已存在時拒絕，--force 才覆寫
+    let file = env.home.join("exported.txt");
+    let f = file.to_str().unwrap();
+    let (code, _, err) = agt_raw(&env, &["log", &id, "-o", f]);
+    assert_eq!(code, Some(0), "{err}");
+    let written = std::fs::read_to_string(&file).unwrap();
+    assert!(written.contains("中文輸出"));
+    let (code, _, err) = agt_raw(&env, &["log", &id, "-o", f]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("--force"), "{err}");
+    let (code, _, err) = agt_raw(&env, &["log", &id, "-o", f, "--force"]);
+    assert_eq!(code, Some(0), "{err}");
+
+    // --raw 不能直接輸出到終端機；搭配 -o 時是原始位元組
+    let (code, o, err) = agt_raw(&env, &["log", &id, "--raw"]);
+    assert_eq!(code, Some(1));
+    assert!(o.is_empty() && err.contains("-o"), "{o:?} {err}");
+    let raw = env.home.join("raw.log");
+    let (code, _, err) = agt_raw(&env, &["log", &id, "--raw", "-o", raw.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(std::fs::read(&raw).unwrap().len() >= written.len());
+
+    // 不存在的分頁
+    let (code, _, _) = agt_raw(&env, &["log", "zzzzzzzz"]);
+    assert_eq!(code, Some(1));
+
+    env.stop(&c).await;
+}
+
+/// `agt stats`：從資料庫的狀態事件統計時間。
+#[tokio::test(flavor = "multi_thread")]
+async fn stats_json_reports_sessions() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("cli").await;
+    let s = expect_session(c.request(create("fake", &env.repo, "stats task")).await.unwrap()).unwrap();
+    // 等狀態事件寫進資料庫（假 Agent 印出 (y/n) 後進入等待輸入）
+    let mut v = serde_json::Value::Null;
+    for _ in 0..50 {
+        let (code, o, _) = agt_raw(&env, &["stats", "--json"]);
+        assert_eq!(code, Some(0));
+        v = serde_json::from_str(&o).unwrap();
+        if v["sessions"][0]["by_status"]["waiting"].is_number() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(v["days"], 7);
+    let list = v["sessions"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{v}");
+    assert_eq!(list[0]["short_id"], s.short_id.as_str());
+    assert_eq!(list[0]["agent"], "fake");
+    assert!(list[0]["total_secs"].as_i64().unwrap() >= 0);
+    assert_eq!(v["by_agent"]["fake"]["sessions"], 1);
+
+    // 文字模式
+    let (code, out, _) = agt_raw(&env, &["stats"]);
+    assert_eq!(code, Some(0));
+    assert!(out.contains(&s.short_id) && out.contains("依 Agent 合計"), "{out}");
+
+    env.stop(&c).await;
+}
+
+fn ls_json(env: &Env) -> Vec<serde_json::Value> {
+    let (code, v) = agt_json(env, &["ls", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    v.as_array().unwrap().clone()
+}
+
+fn tags_of(v: &serde_json::Value) -> Vec<&str> {
+    v["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect()
+}
+
+/// 範本：`agt new --template`，沒填的 Agent、任務、標籤用範本的值，填了的優先；錯誤訊息。
+#[tokio::test(flavor = "multi_thread")]
+async fn new_with_template() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("cli").await;
+    let repo = env.repo.to_string_lossy().into_owned();
+
+    // 省略 Agent：沿用範本的 Agent、任務與標籤
+    let (code, out, err) = agt_raw(&env, &["new", "--template", "fix", "--repo", &repo, "-y"]);
+    assert_eq!(code, Some(0), "{out}\n{err}");
+    let list = ls_json(&env);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["agent"], "fake");
+    assert_eq!(list[0]["task"], "修正");
+    assert_eq!(tags_of(&list[0]), ["bug"]);
+
+    // 自己填的任務優先；--tag 與範本的標籤合併（逗號與重複都可以）
+    let (code, out, err) = agt_raw(
+        &env,
+        &[
+            "new", "fake", "--template", "fix", "--task", "mine", "--tag", "urgent,ui", "--tag",
+            "BUG", "--repo", &repo, "-y",
+        ],
+    );
+    assert_eq!(code, Some(0), "{out}\n{err}");
+    let list = ls_json(&env);
+    let mine = list.iter().find(|s| s["task"] == "mine").expect("mine");
+    assert_eq!(mine["agent"], "fake");
+    assert_eq!(tags_of(mine), ["bug", "urgent", "ui"], "重複的 BUG 不分大小寫去掉");
+
+    // 不存在的範本：列出可用的
+    let (code, _, err) = agt_raw(&env, &["new", "fake", "--template", "nope", "--repo", &repo, "-y"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("找不到範本") && err.contains("fix"), "{err}");
+
+    // 沒有 Agent 也沒有範本
+    let (code, _, err) = agt_raw(&env, &["new", "--repo", &repo, "-y"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("--template"), "{err}");
+
+    // 標籤不合法：太長
+    let long = "x".repeat(25);
+    let (code, _, err) = agt_raw(&env, &["new", "fake", "--tag", &long, "--repo", &repo, "-y"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("太長"), "{err}");
+    assert_eq!(ls_json(&env).len(), 2, "失敗的建立不應留下分頁");
+
+    // `config check` 列出範本
+    let (code, v) = agt_json(&env, &["config", "check", "--json"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["templates"], serde_json::json!(["fix"]));
+    let (_, out, _) = agt_raw(&env, &["config", "check"]);
+    assert!(out.contains("範本：fix"), "{out}");
+
+    env.stop(&c).await;
+}
+
+/// 標籤：`agt tag` 的各種修改、`ls --tag` 篩選、文字輸出，重啟 daemon 後仍在。
+#[tokio::test(flavor = "multi_thread")]
+async fn session_tags() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("cli").await;
+    let a = expect_session(c.request(create("fake", &env.repo, "alpha")).await.unwrap()).unwrap();
+    let b = expect_session(c.request(create("fake", &env.repo, "beta")).await.unwrap()).unwrap();
+    let (ia, ib) = (a.short_id.clone(), b.short_id.clone());
+
+    // 沒有標籤時
+    let (code, out, _) = agt_raw(&env, &["tag", &ia]);
+    assert_eq!(code, Some(0));
+    assert!(out.contains("沒有標籤"), "{out}");
+
+    // 加入（逗號、#、重複與大小寫）
+    let (code, out, err) = agt_raw(&env, &["tag", &ia, "--add", "bug,#UI", "--add", "ui"]);
+    assert_eq!(code, Some(0), "{out}\n{err}");
+    assert!(out.contains("#bug #UI"), "{out}");
+    // 移除不分大小寫
+    let (_, out, _) = agt_raw(&env, &["tag", &ia, "--remove", "ui"]);
+    assert!(out.contains("#bug") && !out.contains("UI"), "{out}");
+    // 取代與清除
+    let (_, out, _) = agt_raw(&env, &["tag", &ib, "--set", "x,y"]);
+    assert!(out.contains("#x #y"), "{out}");
+    let (_, out, _) = agt_raw(&env, &["tag", &ib, "--add", "bug"]);
+    assert!(out.contains("#x #y #bug"), "{out}");
+
+    // 篩選與文字輸出
+    let ids = |tag: &str| -> Vec<String> {
+        let (code, v) = agt_json(&env, &["ls", "--json", "--tag", tag]);
+        assert_eq!(code, 0, "{v}");
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["short_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let mut both = ids("BUG");
+    both.sort();
+    let mut want = vec![ia.clone(), ib.clone()];
+    want.sort();
+    assert_eq!(both, want);
+    assert_eq!(ids("#x"), [ib.clone()]);
+    assert!(ids("none").is_empty());
+    let (_, out, _) = agt_raw(&env, &["ls"]);
+    assert!(out.contains("#bug"), "{out}");
+
+    // 不合法：太長、太多、與 --clear 互斥
+    let (code, _, err) = agt_raw(&env, &["tag", &ia, "--add", &"x".repeat(25)]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("太長"), "{err}");
+    let nine = (0..9).map(|i| format!("t{i}")).collect::<Vec<_>>().join(",");
+    let (code, _, err) = agt_raw(&env, &["tag", &ia, "--set", &nine]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("最多"), "{err}");
+    let (code, _, _) = agt_raw(&env, &["tag", &ia, "--add", "x", "--clear"]);
+    assert_eq!(code, Some(2), "clap 應拒絕互斥的選項");
+    let (code, _, _) = agt_raw(&env, &["tag", "zzzzzzzz", "--add", "x"]);
+    assert_eq!(code, Some(1));
+    // 失敗的修改不會改動既有標籤
+    let (_, out, _) = agt_raw(&env, &["tag", &ia]);
+    assert!(out.contains("#bug") && !out.contains("t0"), "{out}");
+
+    // daemon 重啟後標籤還在
+    env.stop(&c).await;
+    env.start();
+    let Connected { client: c2, .. } = env.connect("cli").await;
+    let list = ls_json(&env);
+    let a_after = list.iter().find(|s| s["short_id"] == ia.as_str()).unwrap();
+    assert_eq!(tags_of(a_after), ["bug"]);
+
+    // --clear
+    let (_, out, _) = agt_raw(&env, &["tag", &ia, "--clear"]);
+    assert!(out.contains("沒有標籤"), "{out}");
+    assert!(ids("bug") == [ib.clone()]);
+
+    env.stop(&c2).await;
 }
 
 /// 建立 grp 分頁並等 Agent 寫好分組檔，回傳 (分頁, worktree)。

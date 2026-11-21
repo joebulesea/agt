@@ -223,6 +223,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ("d", "浮動視窗顯示 diff"),
                 ("m", "收尾選單：merge / pr / keep / discard"),
                 ("r", "重新命名任務"),
+                ("t", "編輯標籤（空白或逗號分隔）"),
                 ("R", "重新啟動已結束的 Agent，接續上次的對話"),
                 ("N", "重新啟動已結束的 Agent，開新對話"),
                 ("[", "進入滾動模式，/ 搜尋歷史"),
@@ -338,7 +339,12 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 "  點欄位輸入 · 點 ◀ ▶ 選 Agent · Tab/↑↓ 切換欄位 · Ctrl+O 瀏覽目錄",
                 Style::new().fg(theme().dark_gray),
             ));
-            f.render_widget(Paragraph::new(lines).block(block("新增分頁")), r);
+            let title = match (form.template_name(), form.templates.is_empty()) {
+                (Some(t), _) => format!("新增分頁 · 範本：{t}（F3 換下一個）"),
+                (None, false) => "新增分頁（F3 選範本）".to_string(),
+                (None, true) => "新增分頁".to_string(),
+            };
+            f.render_widget(Paragraph::new(lines).block(block(&title)), r);
             // Repo 列最右邊的「瀏覽…」按鈕
             let browse = " 瀏覽… ";
             let bw = browse.width() as u16;
@@ -545,6 +551,19 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             f.render_widget(
                 Paragraph::new(format!(" {input}▏"))
                     .block(block("重新命名任務（Enter 確定，點外面取消）")),
+                r,
+            );
+            hits.push(ClickHit {
+                rect: r,
+                click: Click::Nothing,
+            });
+        }
+        Popup::Tags { input } => {
+            let r = centered(area, 60, 3);
+            f.render_widget(Clear, r);
+            f.render_widget(
+                Paragraph::new(format!(" {input}▏"))
+                    .block(block("標籤（空白或逗號分隔，Enter 確定，點外面取消）")),
                 r,
             );
             hits.push(ClickHit {

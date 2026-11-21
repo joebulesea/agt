@@ -319,6 +319,15 @@ fn colors_section_loads_from_file() {
 }
 
 #[test]
+fn long_running_notify_defaults_off_and_loads() {
+    assert_eq!(Config::defaults().general.long_running_notify_secs, 0);
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("config.toml");
+    std::fs::write(&f, "[general]\nlong_running_notify_secs = 600\n").unwrap();
+    assert_eq!(Config::load(&f).unwrap().general.long_running_notify_secs, 600);
+}
+
+#[test]
 fn notify_on_filters_statuses() {
     use agt_proto::AgentStatus::*;
     let mut c = Config::defaults();
@@ -345,4 +354,44 @@ fn notify_on_rejects_unknown_value() {
     c.general.notify_on = vec!["waiting".into(), "bogus".into()];
     let e = c.validate().unwrap_err();
     assert!(e.contains("notify_on") && e.contains("bogus"), "{e}");
+}
+
+#[test]
+fn templates_load_validate_and_reach_ui() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("config.toml");
+    std::fs::write(
+        &f,
+        "[templates.fix]\ndescription = \"修 bug\"\nagent = \"shell\"\ntask = \"修正：\"\nbase = \"develop\"\ntags = [\"bug\", \"#ui\"]\n",
+    )
+    .unwrap();
+    let c = Config::load(&f).unwrap();
+    let t = &c.templates["fix"];
+    assert_eq!((t.agent.as_str(), t.task.as_str()), ("shell", "修正："));
+    let ui = c.ui();
+    assert_eq!(ui.templates.len(), 1);
+    assert_eq!(ui.templates[0].name, "fix");
+    assert_eq!(ui.templates[0].base.as_deref(), Some("develop"));
+}
+
+#[test]
+fn templates_reject_bad_definitions() {
+    let base = |body: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("config.toml");
+        std::fs::write(&f, body).unwrap();
+        Config::load(&f).map(|_| ())
+    };
+    // 找不到 Agent
+    let e = base("[templates.x]\nagent = \"nope\"\n").unwrap_err();
+    assert!(e.contains("templates.x.agent") && e.contains("nope"), "{e}");
+    // 標籤不合法
+    let e = base("[templates.x]\nagent = \"shell\"\ntags = [\"a b\"]\n").unwrap_err();
+    assert!(e.contains("templates.x.tags"), "{e}");
+    // 缺少 agent、未知欄位
+    assert!(base("[templates.x]\ntask = \"t\"\n").is_err());
+    assert!(base("[templates.x]\nagent = \"shell\"\nbogus = 1\n").is_err());
+    // 名稱不能含空白
+    assert!(base("[templates.\"a b\"]\nagent = \"shell\"\n").is_err());
+    assert!(base("").is_ok());
 }

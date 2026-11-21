@@ -41,9 +41,13 @@ irm https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.ps1 | 
 ```sh
 agt                                    # 開啟 TUI（必要時自動在背景啟動 daemon（`agt daemon run`））
 agt new claude --repo ~/proj --task "登入功能"   # 建立分頁：worktree + branch agt/claude/<slug>-<id>
-agt ls                                 # 列出分頁
+agt new --template fix --tag urgent    # 套用範本（可省略 Agent）並加標籤
+agt tag <id> [--add 標籤] [--remove 標籤] [--set a,b] [--clear]   # 查看或修改標籤
+agt ls [--tag 標籤] [--json]                    # 列出分頁（可依標籤篩選）
 agt attach <id>                        # 開啟 TUI 並切到該分頁
 agt diff <id>
+agt stats [--days 7] [--json]          # 各分頁花在各狀態的時間（忙碌／等待輸入），依 Agent 合計；沒有 token／費用資料
+agt log <id> [--tail N] [--format text|md] [-o 檔案] [--raw --force]   # 匯出終端機紀錄（去掉控制序列；--raw 輸出原始位元組，需搭配 -o）
 agt rename <id> "新任務名稱"
 agt finish <id> merge --strategy squash   # merge | pr | keep | discard
 agt kill <id> [--cleanup]
@@ -72,6 +76,8 @@ PowerShell：在 `$PROFILE` 加上 `agt completions powershell | Out-String | In
 
 新增分頁時（`Ctrl+A` → `n`）Base 欄位留空會使用主 repo 目前的 HEAD branch，畫面上會顯示實際的 branch；它不是 remote 的預設 branch 時以黃字提醒，避免 PR 開到 feature branch。底部狀態列最右邊顯示 agt 的版本號。Agent 結束後（例如 `/exit`），畫面上會出現可點擊的「重新啟動，接續對話（`R`）」與「開新對話（`N`）」按鈕。
 
+範本與標籤：設定檔的 `[templates.<名稱>]` 可以預先填好新增分頁的 `agent`、`task`、`base` 與 `tags`（另有 `description`）；新增表單按 `F3`（或 `Ctrl+T`）切換範本，命令列用 `agt new --template <名稱>`（可省略 Agent）。你自己填的值優先，標籤會合併。要多帶參數（例如指定模型）請另外定義 Agent 變體（`extends` / `extra_args`），再讓範本指向它。分頁可以有最多 8 個標籤（不含空白與逗號，最長 24 字元，不分大小寫去重）：`Ctrl+A` → `t` 編輯，或 `agt tag <id> --add/--remove/--set/--clear`；標籤顯示在左側欄分頁的第三行，`agt ls --tag <標籤>` 可篩選。
+
 主題：`[general]` 的 `theme` 選擇 TUI 配色（左側欄、狀態列、浮動視窗；分頁中 Agent 自己輸出的顏色不受影響）：`dark`（預設）、`light`（亮色背景的終端機）、`colorblind`（紅綠色盲，避開紅／綠對比改用橘與藍）。修改設定檔後會熱重載，不必重開 agt。想改個別顏色時，在設定檔加 `[colors]` 區段覆寫主題（疊加在所選主題上），例如：
 
 ```toml
@@ -81,11 +87,13 @@ yellow = "208"     # 256 色索引
 sel_bg = "darkgray"
 ```
 
-顏色可寫 `#rrggbb`、`0`–`255`、ANSI 名稱（`black red green yellow blue magenta cyan gray darkgray white`）或 `default`；可覆寫的名稱見 [`config/default.toml`](config/default.toml)。不支援真彩的終端機會自動把 `#rrggbb` 降成 256 色。名稱或顏色寫錯時設定檔視為錯誤（狀態列顯示原因，沿用上一份有效的設定）。
+顏色可寫 `#rrggbb`、`0`–`255`、ANSI 名稱（`black red green yellow blue magenta cyan gray darkgray white`）或 `default`；可覆寫的名稱見 [`config/default.toml`](config/default.toml)；除了角色色之外，也可以只改單一狀態的顏色（`status_running`、`status_thinking`、`status_waiting`、`status_done`、`status_error`、`status_starting`、`status_idle`），沒設定的狀態沿用角色色。不支援真彩的終端機會自動把 `#rrggbb` 降成 256 色。名稱或顏色寫錯時設定檔視為錯誤（狀態列顯示原因，沿用上一份有效的設定）。
+
+長時間執行提醒：`[general]` 的 `long_running_notify_secs`（預設 0 = 關閉）設為例如 `600`，分頁連續「執行中／思考中」超過 10 分鐘時會通知一次（離開忙碌狀態後重新計時，你正在看的分頁不提醒）。
 
 系統通知：分頁變成「等待輸入」、「完成」或「發生錯誤」，且你沒有在看那個分頁時，agt 會發送系統通知。`[general]` 的 `notify = false` 全部關閉，`notify_on` 選擇要通知的狀態：`waiting`、`done`、`error`、`exited`（Agent 行程結束），預設是前三者。Windows 上點擊通知會開新的終端機視窗（優先用 Windows Terminal，沒有則開新的 console）執行 `agt attach <id>` 並切到該分頁；需要 daemon 還在執行，通知進了通知中心後 daemon 若已重新啟動則點了沒反應。
 
-TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
+TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`t` 編輯標籤、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
 
 #### diff 視窗
 

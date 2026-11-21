@@ -57,14 +57,19 @@ pub(crate) fn color(c: PColor, tc: bool) -> Color {
 }
 
 pub fn status_style(s: AgentStatus) -> Style {
+    let t = theme();
     match s {
-        AgentStatus::Running => Style::new().fg(theme().green),
-        AgentStatus::Thinking => Style::new().fg(theme().cyan),
-        AgentStatus::WaitingInput => Style::new().fg(theme().yellow).add_modifier(Modifier::BOLD),
-        AgentStatus::Done => Style::new().fg(theme().gray),
-        AgentStatus::Error => Style::new().fg(theme().red),
-        AgentStatus::Starting => Style::new().fg(theme().blue),
-        AgentStatus::Idle | AgentStatus::Exited => Style::new().fg(theme().dark_gray),
+        AgentStatus::Running => Style::new().fg(t.status_running.unwrap_or(t.green)),
+        AgentStatus::Thinking => Style::new().fg(t.status_thinking.unwrap_or(t.cyan)),
+        AgentStatus::WaitingInput => Style::new()
+            .fg(t.status_waiting.unwrap_or(t.yellow))
+            .add_modifier(Modifier::BOLD),
+        AgentStatus::Done => Style::new().fg(t.status_done.unwrap_or(t.gray)),
+        AgentStatus::Error => Style::new().fg(t.status_error.unwrap_or(t.red)),
+        AgentStatus::Starting => Style::new().fg(t.status_starting.unwrap_or(t.blue)),
+        AgentStatus::Idle | AgentStatus::Exited => {
+            Style::new().fg(t.status_idle.unwrap_or(t.dark_gray))
+        }
     }
 }
 

@@ -18,6 +18,24 @@ use std::time::Duration;
 /// 同時連線數上限（TUI、CLI、hook 的 `agt notify` 都是短連線，正常用量遠低於此）。
 const MAX_CONNECTIONS: usize = 64;
 
+/// 資料庫的位置（`agt stats` 直接讀取）。
+pub fn db_path() -> std::path::PathBuf {
+    Paths::detect().db()
+}
+
+/// 分頁的終端機紀錄檔（輪替出去的舊檔在前），不存在的略過。`session_id` 必須是 daemon 回報的完整 id。
+pub fn session_log_files(session_id: &str) -> Vec<std::path::PathBuf> {
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Vec::new();
+    }
+    let logs = Paths::detect().logs();
+    [format!("{session_id}.log.1"), format!("{session_id}.log")]
+        .iter()
+        .map(|n| logs.join(n))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
 /// `agt config check`：只檢查設定檔，不取得 lock、不啟動 daemon。回傳結束碼。
 pub fn check_config(args: &[String]) -> i32 {
     check::run(args)
@@ -165,7 +183,11 @@ async fn serve(d: Arc<Daemon>) -> anyhow::Result<()> {
             loop {
                 t.tick().await;
                 let d = d.clone();
-                let _ = tokio::task::spawn_blocking(move || d.poll_git()).await;
+                let _ = tokio::task::spawn_blocking(move || {
+                    d.poll_git();
+                    d.check_long_running();
+                })
+                .await;
             }
         });
     }

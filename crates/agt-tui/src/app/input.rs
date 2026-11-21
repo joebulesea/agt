@@ -137,6 +137,13 @@ impl App {
                     });
                 }
             }
+            KeyCode::Char('t') => {
+                if let Some(s) = self.active_info() {
+                    self.popup = Some(Popup::Tags {
+                        input: s.tags.join(" "),
+                    });
+                }
+            }
             KeyCode::Char('R') => {
                 if let Some(id) = self.active.clone() {
                     self.simple(
@@ -212,6 +219,8 @@ impl App {
             base: String::new(),
             field: 2,
             browser: None,
+            templates: self.ui.templates.clone(),
+            template: None,
         }));
     }
 

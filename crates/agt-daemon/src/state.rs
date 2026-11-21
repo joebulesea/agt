@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
+mod busy;
 mod close;
 mod create;
 mod finish;
@@ -131,6 +132,8 @@ pub struct Daemon {
     restart_lock: Mutex<()>,
     /// 已經警告過「worktree 的 .git 被改動」的分頁（每個分頁只警告一次）。
     tamper_warned: Mutex<std::collections::HashSet<String>>,
+    /// 連續忙碌（執行中／思考中）的計時，用來提醒長時間執行的分頁。
+    busy: Mutex<busy::BusyTracker>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -160,6 +163,7 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         dirty: false,
         created_at: r.created_at,
         shared: r.shared,
+        tags: r.tags.clone(),
     }
 }
 
@@ -218,6 +222,7 @@ impl Daemon {
             entries: Mutex::new(entries),
             restart_lock: Mutex::new(()),
             tamper_warned: Mutex::new(Default::default()),
+            busy: Mutex::new(Default::default()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),

@@ -11,10 +11,15 @@
 
 ### 新增
 
+- 新增分頁的範本：設定檔 `[templates.<名稱>]`（`agent`、`task`、`base`、`tags`、`description`）。新增表單按 `F3` / `Ctrl+T` 切換，`agt new --template <名稱>` 可省略 Agent；自己填的值優先，標籤合併。`agt config check` 會列出範本並檢查 Agent 與標籤
+- 分頁標籤：每個分頁最多 8 個標籤，`Ctrl+A` → `t` 或 `agt tag <id> --add/--remove/--set/--clear` 修改，顯示在左側欄第三行，`agt ls --tag <標籤>` 篩選，`agt new --tag` 建立時加上。資料庫 schema 升到 4（新增 `sessions.tags`；舊版 agt 無法開啟升級後的資料庫）
+- `agt stats [--days N] [--json]`：統計最近 N 天（預設 7，最多保留 30 天）建立的分頁花在各狀態的時間（忙碌＝執行中＋思考中、等待輸入），並依 Agent 合計。只有時間；目前沒有 token 或費用的資料來源
+- 長時間執行提醒：`[general] long_running_notify_secs`（預設 0 = 關閉），分頁連續執行中／思考中超過這段時間就通知一次
+- `agt log <id>`：匯出分頁的終端機紀錄。預設輸出去掉控制序列的純文字（處理 `\r` 進度列與退格造成的覆寫），`--tail N` 只取最後 N 行，`--format md` 輸出 Markdown，`-o` 寫到檔案（已存在需 `--force`）；`--raw -o` 輸出原始位元組，不直接顯示在終端機。需要 `log_output = true`（預設）
 - `agt update --check --json`：輸出 `{current, latest, tag, status, update_available}`（`status`：`up_to_date`、`update_available`、`ahead`、`downgrade`），查詢失敗時輸出 `{error}` 並 exit 1
 - `agt gc --json` 與 `agt config check --json`：`gc` 輸出 `{pruned, items:[{kind, repo, path, branch, session}]}`；`config check` 成功時輸出 `{ok: true, config_file, config_exists, repo, worktree_root, agents, auto_commit, warnings}`，錯誤時輸出 `{ok: false, error}`，exit code 與文字模式相同（錯誤 1、警告 0）
 - `agt doctor --json` 與 `agt daemon status --json`：以 JSON 輸出給腳本或狀態列使用（`ls --json` 原本就有）。doctor 輸出 `{ok, failures, warnings, items:[{level, text, hint}]}`，有失敗項目時仍 exit 1；daemon status 輸出 `daemon_running`、`socket`，執行中時另有 `pid`、`version`、`sessions`、`running`（執行中的分頁數）、`clients`、`data_dir`、`config_path`
-- 自訂顏色：設定檔 `[colors]` 區段可覆寫主題中的個別顏色（`#rrggbb`、0–255、ANSI 名稱或 `default`），疊加在 `theme` 之上；`agt config check` 會檢查名稱與寫法。
+- 自訂顏色：設定檔 `[colors]` 區段可覆寫主題中的個別顏色（`#rrggbb`、0–255、ANSI 名稱或 `default`），疊加在 `theme` 之上，也可以只改單一狀態的顏色（`status_running`、`status_error` 等）；`agt config check` 會檢查名稱與寫法。
 - 主題設定：`[general] theme = "dark" | "light" | "colorblind"`。`light` 給亮色背景的終端機，`colorblind` 避開紅／綠對比；預設 `dark` 與原本配色相同。設定值會經由 `UiConfig` 傳給 TUI（新欄位有預設值，協定版本不變），設定檔熱重載後立即生效，寫錯時 `agt config check` 會報錯
 - Windows：點擊系統通知會開新的終端機視窗執行 `agt attach <id>`（優先 Windows Terminal，否則新的 console）。需要 daemon 仍在執行；其他平台行為不變
 - 系統通知可選擇狀態：`[general] notify_on = ["waiting", "done", "error"]`（預設前三者；另可加 `"exited"` 在 Agent 行程結束時通知，`notify = false` 仍是全部關閉）。分頁發生錯誤時現在也會通知（原本只有等待輸入與完成）；設定值寫錯時 `agt config check` 會報錯

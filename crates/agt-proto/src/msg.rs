@@ -20,6 +20,12 @@ pub struct CreateSession {
     pub cols: Option<u16>,
     #[serde(default)]
     pub rows: Option<u16>,
+    /// 套用設定檔中的範本：`agent`、`task`、`base_branch` 沒填的部分用範本的值，標籤合併。
+    #[serde(default)]
+    pub template: Option<String>,
+    /// 建立時加上的標籤。
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Client → Daemon 的控制訊息（規格 4.3）。
@@ -87,6 +93,11 @@ pub enum ClientMsg {
     Rename {
         id: String,
         task: String,
+    },
+    /// 取代分頁的標籤（空清單 = 清除）；回覆 `Session`。
+    SetTags {
+        id: String,
+        tags: Vec<String>,
     },
     /// 滾動歷史；正數往上（較舊），`i32::MIN` 代表回到底部。
     Scroll {

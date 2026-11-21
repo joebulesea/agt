@@ -201,6 +201,7 @@ fn json_report(c: &Checked, file: &Path, repo: Option<&Path>) -> serde_json::Val
         "repo": repo.map(|r| r.display().to_string()),
         "worktree_root": c.worktree_root.display().to_string(),
         "agents": c.cfg.agents.keys().collect::<Vec<_>>(),
+        "templates": c.cfg.templates.keys().collect::<Vec<_>>(),
         "auto_commit": auto_commit,
         "warnings": c.warnings,
     })
@@ -209,7 +210,7 @@ fn json_report(c: &Checked, file: &Path, repo: Option<&Path>) -> serde_json::Val
 /// 命令列參數：`[--file <路徑>] [--repo <目錄>] [--json]`。回傳 exit code。
 ///
 /// `--json`：stdout 只輸出一份 JSON（成功：`{ok: true, config_file, config_exists, repo, worktree_root,
-/// agents, auto_commit: {名稱: bool}, warnings}`；失敗：`{ok: false, error}`），exit code 規則不變。
+/// agents, templates, auto_commit: {名稱: bool}, warnings}`；失敗：`{ok: false, error}`），exit code 規則不變。
 pub fn run(args: &[String]) -> i32 {
     let paths = Paths::detect();
     let mut file: PathBuf = paths.config_file.clone();
@@ -273,6 +274,12 @@ pub fn run(args: &[String]) -> i32 {
         "Agent：{}",
         cfg.agents.keys().cloned().collect::<Vec<_>>().join("、")
     );
+    if !cfg.templates.is_empty() {
+        println!(
+            "範本：{}",
+            cfg.templates.keys().cloned().collect::<Vec<_>>().join("、")
+        );
+    }
     // `extends` 展開後的實際值，auto_commit 沒有生效時從這裡看得出來
     println!("auto_commit（收尾前自動 commit）：");
     for line in auto_commit_lines(&cfg) {

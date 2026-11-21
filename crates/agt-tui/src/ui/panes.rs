@@ -184,6 +184,23 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
                 y += 1;
             }
         }
+        // 第三行（有標籤時）：#標籤 #標籤
+        if !s.tags.is_empty() && y < bottom {
+            let text = s
+                .tags
+                .iter()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&text, w.saturating_sub(6)),
+                Style::new().fg(theme().cyan).patch(row_style),
+            );
+            y += 1;
+        }
     }
 }
 

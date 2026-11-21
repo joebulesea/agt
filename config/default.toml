@@ -13,6 +13,8 @@ notify = true                    # 系統通知（false = 全部關閉）
 # 哪些狀態要通知：waiting（等待輸入）、done（完成）、error（發生錯誤）、exited（Agent 行程結束）。
 # 你正在看的分頁不會通知；exited 預設不開，需要的話自己加上去（例如背景跑長任務時）。
 notify_on = ["waiting", "done", "error"]
+# 分頁連續執行中／思考中超過這麼多秒就提醒一次（0 = 關閉）。離開忙碌狀態後重新計時；你正在看的分頁不提醒。
+long_running_notify_secs = 0
 idle_shutdown_secs = 600
 scrollback_lines = 10000
 merge_strategy = "ask"           # ask | merge | squash | rebase
@@ -28,9 +30,21 @@ sensitive_paths = []
 # new_args / resume_args：開新對話／接續對話（R 重新啟動）時接在 args 後面的參數。
 # {conversation} = 分頁目前的對話 ID（UUID）；N 重新啟動或接續失敗時會換一個新的。
 # 設定了 adapter 的 Agent 沒寫 new_args / resume_args 時沿用 adapter 的值（resume_args = [] 可關閉接續）。
+# 新增分頁的範本（選用）：預先填好 Agent、任務名稱、base branch 與標籤。
+# 新增分頁的表單按 F3（或 Ctrl+T）切換範本；命令列用 `agt new --template fix`（可省略 Agent）。
+# 自己填的值優先，標籤會合併。要多帶參數（例如指定模型）請另外定義一個 Agent（見 extends / extra_args）。
+# [templates.fix]
+# description = "修 bug"
+# agent = "claude"
+# task = "修正："
+# base = "main"
+# tags = ["bug"]
+
 # 覆寫主題中個別顏色（選用）。寫法：#rrggbb、0–255（256 色）、black/red/green/yellow/blue/magenta/cyan/gray/darkgray/white、default。
 # 名稱：cyan（強調）yellow（警示、快捷鍵）green red blue magenta gray dark_gray text on_accent（彩色背景上的字）
 #       sel_bg（選取列）bar_bg（狀態列）tab_on_bg tab_off_fg tab_off_bg（按鈕）
+#       status_running status_thinking status_waiting status_done status_error status_starting status_idle
+#       （個別狀態；沒設定時沿用 green cyan yellow gray red blue dark_gray；idle 也用於已結束）
 # [colors]
 # cyan = "#00afaf"
 # yellow = "208"

@@ -111,6 +111,12 @@ impl Daemon {
                         if let Err(e) = d.store().update_status(&id, to.as_str()) {
                             tracing::warn!("更新狀態失敗：{e}");
                         }
+                        match to {
+                            AgentStatus::Running | AgentStatus::Thinking => {
+                                d.busy.lock_or_recover().enter(&id, Instant::now());
+                            }
+                            _ => d.busy.lock_or_recover().leave(&id),
+                        }
                         d.record(
                             &id,
                             "status",
@@ -186,6 +192,41 @@ impl Daemon {
         });
     }
 
+    /// 分頁連續忙碌超過 `long_running_notify_secs` 時提醒一次（每 3 秒由背景工作呼叫）。
+    /// 你正在看的分頁不通知。
+    pub fn check_long_running(&self) {
+        let cfg = self.cfg();
+        let secs = cfg.general.long_running_notify_secs;
+        if secs == 0 || !cfg.general.notify {
+            return;
+        }
+        let due = self.busy.lock_or_recover().take_due(Instant::now(), secs);
+        for id in due {
+            let (info, viewers) = {
+                let entries = self.entries.lock_or_recover();
+                match entries.get(&id) {
+                    Some(e) => (
+                        e.info.clone(),
+                        e.session.as_ref().map_or(0, |s| s.viewers()),
+                    ),
+                    None => continue,
+                }
+            };
+            if viewers > 0 {
+                continue;
+            }
+            platform::notify(
+                &format!("agt · {}", info.task),
+                &format!(
+                    "{} 已連續執行超過 {}",
+                    info.agent,
+                    busy::format_secs(secs)
+                ),
+                Some(id.as_str()),
+            );
+        }
+    }
+
     /// hooks 回報狀態（`agt notify`）。
     pub fn notify(
         &self,
@@ -216,6 +257,19 @@ impl Daemon {
         self.store().rename(&id, task)?;
         let info = self
             .update_info(&id, |i| i.task = task.into())
+            .ok_or_else(|| OpError::not_found(&id))?;
+        self.publish(info.clone());
+        Ok(info)
+    }
+
+    /// 取代分頁的標籤（空清單 = 清除）。
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> OpResult<SessionInfo> {
+        let id = self.resolve(id)?;
+        let tags = agt_proto::tags::normalize(tags)
+            .map_err(|e| OpError::new(codes::BAD_REQUEST, e))?;
+        self.store().set_tags(&id, &tags)?;
+        let info = self
+            .update_info(&id, |i| i.tags = tags.clone())
             .ok_or_else(|| OpError::not_found(&id))?;
         self.publish(info.clone());
         Ok(info)

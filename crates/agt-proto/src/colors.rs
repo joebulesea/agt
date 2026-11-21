@@ -3,7 +3,7 @@
 use crate::screen::Color;
 
 /// 可以覆寫的顏色名稱，對應 TUI 主題的欄位。
-pub const COLOR_KEYS: [&str; 15] = [
+pub const COLOR_KEYS: [&str; 22] = [
     "cyan",
     "yellow",
     "green",
@@ -19,6 +19,14 @@ pub const COLOR_KEYS: [&str; 15] = [
     "tab_on_bg",
     "tab_off_fg",
     "tab_off_bg",
+    // 個別狀態的顏色；沒設定時沿用上面對應的角色色（running = green…）
+    "status_running",
+    "status_thinking",
+    "status_waiting",
+    "status_done",
+    "status_error",
+    "status_starting",
+    "status_idle",
 ];
 
 /// 解析顏色：`#rrggbb`、`0`–`255`（256 色索引）、ANSI 名稱

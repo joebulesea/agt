@@ -2,8 +2,10 @@
 
 mod deps;
 mod doctor;
+mod log;
 mod prompt;
 mod setup;
+mod stats;
 mod uninstall;
 mod update;
 
@@ -29,8 +31,9 @@ enum Cmd {
     Tui,
     /// 建立分頁（含 worktree）
     New {
-        /// claude | antigravity | copilot | codex | shell，或設定檔中的其他 Agent
-        agent: String,
+        /// claude | antigravity | copilot | codex | shell，或設定檔中的其他 Agent；
+        /// 用 `--template` 時可省略（沿用範本的 Agent）
+        agent: Option<String>,
         /// repo 或任意目錄，預設為目前目錄
         #[arg(long, default_value = ".")]
         repo: String,
@@ -49,14 +52,67 @@ enum Cmd {
         /// 不詢問，直接執行 repo 的 setup 指令
         #[arg(long, short)]
         yes: bool,
+        /// 套用設定檔中的範本（`[templates.<名稱>]`）：沒填的 Agent、任務、base 用範本的值
+        #[arg(long)]
+        template: Option<String>,
+        /// 加上標籤（可重複，也可以用逗號分隔）
+        #[arg(long = "tag", value_name = "標籤")]
+        tags: Vec<String>,
     },
     /// 列出分頁
     Ls {
         #[arg(long)]
         json: bool,
+        /// 只列出有這個標籤的分頁（不分大小寫）
+        #[arg(long = "tag", value_name = "標籤")]
+        tag: Option<String>,
+    },
+    /// 查看或修改分頁的標籤
+    Tag {
+        id: String,
+        /// 加上標籤（可重複，也可以用逗號分隔）
+        #[arg(long, value_name = "標籤", conflicts_with_all = ["set", "clear"])]
+        add: Vec<String>,
+        /// 移除標籤
+        #[arg(long, value_name = "標籤", conflicts_with_all = ["set", "clear"])]
+        remove: Vec<String>,
+        /// 取代成這些標籤（逗號分隔）
+        #[arg(long, value_name = "標籤", conflicts_with = "clear")]
+        set: Option<String>,
+        /// 清除所有標籤
+        #[arg(long)]
+        clear: bool,
     },
     /// 開啟 TUI 並切到指定分頁
     Attach { id: String },
+    /// 統計各分頁花在各狀態的時間（只有時間，沒有 token／費用資料）
+    Stats {
+        /// 統計最近幾天建立的分頁（最多只保留 30 天）
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+        /// 以 JSON 輸出
+        #[arg(long)]
+        json: bool,
+    },
+    /// 匯出分頁的終端機紀錄（去掉控制序列的純文字，或 Markdown）
+    Log {
+        id: String,
+        /// 只輸出最後 N 行
+        #[arg(long)]
+        tail: Option<usize>,
+        /// 輸出格式：text（預設）或 md
+        #[arg(long, value_parser = ["text", "md"], default_value = "text")]
+        format: String,
+        /// 寫到檔案而不是終端機
+        #[arg(long, short)]
+        output: Option<String>,
+        /// 輸出原始位元組（含控制序列），需要搭配 -o
+        #[arg(long)]
+        raw: bool,
+        /// 覆寫已存在的輸出檔
+        #[arg(long)]
+        force: bool,
+    },
     /// 由 Agent 的 hooks 呼叫，回報狀態（失敗時靜默結束）
     Notify {
         #[arg(long)]
@@ -335,6 +391,56 @@ fn pad(s: &str, w: usize) -> String {
     format!("{s}{}", " ".repeat(w.saturating_sub(s.width())))
 }
 
+/// `agt tag` 的修改內容。
+#[derive(Default)]
+struct TagEdit {
+    add: Vec<String>,
+    remove: Vec<String>,
+    /// 取代成這些標籤
+    set: Option<Vec<String>>,
+    clear: bool,
+}
+
+impl TagEdit {
+    fn is_noop(&self) -> bool {
+        self.add.is_empty() && self.remove.is_empty() && self.set.is_none() && !self.clear
+    }
+}
+
+/// 套用修改後的標籤清單（還沒驗證；daemon 會再用 `tags::normalize` 驗證與去重）。
+/// 移除不分大小寫；`set` 與 `clear` 優先於 add／remove（clap 已讓它們互斥）。
+fn edit_tags(current: &[String], e: &TagEdit) -> Vec<String> {
+    if e.clear {
+        return Vec::new();
+    }
+    if let Some(set) = &e.set {
+        return set.clone();
+    }
+    let mut out: Vec<String> = current
+        .iter()
+        .filter(|t| !e.remove.iter().any(|r| r.to_lowercase() == t.to_lowercase()))
+        .cloned()
+        .collect();
+    out.extend(e.add.iter().cloned());
+    out
+}
+
+fn format_tags(tags: &[String]) -> String {
+    if tags.is_empty() {
+        "（沒有標籤）".into()
+    } else {
+        tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")
+    }
+}
+
+/// 只留下有這個標籤的分頁（不分大小寫；可以帶開頭的 `#`）。
+fn filter_by_tag(list: Vec<SessionInfo>, tag: &str) -> Vec<SessionInfo> {
+    let want = tag.trim().trim_start_matches('#').to_lowercase();
+    list.into_iter()
+        .filter(|s| s.tags.iter().any(|t| t.to_lowercase() == want))
+        .collect()
+}
+
 fn print_sessions(list: &[SessionInfo]) {
     if list.is_empty() {
         println!("（沒有分頁）");
@@ -361,7 +467,11 @@ fn print_sessions(list: &[SessionInfo]) {
                 s.agent.clone(),
                 s.repo_name.clone().unwrap_or_default(),
                 git,
-                s.task.clone(),
+                if s.tags.is_empty() {
+                    s.task.clone()
+                } else {
+                    format!("{}  {}", s.task, format_tags(&s.tags))
+                },
             ]
         })
         .collect();
@@ -469,6 +579,33 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             install,
         }),
         Some(Cmd::Attach { id }) => tui(Some(id)).await,
+        Some(Cmd::Stats { days, json }) => {
+            let list = stats::collect(days)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&stats::to_json(days, &list))?);
+            } else {
+                print!("{}", stats::to_text(days, &list));
+            }
+            Ok(())
+        }
+        Some(Cmd::Log {
+            id,
+            tail,
+            format,
+            output,
+            raw,
+            force,
+        }) => {
+            log::run(log::Options {
+                id,
+                tail,
+                raw,
+                output,
+                format,
+                force,
+            })
+            .await
+        }
         Some(Cmd::New {
             agent,
             repo,
@@ -477,10 +614,22 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             share,
             attach,
             yes,
+            template,
+            tags,
         }) => {
+            let agent = agent.unwrap_or_default();
+            if agent.is_empty() && template.is_none() {
+                bail!("請指定 Agent，或用 --template 套用範本");
+            }
+            let tags = tags
+                .iter()
+                .flat_map(|t| agt_proto::tags::split_input(t))
+                .collect();
             let c = ensure_daemon("cli").await?.client;
             let mut req = CreateSession {
                 agent,
+                template,
+                tags,
                 repo: absolute(&repo),
                 task,
                 base_branch: base,
@@ -516,9 +665,45 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Some(Cmd::Ls { json }) => {
+        Some(Cmd::Tag {
+            id,
+            add,
+            remove,
+            set,
+            clear,
+        }) => {
             let c = ensure_daemon("cli").await?.client;
-            let list = expect_sessions(c.request(ClientMsg::ListSessions).await?)?;
+            let cur = expect_session(c.request(ClientMsg::GetSession { id: id.clone() }).await?)?;
+            let split = |v: &[String]| -> Vec<String> {
+                v.iter().flat_map(|t| agt_proto::tags::split_input(t)).collect()
+            };
+            let edit = TagEdit {
+                add: split(&add),
+                remove: split(&remove),
+                set: set.as_deref().map(|s| agt_proto::tags::split_input(s)),
+                clear,
+            };
+            if edit.is_noop() {
+                println!("{}", format_tags(&cur.tags));
+                return Ok(());
+            }
+            let new = edit_tags(&cur.tags, &edit);
+            let s = expect_session(
+                c.request(ClientMsg::SetTags {
+                    id: cur.id.clone(),
+                    tags: new,
+                })
+                .await?,
+            )?;
+            println!("{}：{}", s.short_id, format_tags(&s.tags));
+            Ok(())
+        }
+        Some(Cmd::Ls { json, tag }) => {
+            let c = ensure_daemon("cli").await?.client;
+            let mut list = expect_sessions(c.request(ClientMsg::ListSessions).await?)?;
+            if let Some(t) = &tag {
+                list = filter_by_tag(list, t);
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&list)?);
             } else {
@@ -1106,5 +1291,85 @@ mod daemon_status_json_tests {
         assert_eq!(v["daemon_running"], false);
         assert_eq!(v["error"], "協定版本不同");
         assert_eq!(v["socket"], "/s.sock");
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn add_and_remove() {
+        let cur = v(&["bug", "ui"]);
+        let e = TagEdit {
+            add: v(&["urgent"]),
+            remove: v(&["UI"]),
+            ..Default::default()
+        };
+        assert_eq!(edit_tags(&cur, &e), ["bug", "urgent"]);
+    }
+
+    #[test]
+    fn set_and_clear_replace_everything() {
+        let cur = v(&["a", "b"]);
+        let e = TagEdit {
+            set: Some(v(&["x"])),
+            ..Default::default()
+        };
+        assert_eq!(edit_tags(&cur, &e), ["x"]);
+        let e = TagEdit {
+            clear: true,
+            ..Default::default()
+        };
+        assert!(edit_tags(&cur, &e).is_empty());
+    }
+
+    #[test]
+    fn noop_is_detected() {
+        assert!(TagEdit::default().is_noop());
+        assert!(!TagEdit { clear: true, ..Default::default() }.is_noop());
+        assert!(!TagEdit { set: Some(vec![]), ..Default::default() }.is_noop());
+    }
+
+    #[test]
+    fn formats_tags() {
+        assert_eq!(format_tags(&[]), "（沒有標籤）");
+        assert_eq!(format_tags(&v(&["a", "b"])), "#a #b");
+    }
+
+    fn sess(id: &str, tags: &[&str]) -> SessionInfo {
+        SessionInfo {
+            id: id.into(),
+            short_id: id.into(),
+            agent: "shell".into(),
+            repo_path: None,
+            repo_name: None,
+            task: "t".into(),
+            worktree: None,
+            branch: None,
+            base_branch: None,
+            cwd: ".".into(),
+            status: AgentStatus::Idle,
+            exit_code: None,
+            ahead: 0,
+            behind: 0,
+            dirty: false,
+            created_at: 0,
+            shared: false,
+            tags: v(tags),
+        }
+    }
+
+    #[test]
+    fn filters_by_tag_ignoring_case_and_hash() {
+        let list = vec![sess("a", &["Bug"]), sess("b", &["ui"]), sess("c", &[])];
+        let ids = |l: Vec<SessionInfo>| l.into_iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(ids(filter_by_tag(list.clone(), "bug")), ["a"]);
+        assert_eq!(ids(filter_by_tag(list.clone(), "#UI")), ["b"]);
+        assert!(filter_by_tag(list, "none").is_empty());
     }
 }
