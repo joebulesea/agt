@@ -3,7 +3,7 @@
 //! 錯誤（載入失敗）→ exit 1；警告（設定合法但很可能不是你要的）→ exit 0 並列出。
 //! 只檢查「使用者設定檔裡寫到的 Agent」，內建預設裡沒安裝的 Agent 不會一直警告。
 
-use crate::config::{Config, Paths};
+use crate::config::{Config, Paths, RepoConfig};
 use agt_agents::AgentSettings;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 const VARS: &[&str] = &["cwd", "session", "conversation", "gitdir"];
 /// `update` 在沒有分頁的情境下執行，這些變數沒有值。
 const UPDATE_VARS: &[&str] = &[];
+/// `check_command`（收尾檢查）可用的變數。
+const CHECK_VARS: &[&str] = &["dir", "check", "session"];
 
 /// 找出字串裡 `{name}` 形式、但不是已知變數的名稱（`{{.X}}` 這類 Go template 不算）。
 fn unknown_vars(s: &str, allowed: &[&str]) -> Vec<String> {
@@ -96,6 +98,26 @@ pub fn lint(
                     }
                 }
             }
+        }
+        for s in &a.check_command {
+            for v in unknown_vars(s, CHECK_VARS) {
+                w.push(format!(
+                    "agents.{name}.check_command：{{{v}}} 在 check_command 裡不能用（可用：{{dir}}、{{check}}、{{session}}），會原樣傳給指令"
+                ));
+            }
+        }
+        if !a.check_command.is_empty() && !a.check_command.iter().any(|s| s.contains("{dir}")) {
+            w.push(format!(
+                "agents.{name}.check_command 沒有用到 {{dir}}：檢查不會在分組 branch 的 checkout 裡執行（容器要掛載 {{dir}}）"
+            ));
+        }
+        if a.sandboxed()
+            && a.check_command.is_empty()
+            && cfg.repos.values().any(|r| r.finish_check.is_some())
+        {
+            w.push(format!(
+                "agents.{name}：沙箱 Agent 沒有設定 check_command，收尾檢查（finish_check）會略過（agt 不在主機上執行沙箱 Agent 寫的程式碼）"
+            ));
         }
         for (k, v) in &a.env {
             for var in unknown_vars(v, VARS) {
@@ -184,6 +206,15 @@ fn collect(
     let cfg = Config::load(file)?;
     let mut warnings = lint(&cfg, &user_agents(file), paths, cmd_exists);
     if let Some(root) = repo {
+        let local = root.join(".agt.toml");
+        if let Ok(text) = std::fs::read_to_string(&local)
+            && toml::from_str::<RepoConfig>(&text).is_ok_and(|r| r.finish_check.is_some())
+        {
+            warnings.push(format!(
+                "{}：finish_check 只從使用者設定檔的 [repos.\"<路徑>\"] 讀取，repo 內的 .agt.toml 可能被 Agent 改過，這裡的設定不會生效",
+                local.display()
+            ));
+        }
         let r = cfg.repo(paths, root)?;
         for f in &r.copy_files {
             if escapes_repo(f) {
@@ -611,5 +642,72 @@ copy_files = [".env", "../secret", "/etc/passwd"]
         assert!(all.contains("../secret"), "{all}");
         assert!(all.contains("/etc/passwd"), "{all}");
         assert!(!all.contains("\".env\"：\".env\""), "{all}");
+    }
+
+    #[test]
+    fn finish_check_and_check_command_warnings() {
+        let (c, mine) = load(
+            r#"
+[repos."/no/such/dir"]
+finish_check = "cargo build"
+
+[agents.box]
+command = "docker"
+args = ["run", "img"]
+
+[agents.boxok]
+command = "docker"
+check_command = ["docker", "run", "--rm", "-v", "{dir}:/c", "img", "sh", "-c", "{check}"]
+
+[agents.typo]
+command = "docker"
+check_command = ["docker", "run", "-v", "{cwd}:/c", "img", "sh", "-c", "{check}"]
+
+[agents.host]
+command = "claude"
+"#,
+        );
+        let all = lint(&c, &mine, &paths(), &|_| true);
+        let about = |n: &str| {
+            all.iter()
+                .filter(|l| l.starts_with(&format!("agents.{n}")))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        // 沙箱 Agent 沒有 check_command：檢查會略過
+        assert!(
+            about("box")
+                .iter()
+                .any(|l| l.contains("沒有設定 check_command")),
+            "{all:?}"
+        );
+        assert!(about("boxok").is_empty(), "{all:?}");
+        // 不能用的變數、沒有掛載 {dir}
+        let typo = about("typo").join("\n");
+        assert!(
+            typo.contains("{cwd}") && typo.contains("沒有用到 {dir}"),
+            "{typo}"
+        );
+        // 不是沙箱 Agent：在主機上執行，不提醒
+        assert!(about("host").is_empty(), "{all:?}");
+    }
+
+    #[test]
+    fn finish_check_in_agt_toml_is_reported_as_ignored() {
+        let (_d, f) = write_config("");
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join(".agt.toml"),
+            "finish_check = \"cargo build\"\n",
+        )
+        .unwrap();
+        let c = collect(&f, Some(repo.path()), &paths(), &|_| true).unwrap();
+        assert!(
+            c.warnings
+                .iter()
+                .any(|w| w.contains("finish_check") && w.contains("不會生效")),
+            "{:?}",
+            c.warnings
+        );
     }
 }

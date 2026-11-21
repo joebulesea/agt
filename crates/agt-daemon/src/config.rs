@@ -74,6 +74,11 @@ pub struct RepoConfig {
     pub setup: Option<String>,
     #[serde(default)]
     pub base_branch: Option<String>,
+    /// 分組收尾（pr / merge）前，在每組 branch 的暫時 checkout 執行的檢查，例如 `"cargo build --workspace"`。
+    /// 任何一組失敗就不 push、不合併。只讀使用者設定檔的 `[repos."<路徑>"]`：repo 內的 `.agt.toml`
+    /// 可能被 Agent 改過，不採用（`agt config check` 會提醒）。執行方式見 Agent 的 `check_command`。
+    #[serde(default)]
+    pub finish_check: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

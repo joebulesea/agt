@@ -80,6 +80,20 @@ crates/agt-tui/src/app/
 | **pr** | 建立 branch `<任務 branch>-<組名>`（內容 = merge-base + 該組檔案，只有一個 commit；有 `AFTER` 時改為接在那組的 branch 後面），各自 push 並開 PR（有 `AFTER` 時 PR 的 base 是那組的 branch）；已有 PR 時只追加 commit、更新說明，不 force push。沒有 `AFTER` 的 PR 互不包含對方的變更 |
 | **merge** | 依組名順序合進 base（有 `AFTER` 時被接的組先合）：merge＝每組一個 merge commit、squash＝每組一個 commit、rebase＝逐組 cherry-pick 該組的 commit。任一組衝突就停下，已合進去的組保留 |
 
+### 收尾檢查（finish_check）
+
+使用者可以在設定檔 `[repos."<路徑>"]` 設定 `finish_check`（例如 `"cargo build --workspace"`）。
+分組收尾時，agt 先把每組的 branch 建好，在每組 branch 的乾淨 checkout（`<worktree>.check-<組名>`）
+各執行一次；**任何一組失敗就停下，不 push、不合併任何一組**，錯誤視窗會顯示哪一組失敗與輸出的最後 40 行。
+常見原因是某組用到另一組的程式碼卻沒寫 `AFTER`，或共用的檔案被分到別組。
+
+- 只從使用者設定檔讀取；repo 內 `.agt.toml` 的 `finish_check` 不會生效（Agent 可能改過它）。
+- 沙箱 Agent（指令是 docker / sbx / podman）在 Agent 設定的 `check_command` 裡執行，例如同一個映像檔的容器，
+  `{dir}` 掛載這組的 checkout、`{check}` 是 finish_check 的內容；沒設定時略過檢查（agt 不在主機上執行它寫的程式碼）。
+  其他 Agent 在主機上用 shell 執行。
+- checkout 裡沒有 `copy_files` 的檔案，也沒有建置快取。每組最多 30 分鐘。
+- 沒有分組時不執行（只有一個 branch，Agent 自己的 worktree 就是它的內容）。
+
 收尾前，收尾視窗會預覽預計產生的 commit / PR。以下情況會在最前面以紅色 `⚠` 提醒：
 
 - `.agt/` 裡有 agt 不認得的項目（只認得 `README.md`、`COMMIT_MSG`、`PR_BODY.md`、`groups/`）。
