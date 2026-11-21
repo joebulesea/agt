@@ -11,11 +11,13 @@
 
 ### 新增
 
+- 同一個檔案分到不同組：分組目錄可放 `SNAPSHOT/<路徑>`（這個檔案在這組 branch 上的完整內容），前面的組放只含自己修改的版本，後面的組用 `AFTER` 接上去並在 FILES 拿最終內容，PR 只顯示各自的部分。只有 SNAPSHOT 的組可以省略 FILES；拿最終內容的組沒有接在 SNAPSHOT 的組後面時拒絕並說明；只有 SNAPSHOT 的檔案最終內容歸 `rest`，`rest` 自動接在那組後面。收尾預覽列出每組的 SNAPSHOT 數量。說明見 `docs/Agent-分組收尾說明.md`，`.agt/README.md` 的規則也已更新
 - 收尾檢查：設定檔 `[repos."<路徑>"] finish_check`（例如 `"cargo build --workspace"`），分組收尾時在每組 branch 的乾淨 checkout 各執行一次，任何一組失敗就不 push、不合併，並顯示哪一組失敗與輸出的最後 40 行。沙箱 Agent（docker / sbx / podman）在 Agent 的 `check_command`（例如同一個映像檔的容器）裡執行，沒設定時略過，不在主機上執行它寫的程式碼。只從使用者設定檔讀取，`.agt.toml` 裡的不會生效；`agt config check` 會提醒這些情況，收尾預覽也會說明是否執行檢查
 - 堆疊分組：分組目錄可放 `AFTER`（另一組的組名），這組接在那組的 branch 後面建立，收尾 pr 時 PR 的 base 也是那組的 branch，用到另一組新增的程式碼時也能拆成多個 PR；merge 依 `AFTER` 順序合進 base。那組後來追加 commit 時，這組以 merge commit 追上（不 force push）。收尾預覽標出每組接在哪一組後面。說明見 `docs/Agent-分組收尾說明.md`，`.agt/README.md` 的規則也已更新
 
 ### 修正
 
+- 分組收尾 merge 選 squash 時，改為套用該組自己的 commit 再壓成一個，不再用 `merge --squash`：接在別組後面、又改到同一個檔案的組，原本會把前一組已合進去的修改再算一次而衝突
 - 分組收尾 merge 選 rebase 時，分組 branch 上若已有多個 commit（例如之前收尾 pr 時追加過）會全部接上去，不再只取最後一個
 
 ## 0.3.1 - 2026-11-21
