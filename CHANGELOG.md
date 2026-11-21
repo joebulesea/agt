@@ -9,6 +9,14 @@
 
 ## 未發布
 
+### 新增
+
+- 堆疊分組：分組目錄可放 `AFTER`（另一組的組名），這組接在那組的 branch 後面建立，收尾 pr 時 PR 的 base 也是那組的 branch，用到另一組新增的程式碼時也能拆成多個 PR；merge 依 `AFTER` 順序合進 base。那組後來追加 commit 時，這組以 merge commit 追上（不 force push）。收尾預覽標出每組接在哪一組後面。說明見 `docs/Agent-分組收尾說明.md`，`.agt/README.md` 的規則也已更新
+
+### 修正
+
+- 分組收尾 merge 選 rebase 時，分組 branch 上若已有多個 commit（例如之前收尾 pr 時追加過）會全部接上去，不再只取最後一個
+
 ## 0.3.1 - 2026-11-21
 
 ### 改善

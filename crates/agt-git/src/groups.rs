@@ -4,15 +4,20 @@
 //! - `FILES`：這組包含的路徑，一行一個（相對於 worktree 根目錄；目錄代表底下全部）
 //! - `COMMIT_MSG`：這組的 commit 訊息（第一行是標題，也當 PR 標題）
 //! - `PR_BODY.md`：這組的 PR 說明
+//! - `AFTER`：（選用）這組接在哪一組後面（組名）。用到另一組新增的程式碼時使用
 //!
 //! 沒有被任何分組認領的變更自成一組 `rest`。每組的 branch 是 `<任務 branch>-<名稱>`，
 //! 內容 = merge-base 加上該組的檔案，所以各 PR 互不包含對方的變更。
+//! 有 `AFTER` 的組改為接在那組的 branch 後面（內容 = 那組的 branch 加上這組的檔案），
+//! PR 的 base 也是那組的 branch（堆疊 PR）；那組合併後 GitHub 會自動把 base 改回原本的 branch。
 
 use crate::*;
 use std::path::{Path, PathBuf};
 
 /// 分組目錄（相對於 worktree）。
 pub const GROUPS_DIR: &str = "groups";
+/// 分組裡記錄「接在哪一組後面」的檔案。
+pub const AFTER_FILE: &str = "AFTER";
 
 #[derive(Debug, Clone)]
 pub struct Group {
@@ -20,6 +25,8 @@ pub struct Group {
     pub files: Vec<String>,
     pub commit_msg: Option<String>,
     pub pr_body: Option<String>,
+    /// 接在哪一組後面（`AFTER`）。None = 從 merge-base 建立。
+    pub after: Option<String>,
 }
 
 fn valid_name(n: &str) -> bool {
@@ -90,14 +97,58 @@ pub fn load_groups(worktree: &Path) -> Result<Vec<Group>> {
         if files.is_empty() {
             return Err(GitError::Refused(format!("分組 {name} 的 FILES 是空的")));
         }
+        let after = read_note(worktree, &rel(AFTER_FILE))?.and_then(|s| {
+            s.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_string)
+        });
+        if let Some(a) = &after
+            && (!valid_name(a) || a == "rest" || *a == name)
+        {
+            return Err(GitError::Refused(format!(
+                "分組 {name} 的 AFTER「{a}」不合規定（要是另一組的名稱，不可為 rest 或自己）"
+            )));
+        }
         out.push(Group {
             commit_msg: read_note(worktree, &rel(COMMIT_MSG_FILE))?,
             pr_body: read_note(worktree, &rel(PR_BODY_FILE))?,
+            after,
             name,
             files,
         });
     }
+    order_by_after(out)
+}
+
+/// 依 `AFTER` 排序：被接的組排在前面，其餘維持名稱順序。有循環時拒絕。
+/// `AFTER` 指向不存在的組是允許的（那組可能在上次收尾 pr 時已經處理完、說明檔已刪除），
+/// 建立 branch 時才要求那組的 branch 存在。
+fn order_by_after(groups: Vec<Group>) -> Result<Vec<Group>> {
+    let mut pending = groups;
+    let mut out: Vec<Group> = vec![];
+    while !pending.is_empty() {
+        let ready = pending.iter().position(|g| match &g.after {
+            None => true,
+            Some(a) => !pending.iter().any(|p| &p.name == a),
+        });
+        match ready {
+            Some(i) => out.push(pending.remove(i)),
+            None => {
+                let names: Vec<&str> = pending.iter().map(|g| g.name.as_str()).collect();
+                return Err(GitError::Refused(format!(
+                    "分組的 AFTER 形成循環：{}",
+                    names.join("、")
+                )));
+            }
+        }
+    }
     Ok(out)
+}
+
+/// 分組的 branch 名稱。
+pub(crate) fn group_branch(branch: &str, name: &str) -> String {
+    format!("{branch}-{name}")
 }
 
 pub(crate) fn claims(files: &[String], path: &str) -> bool {
@@ -163,20 +214,44 @@ pub(crate) fn make_group_branch(
     g: &Group,
     fallback_title: &str,
 ) -> Result<(String, bool)> {
-    let gb = format!("{branch}-{}", g.name);
-    let existing = git_wt(
-        repo,
-        wt,
-        &["rev-parse", "--verify", "-q", &format!("refs/heads/{gb}")],
-    )
-    .ok();
-    let parent = match &existing {
-        Some(sha) => sha.clone(),
-        None => git_wt(repo, wt, &["merge-base", base, "HEAD"])?,
+    let gb = group_branch(branch, &g.name);
+    let rev = |b: &str| {
+        git_wt(
+            repo,
+            wt,
+            &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")],
+        )
+        .ok()
     };
-    let tree = build_tree(repo, wt, gitdir, &parent, &g.files)?;
-    let parent_tree = git_wt(repo, wt, &["rev-parse", &format!("{parent}^{{tree}}")])?;
-    if tree == parent_tree {
+    let existing = rev(&gb);
+    // 堆疊：接在另一組的 branch 後面
+    let start = match &g.after {
+        Some(a) => Some(rev(&group_branch(branch, a)).ok_or_else(|| {
+            GitError::Refused(format!(
+                "分組 {} 要接在 {a} 後面，但找不到 {a} 的 branch（{a} 已經合併或刪除了嗎？）",
+                g.name
+            ))
+        })?),
+        None => None,
+    };
+    // 已有 branch、但接的那組後來又多了 commit：以那組的最新內容為底做一個 merge commit
+    // 把它併進來（不改寫歷史、不需要 force push），PR 的差異才不會混進那組的變更。
+    let catch_up = match (&existing, &start) {
+        (Some(tip), Some(s)) => !is_ancestor(repo, wt, s, tip)?,
+        _ => false,
+    };
+    let (tree_base, parents): (String, Vec<String>) = match (&existing, &start) {
+        (Some(tip), Some(s)) if catch_up => (s.clone(), vec![tip.clone(), s.clone()]),
+        (Some(tip), _) => (tip.clone(), vec![tip.clone()]),
+        (None, Some(s)) => (s.clone(), vec![s.clone()]),
+        (None, None) => {
+            let mb = git_wt(repo, wt, &["merge-base", base, "HEAD"])?;
+            (mb.clone(), vec![mb])
+        }
+    };
+    let tree = build_tree(repo, wt, gitdir, &tree_base, &g.files)?;
+    let base_tree = git_wt(repo, wt, &["rev-parse", &format!("{tree_base}^{{tree}}")])?;
+    if tree == base_tree && !catch_up {
         if existing.is_none() {
             return Err(GitError::Refused(format!(
                 "分組 {} 沒有任何變更（FILES 的路徑沒有差異）",
@@ -189,19 +264,18 @@ pub(crate) fn make_group_branch(
         .commit_msg
         .clone()
         .unwrap_or_else(|| format!("{fallback_title}（{}）\n", g.name));
+    let msg = match (&g.after, catch_up) {
+        (Some(a), true) => format!("Merge {} into {gb}\n", group_branch(branch, a)),
+        _ => msg,
+    };
     let staged = stage_note(gitdir, "AGT_GROUP_MSG", &msg)?;
-    let sha = git_wt(
-        repo,
-        wt,
-        &[
-            "commit-tree",
-            &tree,
-            "-p",
-            &parent,
-            "-F",
-            &staged.to_string_lossy(),
-        ],
-    );
+    let staged_s = staged.to_string_lossy().into_owned();
+    let mut args = vec!["commit-tree", tree.as_str()];
+    for p in &parents {
+        args.extend(["-p", p.as_str()]);
+    }
+    args.extend(["-F", staged_s.as_str()]);
+    let sha = git_wt(repo, wt, &args);
     let _ = std::fs::remove_file(&staged);
     git_wt(
         repo,
@@ -209,6 +283,21 @@ pub(crate) fn make_group_branch(
         &["update-ref", &format!("refs/heads/{gb}"), &sha?],
     )?;
     Ok((gb, true))
+}
+
+/// `a` 是否為 `b` 的祖先（或同一個 commit）。
+fn is_ancestor(repo: &Path, wt: &Path, a: &str, b: &str) -> Result<bool> {
+    let o = wt_command(repo, wt)?
+        .args(["merge-base", "--is-ancestor", a, b])
+        .output()?;
+    match o.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(GitError::Refused(format!(
+            "git merge-base --is-ancestor 失敗：{}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ))),
+    }
 }
 
 /// 依分組各自建立 branch、push 並開 PR（已有 PR 時更新）。沒被認領的變更自成 `rest` 組。
@@ -248,12 +337,22 @@ pub fn create_group_prs(
             Some(t) => Some(stage_note(&gitdir, "AGT_PR_BODY.md", t)?),
             None => None,
         };
-        let r = open_or_update_pr(worktree, &gitdir, &gb, &pr_base, &title, staged.as_deref());
+        // 堆疊的組：PR 的 base 是它接的那組的 branch
+        let base_for = match &g.after {
+            Some(a) => group_branch(branch, a),
+            None => pr_base.clone(),
+        };
+        let r = open_or_update_pr(worktree, &gitdir, &gb, &base_for, &title, staged.as_deref());
         if let Some(p) = &staged {
             let _ = std::fs::remove_file(p);
         }
+        let stacked = g
+            .after
+            .as_ref()
+            .map(|a| format!("（接在 [{a}] 後面，PR base {base_for}）"))
+            .unwrap_or_default();
         lines.push(format!(
-            "▸ [{}] {title}\n    branch {gb}\n    {}",
+            "▸ [{}] {title}\n    branch {gb}{stacked}\n    {}",
             g.name,
             r?.replace('\n', "\n    ")
         ));
@@ -311,6 +410,7 @@ fn with_rest(repo: &Path, wt: &Path, base: &str, mut groups: Vec<Group>) -> Resu
             files: rest,
             commit_msg: None,
             pr_body: None,
+            after: None,
         });
     }
     Ok(groups)
@@ -349,14 +449,29 @@ pub fn merge_groups(
         )));
     }
     let groups = with_rest(repo, worktree, base, groups)?;
-    // 先把每組的 branch 都建好：有問題（例如空的分組、巢狀 repo）時在動到 base 之前就停下
+    let mb = git_wt(repo, worktree, &["merge-base", base, "HEAD"])?;
+    // 先把每組的 branch 都建好：有問題（例如空的分組、巢狀 repo）時在動到 base 之前就停下。
+    // 同時記下每組的 commit 範圍（起點 = merge-base，或它接的那組的 branch）：
+    // 合併途中會刪掉已合併的分組 branch，之後的組不能再用名稱找起點。
     let mut branches = vec![];
     for g in &groups {
         let (gb, _) = make_group_branch(repo, worktree, &gitdir, branch, base, g, task)?;
-        branches.push(gb);
+        let tip = git_wt(repo, worktree, &["rev-parse", &format!("refs/heads/{gb}")])?;
+        let start = match &g.after {
+            Some(a) => git_wt(
+                repo,
+                worktree,
+                &[
+                    "rev-parse",
+                    &format!("refs/heads/{}", group_branch(branch, a)),
+                ],
+            )?,
+            None => mb.clone(),
+        };
+        branches.push((gb, start, tip));
     }
     let mut lines = vec![];
-    for (g, gb) in groups.iter().zip(&branches) {
+    for (g, (gb, start, tip)) in groups.iter().zip(&branches) {
         let title = group_title(g, task);
         let conflict = |what: &str| {
             let files = git(repo, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
@@ -399,8 +514,25 @@ pub fn merge_groups(
                 }
             }
             Strategy::Rebase => {
-                if let Err(e) = git(repo, &["cherry-pick", gb]) {
-                    return Err(conflict("cherry-pick").unwrap_or(e));
+                // 這組自己的 commit（不含它接的那組、也不含追上那組時的 merge commit），依序接上去。
+                // 分組 branch 在之前收尾 pr 時可能已經追加過好幾個 commit，只取最後一個會漏掉內容。
+                let list = git_wt(
+                    repo,
+                    worktree,
+                    &[
+                        "rev-list",
+                        "--reverse",
+                        "--no-merges",
+                        &format!("{start}..{tip}"),
+                    ],
+                )?;
+                let commits: Vec<&str> = list.split_whitespace().collect();
+                if !commits.is_empty() {
+                    let mut args = vec!["cherry-pick", "--allow-empty"];
+                    args.extend(commits);
+                    if let Err(e) = git(repo, &args) {
+                        return Err(conflict("cherry-pick").unwrap_or(e));
+                    }
                 }
             }
         }
@@ -515,8 +647,13 @@ pub fn finish_preview(
         out.push(format!("分成 {n} 組：{n} 個 commit、{n} 個 PR"));
     }
     for g in &groups {
+        let stacked = g
+            .after
+            .as_ref()
+            .map(|a| format!("，接在 [{a}] 後面"))
+            .unwrap_or_default();
         out.push(format!(
-            "▸ [{}] {}（{} 個路徑）",
+            "▸ [{}] {}（{} 個路徑{stacked}）",
             g.name,
             group_title(g, task),
             g.files.len()
