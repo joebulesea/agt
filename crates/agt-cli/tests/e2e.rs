@@ -686,6 +686,8 @@ async fn full_flow() {
     .unwrap();
     let wk = PathBuf::from(k.worktree.clone().unwrap());
     let bk = k.branch.clone().unwrap();
+    // 等它 commit 完再結束，否則可能留下 index.lock 或 branch 的 ref 鎖
+    wait_agent_commit(&wk).await;
     c2.request(ClientMsg::Kill {
         id: k.id.clone(),
         cleanup: false,
@@ -1080,8 +1082,8 @@ fn update_check_json() {
 }
 
 /// 刪除資料夾；Windows 上 daemon 的背景 git 輪詢可能暫時佔著，失敗時重試。
-/// 等假 Agent（`FAKE_AGENT`）在 worktree 裡 commit 完。commit 到一半就結束它（Windows 上尤其常見）
-/// 會留下 `index.lock`，之後在這個 worktree 執行 git 會失敗。
+/// 等假 Agent（`FAKE_AGENT`）在 worktree 裡 commit 完。commit 到一半就結束它會留下 `index.lock`
+/// 或 branch 的 ref 鎖，之後的 `git reset`、收尾刪除 branch 等 git 操作會失敗。
 async fn wait_agent_commit(wt: &Path) {
     for _ in 0..150 {
         let o = Command::new("git")
@@ -1135,6 +1137,8 @@ async fn gc_json_closed_worktree() {
     .unwrap();
     let wk = PathBuf::from(k.worktree.clone().unwrap());
     let bk = k.branch.clone().unwrap();
+    // 等它 commit 完再結束，否則可能留下 index.lock 或 branch 的 ref 鎖
+    wait_agent_commit(&wk).await;
     c.request(ClientMsg::Kill {
         id: k.id.clone(),
         cleanup: false,
@@ -1445,7 +1449,7 @@ async fn gc_json_mixed_items_and_output_hygiene() {
     let m = expect_session(c.request(create("fake", &env.repo, "lost")).await.unwrap()).unwrap();
     let wk = PathBuf::from(k.worktree.clone().unwrap());
     let wm = PathBuf::from(m.worktree.clone().unwrap());
-    // 等它 commit 完再結束，否則可能留下 index.lock，後面的 git reset 會失敗
+    // 等它 commit 完再結束，否則可能留下 index.lock 或 branch 的 ref 鎖
     wait_agent_commit(&wk).await;
     c.request(ClientMsg::Kill {
         id: k.id.clone(),
@@ -1648,6 +1652,8 @@ async fn daemon_status_matches_protocol_and_tracks_changes() {
     assert_eq!(v["clients"], info.clients + 1, "{v}");
 
     // 關閉一個分頁：sessions 變少，running 不會增加，且仍與協定一致
+    // 等它 commit 完再結束，否則可能留下 index.lock 或 branch 的 ref 鎖
+    wait_agent_commit(Path::new(s2.worktree.as_deref().unwrap())).await;
     let before = daemon_info(&c).await;
     c.request(ClientMsg::Kill {
         id: s2.id.clone(),
