@@ -1609,21 +1609,12 @@ async fn daemon_status_matches_protocol_and_tracks_changes() {
     assert_eq!(info.clients, 0);
     assert_eq!(v["clients"], info.clients, "{v}");
 
-    // 再開一條 TUI 連線：clients 多一條；放掉之後會回來
-    let t = env.connect("tui").await;
+    // 再開一條 TUI 連線：clients 多一條。
+    // （不測「放掉後會減少」：drop `Client` 只會關閉送出的佇列，連線要等 daemon 端關閉或程序結束才斷，
+    // 在同一個測試程序裡驗證不了。）
+    let _t = env.connect("tui").await;
     let (_, v) = agt_json(&env, &["daemon", "status", "--json"]);
     assert_eq!(v["clients"], info.clients + 1, "{v}");
-    drop(t);
-    let mut back = false;
-    for _ in 0..30 {
-        let (_, v) = agt_json(&env, &["daemon", "status", "--json"]);
-        if v["clients"] == info.clients {
-            back = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(back, "TUI 連線關閉後 clients 應該減少");
 
     // 關閉一個分頁：sessions 變少，running 不會增加，且仍與協定一致
     let before = daemon_info(&c).await;
