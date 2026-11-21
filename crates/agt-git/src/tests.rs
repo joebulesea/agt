@@ -1365,3 +1365,261 @@ fn failed_check_stops_before_touching_base() {
     let list = git(root, &["worktree", "list", "--porcelain"]).unwrap();
     assert!(!list.contains(".check-"), "{list}");
 }
+
+// ---- SNAPSHOT（同一個檔案分到不同組）----
+
+fn write_snapshot(wt: &Path, group: &str, path: &str, content: &str) {
+    let f = wt
+        .join(NOTES_DIR)
+        .join("groups")
+        .join(group)
+        .join(groups::SNAPSHOT_DIR)
+        .join(path);
+    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+    std::fs::write(f, content).unwrap();
+}
+
+/// 兩個主題都改了 `src/shared.txt`（base 裡沒有這個檔案以外的內容）：
+/// a 只放自己那一行（SNAPSHOT），b 接在 a 後面、拿最終內容（FILES）。
+fn shared_file_worktree() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, String) {
+    let repo = init_repo();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("ws");
+    let branch = "agt/test/s-000010".to_string();
+    add_worktree(repo.path(), &wt, &branch, "main").unwrap();
+    std::fs::create_dir_all(wt.join("src")).unwrap();
+    std::fs::write(wt.join("src/shared.txt"), "A\nB\n").unwrap();
+    std::fs::write(wt.join("b-only.txt"), "b\n").unwrap();
+    // a：只有 SNAPSHOT，沒有 FILES
+    std::fs::create_dir_all(wt.join(NOTES_DIR).join("groups/a")).unwrap();
+    std::fs::write(
+        wt.join(NOTES_DIR).join("groups/a").join(COMMIT_MSG_FILE),
+        "加入 A\n",
+    )
+    .unwrap();
+    write_snapshot(&wt, "a", "src/shared.txt", "A\n");
+    write_group(&wt, "b", "src/shared.txt\nb-only.txt\n", Some("加入 B\n"));
+    write_after(&wt, "b", "a");
+    (repo, wts, wt, branch)
+}
+
+#[test]
+fn load_groups_lists_snapshots_and_allows_missing_files() {
+    let (_r, _w, wt, _b) = shared_file_worktree();
+    write_snapshot(&wt, "a", "deep/dir/x.rs", "x\n");
+    let g = load_groups(&wt).unwrap();
+    assert_eq!(g[0].name, "a");
+    assert!(g[0].files.is_empty());
+    assert_eq!(g[0].snapshots, ["deep/dir/x.rs", "src/shared.txt"]);
+    assert!(g[1].snapshots.is_empty());
+}
+
+#[test]
+fn load_groups_rejects_bad_snapshots() {
+    // 同一組的 FILES 也列了它
+    let (_r, _w, wt, _b) = shared_file_worktree();
+    write_snapshot(&wt, "b", "src/shared.txt", "A\n");
+    let e = refused(load_groups(&wt));
+    assert!(
+        e.contains("SNAPSHOT/src/shared.txt") && e.contains("FILES"),
+        "{e}"
+    );
+
+    // 路徑規則與 FILES 相同（.git、.agt）
+    for bad in [".git/config", ".agt/x"] {
+        let (_r, _w, wt, _b) = shared_file_worktree();
+        write_snapshot(&wt, "a", bad, "x");
+        let e = refused(load_groups(&wt));
+        assert!(e.contains("不合規定"), "{bad}: {e}");
+    }
+
+    // 沒有 FILES、SNAPSHOT 是空目錄：等於什麼都沒有
+    let (_r, _w, wt, _b) = shared_file_worktree();
+    let snap = wt
+        .join(NOTES_DIR)
+        .join("groups/a")
+        .join(groups::SNAPSHOT_DIR);
+    std::fs::remove_dir_all(&snap).unwrap();
+    std::fs::create_dir_all(&snap).unwrap();
+    assert!(refused(load_groups(&wt)).contains("FILES"));
+}
+
+#[cfg(unix)]
+#[test]
+fn load_groups_rejects_symlinked_snapshots() {
+    let (_r, _w, wt, _b) = shared_file_worktree();
+    let snap = wt
+        .join(NOTES_DIR)
+        .join("groups/a")
+        .join(groups::SNAPSHOT_DIR);
+    std::os::unix::fs::symlink("/etc/passwd", snap.join("leak.txt")).unwrap();
+    assert!(refused(load_groups(&wt)).contains("連結"));
+
+    let (_r, _w, wt, _b) = shared_file_worktree();
+    let snap = wt
+        .join(NOTES_DIR)
+        .join("groups/a")
+        .join(groups::SNAPSHOT_DIR);
+    std::fs::remove_dir_all(&snap).unwrap();
+    let other = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(other.path(), &snap).unwrap();
+    assert!(refused(load_groups(&wt)).contains("連結"));
+}
+
+#[test]
+fn snapshot_splits_one_file_across_stacked_groups() {
+    let (repo, _w, wt, branch) = shared_file_worktree();
+    let root = repo.path();
+    let gitdir = trusted_gitdir(root, &wt).unwrap();
+    let g = load_groups(&wt).unwrap();
+    let (ab, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &g[0], "任務").unwrap();
+    assert!(made);
+    let (bb, _) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &g[1], "任務").unwrap();
+    // a 的 branch 只有 A；b 的 branch 是最終內容，相對 a 只多了 B 那一行與 b-only.txt
+    assert_eq!(
+        git(root, &["show", &format!("{ab}:src/shared.txt")]).unwrap(),
+        "A"
+    );
+    let a_files = git(root, &["ls-tree", "-r", "--name-only", &ab]).unwrap();
+    assert!(!a_files.contains("b-only.txt"), "{a_files}");
+    assert_eq!(
+        git(root, &["show", &format!("{bb}:src/shared.txt")]).unwrap(),
+        "A\nB"
+    );
+    let diff = git(root, &["diff", &ab, &bb, "--", "src/shared.txt"]).unwrap();
+    assert!(diff.contains("+B") && !diff.contains("-A"), "{diff}");
+    // .agt 沒有被放進任何 branch
+    assert!(
+        !git(root, &["ls-tree", "-r", "--name-only", &bb])
+            .unwrap()
+            .contains(".agt")
+    );
+    // 沒有新變更：不多 commit
+    let (_, made) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &g[0], "任務").unwrap();
+    assert!(!made);
+}
+
+#[test]
+fn snapshot_keeps_executable_mode_of_existing_file() {
+    let repo = init_repo();
+    let root = repo.path();
+    std::fs::write(root.join("run.sh"), "echo 0\n").unwrap();
+    git(root, &["add", "run.sh"]).unwrap();
+    git(root, &["update-index", "--chmod=+x", "run.sh"]).unwrap();
+    git(root, &["commit", "-q", "-m", "script"]).unwrap();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("wx");
+    let branch = "agt/test/x-000011".to_string();
+    add_worktree(root, &wt, &branch, "main").unwrap();
+    std::fs::write(wt.join("run.sh"), "echo 1\necho 2\n").unwrap();
+    write_snapshot(&wt, "first", "run.sh", "echo 1\n");
+    let gitdir = trusted_gitdir(root, &wt).unwrap();
+    let g = load_groups(&wt).unwrap();
+    let (gb, _) =
+        groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &g[0], "任務").unwrap();
+    let entry = git(root, &["ls-tree", &gb, "run.sh"]).unwrap();
+    assert!(entry.starts_with("100755"), "{entry}");
+}
+
+#[test]
+fn merge_groups_with_snapshots_ends_with_worktree_content() {
+    for strategy in [Strategy::Merge, Strategy::Squash, Strategy::Rebase] {
+        let (repo, _w, wt, branch) = shared_file_worktree();
+        let root = repo.path();
+        let g = load_groups(&wt).unwrap();
+        let out = merge_groups(root, &wt, &branch, "main", "任務", strategy, g, None).unwrap();
+        assert!(out.contains("分成 2 組"), "{strategy:?}: {out}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/shared.txt")).unwrap(),
+            "A\nB\n",
+            "{strategy:?}"
+        );
+        assert!(root.join("b-only.txt").exists(), "{strategy:?}");
+        let subjects = git(root, &["log", "--format=%s", "main"]).unwrap();
+        assert!(
+            subjects.contains("加入 A") && subjects.contains("加入 B"),
+            "{subjects}"
+        );
+    }
+}
+
+#[test]
+fn snapshot_only_file_goes_to_rest_with_final_content() {
+    // 只有 SNAPSHOT、沒有任何組的 FILES 列它：最終內容歸 rest
+    let (repo, _w, wt, branch) = shared_file_worktree();
+    let root = repo.path();
+    write_group(&wt, "b", "b-only.txt\n", Some("加入 B\n"));
+    let g = load_groups(&wt).unwrap();
+    merge_groups(
+        root,
+        &wt,
+        &branch,
+        "main",
+        "任務",
+        Strategy::Squash,
+        g,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/shared.txt")).unwrap(),
+        "A\nB\n"
+    );
+    let subjects = git(root, &["log", "--format=%s", "main"]).unwrap();
+    assert!(subjects.contains("任務（rest）"), "{subjects}");
+}
+
+#[test]
+fn preview_counts_snapshots() {
+    let (repo, _w, wt, _b) = shared_file_worktree();
+    let p = preview(repo.path(), &wt, false, "ask", false);
+    assert!(p.contains("[a] 加入 A（0 個路徑，1 個 SNAPSHOT）"), "{p}");
+    assert!(p.contains("[b] 加入 B（2 個路徑，接在 [a] 後面）"), "{p}");
+}
+
+#[test]
+fn final_content_group_must_come_after_snapshot_groups() {
+    // b 有 shared.txt 的最終內容，卻沒有接在有它 SNAPSHOT 的 a 後面
+    let (_r, _w, wt, _b) = shared_file_worktree();
+    std::fs::remove_file(wt.join(NOTES_DIR).join("groups/b").join(groups::AFTER_FILE)).unwrap();
+    let e = refused(load_groups(&wt));
+    assert!(
+        e.contains("沒有接在有它 SNAPSHOT 的 a 後面") && e.contains("groups/b/AFTER"),
+        "{e}"
+    );
+
+    // 間接接在後面也可以：a ← mid ← b
+    let (_r, _w, wt, _b) = shared_file_worktree();
+    std::fs::write(wt.join("mid.txt"), "m\n").unwrap();
+    write_group(&wt, "mid", "mid.txt\n", None);
+    write_after(&wt, "mid", "a");
+    write_after(&wt, "b", "mid");
+    let names: Vec<String> = load_groups(&wt)
+        .unwrap()
+        .into_iter()
+        .map(|g| g.name)
+        .collect();
+    assert_eq!(names, ["a", "mid", "b"]);
+}
+
+#[test]
+fn rest_follows_the_snapshot_group_and_refuses_unchained_snapshots() {
+    let (repo, _w, wt, _b) = shared_file_worktree();
+    write_group(&wt, "b", "b-only.txt\n", Some("加入 B\n")); // shared.txt 歸 rest
+    let p = preview(repo.path(), &wt, false, "ask", false);
+    assert!(
+        p.contains("[rest] 任務（rest）（1 個路徑，接在 [a] 後面）"),
+        "{p}"
+    );
+
+    // 另一組（沒有接在 a 後面）也有 shared.txt 的 SNAPSHOT：rest 不知道該接在哪一組後面
+    write_snapshot(&wt, "b", "src/shared.txt", "B\n");
+    std::fs::remove_file(wt.join(NOTES_DIR).join("groups/b").join(groups::AFTER_FILE)).unwrap();
+    let e = finish_preview(repo.path(), &wt, "main", "任務", false, "ask", false)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("都有它們的 SNAPSHOT"), "{e}");
+}
