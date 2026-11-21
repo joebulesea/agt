@@ -470,6 +470,7 @@ fn with_rest(repo: &Path, wt: &Path, base: &str, mut groups: Vec<Group>) -> Resu
 /// 分組 merge：每組先建成獨立 branch（一個 commit），再依序在主工作目錄合進 base。
 /// `Merge` 每組一個 merge commit、`Squash` 每組一個 commit、`Rebase` 把每組的 commit cherry-pick 上去
 /// （線性歷史）。任何一組衝突就停下（已合進去的組保留），不自動解決。
+#[allow(clippy::too_many_arguments)]
 pub fn merge_groups(
     repo: &Path,
     worktree: &Path,
