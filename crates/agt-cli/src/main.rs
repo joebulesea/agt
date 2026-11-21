@@ -331,12 +331,25 @@ async fn connect_kind(kind: &str) -> Result<Connected, ClientError> {
 
 /// 連不上就在背景啟動 daemon（`agt daemon run`），最多等 3 秒（規格 4.5）。
 async fn ensure_daemon(kind: &str) -> anyhow::Result<Connected> {
+    ensure_daemon_with(kind, None).await
+}
+
+/// 同 [`ensure_daemon`]，但可指定用哪個執行檔啟動 daemon。
+/// `agt update` 換掉自己之後要用新裝好的檔案：Linux 上此時的 `current_exe()` 會是
+/// `…/agt.old (deleted)`，無法執行。
+async fn ensure_daemon_with(
+    kind: &str,
+    exe: Option<&std::path::Path>,
+) -> anyhow::Result<Connected> {
     match connect_kind(kind).await {
         Ok(c) => return Ok(c),
         Err(e @ ClientError::Remote { .. }) => return Err(e.into()),
         Err(_) => {}
     }
-    let exe = std::env::current_exe().context("找不到目前的執行檔位置")?;
+    let exe = match exe {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_exe().context("找不到目前的執行檔位置")?,
+    };
     transport::spawn_detached(&exe, &["daemon", "run"])
         .with_context(|| format!("無法啟動 daemon（{}）", exe.display()))?;
     let start = Instant::now();

@@ -1605,18 +1605,19 @@ async fn daemon_status_matches_protocol_and_tracks_changes() {
     assert_eq!(v["config_path"], info.config_path.as_str());
     assert_eq!(info.sessions, 2);
     assert_eq!(v["daemon_running"], true);
-    // `agt daemon status` 自己也是一條連線
-    assert_eq!(v["clients"], info.clients + 1, "{v}");
+    // clients 只算 UI 連線：`c` 與 `agt daemon status` 都是 cli 連線，不計入
+    assert_eq!(info.clients, 0);
+    assert_eq!(v["clients"], info.clients, "{v}");
 
     // 再開一條 TUI 連線：clients 多一條；放掉之後會回來
     let t = env.connect("tui").await;
     let (_, v) = agt_json(&env, &["daemon", "status", "--json"]);
-    assert_eq!(v["clients"], info.clients + 2, "{v}");
+    assert_eq!(v["clients"], info.clients + 1, "{v}");
     drop(t);
     let mut back = false;
     for _ in 0..30 {
         let (_, v) = agt_json(&env, &["daemon", "status", "--json"]);
-        if v["clients"] == info.clients + 1 {
+        if v["clients"] == info.clients {
             back = true;
             break;
         }

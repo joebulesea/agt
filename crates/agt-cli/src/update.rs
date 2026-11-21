@@ -405,8 +405,9 @@ pub async fn run(
     }
 
     if was_running {
-        // 用新版的 agt 重新啟動（舊 daemon 已結束）
-        match crate::ensure_daemon("cli").await {
+        // 用新裝好的 agt 重新啟動（舊 daemon 已結束）；不能用 current_exe()，Linux 上它指向已刪除的舊檔
+        let new_agt = &files[0].1;
+        match crate::ensure_daemon_with("cli", Some(new_agt)).await {
             Ok(_) => println!("daemon 已用新版重新啟動（分頁保留，可用 Ctrl+A → R 接續 Agent）"),
             Err(e) => eprintln!("警告：daemon 沒有自動啟動：{e:#}（執行 agt 會自動啟動）"),
         }
