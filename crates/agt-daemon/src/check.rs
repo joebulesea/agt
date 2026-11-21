@@ -51,6 +51,15 @@ fn agent_lists(a: &AgentSettings) -> Vec<(&'static str, &Vec<String>, &'static [
 
 /// 對已通過驗證的設定做「合法但可疑」的檢查。
 /// `mine`：使用者設定檔裡寫到的 Agent 名稱；`exists`：指令是否找得到（測試時可替換）。
+/// Agent 的參數（通常是 `--append-system-prompt` 的提示）是否提到收尾規則：
+/// `.agt/README.md`（agt 建立分頁時寫入），或舊版提示裡直接寫的 `.agt/groups`。
+fn mentions_finish_guide(a: &AgentSettings) -> bool {
+    [&a.args, &a.restart_args, &a.extra_args, &a.new_args]
+        .iter()
+        .flat_map(|l| l.iter())
+        .any(|s| s.contains(".agt/README.md") || s.contains(".agt/groups"))
+}
+
 pub fn lint(
     cfg: &Config,
     mine: &BTreeSet<String>,
@@ -104,6 +113,11 @@ pub fn lint(
         {
             w.push(format!(
                 "agents.{name}：resume_args 用了 {{conversation}}，但沒有 new_args 指定這個對話 ID，接續時會找不到對話"
+            ));
+        }
+        if a.auto_commit && a.worktree && !mentions_finish_guide(a) {
+            w.push(format!(
+                "agents.{name}：auto_commit 開啟，但 Agent 的參數（提示）沒有提到 .agt/README.md，Agent 可能不知道收尾規則（commit 訊息、PR 說明、多個主題時如何分組），收尾時會全部放進同一個 PR；請在提示加上「收尾規則見 .agt/README.md，開始修改前先讀」"
             ));
         }
     }
@@ -484,6 +498,48 @@ update = ["x", "{cwd}"]
         let (c, mine) = load("[agents.mine]\ncommand = \"ok\"\n");
         let w = lint(&c, &mine, &paths(), &|cmd| cmd == "ok");
         assert!(w.is_empty(), "{w:?}");
+    }
+
+    #[test]
+    fn auto_commit_agent_without_finish_guide_in_prompt() {
+        let (c, mine) = load(
+            r#"
+[agents.old]
+command = "docker"
+auto_commit = true
+args = ["run", "img", "claude", "--append-system-prompt", "把 commit 訊息寫到 .agt/COMMIT_MSG"]
+
+[agents.new]
+command = "docker"
+auto_commit = true
+args = ["run", "img", "claude", "--append-system-prompt", "收尾規則見 .agt/README.md"]
+
+[agents.legacy]
+command = "docker"
+auto_commit = true
+args = ["--append-system-prompt", "請改成分組：每組建立 .agt/groups/<組名>/"]
+
+[agents.child]
+extends = "old"
+extra_args = ["--append-system-prompt", "收尾規則見 .agt/README.md"]
+
+[agents.nowt]
+command = "x"
+auto_commit = true
+worktree = false
+"#,
+        );
+        let all = lint(&c, &mine, &paths(), &|_| true).join(
+            "
+",
+        );
+        assert!(all.contains("agents.old：auto_commit 開啟"), "{all}");
+        for ok in ["new", "legacy", "child", "nowt"] {
+            assert!(
+                !all.contains(&format!("agents.{ok}：auto_commit")),
+                "{ok}: {all}"
+            );
+        }
     }
 
     #[test]

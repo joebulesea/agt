@@ -416,12 +416,16 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             let max_preview = (area.height as usize)
                 .saturating_sub(lines.len() + 8)
                 .max(2);
+            // 開頭可能有幾行 `⚠` 提醒（紅色），接著是摘要（黃色）
+            let summary = preview.iter().position(|l| !l.starts_with('⚠'));
             for (i, l) in preview.iter().enumerate() {
                 if i == max_preview {
                     lines.push(Line::styled("  …", Style::new().fg(theme().dark_gray)));
                     break;
                 }
-                let style = if i == 0 {
+                let style = if l.starts_with('⚠') {
+                    Style::new().fg(theme().red).add_modifier(Modifier::BOLD)
+                } else if Some(i) == summary {
                     Style::new().fg(theme().yellow)
                 } else {
                     Style::new()

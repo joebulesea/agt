@@ -987,3 +987,63 @@ fn preview_is_read_only_and_rejects_bad_groups() {
         .to_string();
     assert!(e.contains("FILES"), "{e}");
 }
+
+#[test]
+fn preview_warns_about_unknown_notes_and_large_ungrouped_change() {
+    let repo = init_repo();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("ww");
+    add_worktree(repo.path(), &wt, "agt/test/w-000012", "main").unwrap();
+    std::fs::write(wt.join("x.txt"), "x\n").unwrap();
+    // 小改動、沒有多餘的說明檔：沒有提醒
+    let p = preview(repo.path(), &wt, false, "ask", true);
+    assert!(!p.contains('⚠'), "{p}");
+
+    // Agent 自己寫的拆分計畫：不會被用到
+    write_guide(&wt).unwrap();
+    std::fs::create_dir_all(wt.join(NOTES_DIR).join("split/01")).unwrap();
+    std::fs::write(wt.join(NOTES_DIR).join("split/01/FILES"), "x.txt\n").unwrap();
+    let p = preview(repo.path(), &wt, false, "ask", true);
+    let first = p.lines().next().unwrap();
+    assert!(
+        first.starts_with("⚠ .agt/") && first.contains("split/"),
+        "{p}"
+    );
+    // agt 自己寫的 README.md 不算
+    assert!(
+        !first.split('（').next().unwrap().contains(GUIDE_FILE),
+        "{p}"
+    );
+    assert!(p.contains("1 個 commit、1 個 PR"), "{p}");
+    assert!(!p.contains("改動很大"), "{p}");
+
+    // 改動很大（檔案數超過門檻）又沒有分組
+    for i in 0..=LARGE_CHANGE_FILES {
+        std::fs::write(wt.join(format!("f{i}.txt")), "x\n").unwrap();
+    }
+    let p = preview(repo.path(), &wt, true, "squash", true);
+    assert!(p.contains("改動很大") && p.contains("沒有分組"), "{p}");
+
+    // 行數超過門檻（已 commit 的也算）
+    std::fs::remove_dir_all(wt.join(NOTES_DIR).join("split")).unwrap();
+    for i in 0..=LARGE_CHANGE_FILES {
+        std::fs::remove_file(wt.join(format!("f{i}.txt"))).unwrap();
+    }
+    std::fs::write(wt.join("big.txt"), "y\n".repeat(LARGE_CHANGE_LINES + 1)).unwrap();
+    git(&wt, &["add", "."]).unwrap();
+    git(&wt, &["commit", "-q", "-m", "big"]).unwrap();
+    let p = preview(repo.path(), &wt, false, "ask", true);
+    assert!(p.starts_with("⚠ 改動很大"), "{p}");
+    assert_eq!(p.matches('⚠').count(), 1, "{p}");
+}
+
+#[test]
+fn preview_with_groups_does_not_warn_about_size() {
+    let (repo, _w, wt, _b) = grouped_worktree();
+    for i in 0..=LARGE_CHANGE_FILES {
+        std::fs::write(wt.join(format!("f{i}.txt")), "x\n").unwrap();
+    }
+    let p = preview(repo.path(), &wt, false, "ask", false);
+    assert!(!p.contains('⚠'), "{p}");
+    assert!(p.starts_with("分成 3 組"), "{p}");
+}

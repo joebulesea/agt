@@ -2325,6 +2325,9 @@ async fn grouped_session(env: &Env, c: &Client, task: &str) -> (SessionInfo, Pat
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // 建立分頁時 agt 寫入給 Agent 看的收尾規則
+    let guide = std::fs::read_to_string(wt.join(".agt/README.md")).expect("應寫入 .agt/README.md");
+    assert!(guide.contains(".agt/groups/"), "{guide}");
     (s, wt)
 }
 

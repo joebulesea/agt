@@ -95,7 +95,8 @@ worktree = false
 # 容器內無法使用 git（worktree 的 .git 指向主機路徑）；設定 auto_commit 後，收尾時由 agt 在主機上 commit。
 # Claude 會把 commit 訊息與 PR 說明寫在 .agt/COMMIT_MSG、.agt/PR_BODY.md（見下方的提示）；收尾選 pr 時
 # agt 用它們 commit、push 並建立 PR（已有開啟中的 PR 時只 push 並更新說明）。.agt/ 本身不會被 commit。
-# 提示也教 Claude 在任務含多個主題時改用 .agt/groups/<組名>/ 分組，每組各自 commit 與 PR（見 docs/Agent-分組收尾說明.md）。
+# agt 建立分頁時會在 worktree 寫入 .agt/README.md（收尾規則：說明檔格式、多個主題時用 .agt/groups/ 分組），
+# 提示只要叫 Claude 先讀它（見 docs/Agent-分組收尾說明.md）；`agt config check` 會提醒沒有提到它的 auto_commit Agent。
 # worktree 掛在容器內的 /work/{session}：每個分頁的路徑不同，Agent 的對話記錄（依專案路徑分組）才不會混在一起。
 #
 # 安全性（三個 *-docker 範例相同）：
@@ -122,7 +123,7 @@ worktree = false
 #         "-v", "agt-claude-tools:/opt/agt-tools:ro", "-w", "/work/{session}",
 #         "-e", "ANTHROPIC_API_KEY", "-e", "CLAUDE_CODE_OAUTH_TOKEN",
 #         "agt-claude", "claude", "--dangerously-skip-permissions",
-#         "--append-system-prompt", "你在 Docker 沙箱中執行，目前所在的目錄就是專案目錄。容器內無法使用 git，不要執行或修復任何 git 指令；只修改檔案，commit 與合併由外部負責。每次完成修改後，把 commit 訊息寫到 .agt/COMMIT_MSG（第一行是 50 字以內的標題，空一行後是內文），把 PR 說明寫到 .agt/PR_BODY.md（Markdown：做了什麼、為什麼、如何測試）；檔案已存在時改寫成涵蓋目前所有未 commit 修改的內容。如果這次任務包含多個互不相關的主題，請改成分組：每組建立 .agt/groups/<組名>/，放 FILES（這組的路徑，一行一個，目錄代表底下全部）、COMMIT_MSG、PR_BODY.md；同一個檔案只能屬於一組，組名只用英數與 ._-，不可叫 rest，沒列在任何組的變更會自動成為 rest 組；收尾時每組各自一個 commit 與 PR。只有單一主題時不要分組。"]
+#         "--append-system-prompt", "你在 Docker 沙箱中執行，目前所在的目錄就是專案目錄。容器內無法使用 git，不要執行或修復任何 git 指令；只修改檔案，commit 與合併由外部負責。每次完成修改後，把 commit 訊息寫到 .agt/COMMIT_MSG（第一行是 50 字以內的標題，空一行後是內文），把 PR 說明寫到 .agt/PR_BODY.md（Markdown：做了什麼、為什麼、如何測試）；檔案已存在時改寫成涵蓋目前所有未 commit 修改的內容。完整的收尾規則（說明檔格式、多個主題時如何分組）在 .agt/README.md，開始修改前先讀。"]
 # new_args = ["--session-id", "{conversation}"]
 # resume_args = ["--resume", "{conversation}"]
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]   # 關閉分頁時一併移除容器
@@ -147,9 +148,9 @@ worktree = false
 # status_source = "pattern"
 # args = ["--no-input", "run", "--name", "agt-{session}", "--cpus", "4", "-m", "3g",   # 資源上限（建立時決定）
 #         "claude", "{cwd}", "{gitdir}:ro", "--",
-#         "--append-system-prompt", "你在 Docker Sandboxes 沙箱中執行。專案的 .git 是唯讀的：可以用 git status / diff / log 查看，但不要執行 commit、push 或其他會寫入 git 的指令，也不要嘗試修復；commit 與合併由外部負責。每次完成修改後，把 commit 訊息寫到 .agt/COMMIT_MSG（第一行是 50 字以內的標題，空一行後是內文），把 PR 說明寫到 .agt/PR_BODY.md（Markdown：做了什麼、為什麼、如何測試）；檔案已存在時改寫成涵蓋目前所有未 commit 修改的內容。如果這次任務包含多個互不相關的主題，請改成分組：每組建立 .agt/groups/<組名>/，放 FILES（這組的路徑，一行一個，目錄代表底下全部）、COMMIT_MSG、PR_BODY.md；同一個檔案只能屬於一組，組名只用英數與 ._-，不可叫 rest，沒列在任何組的變更會自動成為 rest 組；收尾時每組各自一個 commit 與 PR。只有單一主題時不要分組。"]
+#         "--append-system-prompt", "你在 Docker Sandboxes 沙箱中執行。專案的 .git 是唯讀的：可以用 git status / diff / log 查看，但不要執行 commit、push 或其他會寫入 git 的指令，也不要嘗試修復；commit 與合併由外部負責。每次完成修改後，把 commit 訊息寫到 .agt/COMMIT_MSG（第一行是 50 字以內的標題，空一行後是內文），把 PR 說明寫到 .agt/PR_BODY.md（Markdown：做了什麼、為什麼、如何測試）；檔案已存在時改寫成涵蓋目前所有未 commit 修改的內容。完整的收尾規則（說明檔格式、多個主題時如何分組）在 .agt/README.md，開始修改前先讀。"]
 # restart_args = ["--no-input", "run", "--name", "agt-{session}", "--",
-#         "--append-system-prompt", "你在 Docker Sandboxes 沙箱中執行。專案的 .git 是唯讀的：可以用 git status / diff / log 查看，但不要執行 commit、push 或其他會寫入 git 的指令，也不要嘗試修復；commit 與合併由外部負責。每次完成修改後，把 commit 訊息寫到 .agt/COMMIT_MSG（第一行是 50 字以內的標題，空一行後是內文），把 PR 說明寫到 .agt/PR_BODY.md（Markdown：做了什麼、為什麼、如何測試）；檔案已存在時改寫成涵蓋目前所有未 commit 修改的內容。如果這次任務包含多個互不相關的主題，請改成分組：每組建立 .agt/groups/<組名>/，放 FILES（這組的路徑，一行一個，目錄代表底下全部）、COMMIT_MSG、PR_BODY.md；同一個檔案只能屬於一組，組名只用英數與 ._-，不可叫 rest，沒列在任何組的變更會自動成為 rest 組；收尾時每組各自一個 commit 與 PR。只有單一主題時不要分組。"]
+#         "--append-system-prompt", "你在 Docker Sandboxes 沙箱中執行。專案的 .git 是唯讀的：可以用 git status / diff / log 查看，但不要執行 commit、push 或其他會寫入 git 的指令，也不要嘗試修復；commit 與合併由外部負責。每次完成修改後，把 commit 訊息寫到 .agt/COMMIT_MSG（第一行是 50 字以內的標題，空一行後是內文），把 PR 說明寫到 .agt/PR_BODY.md（Markdown：做了什麼、為什麼、如何測試）；檔案已存在時改寫成涵蓋目前所有未 commit 修改的內容。完整的收尾規則（說明檔格式、多個主題時如何分組）在 .agt/README.md，開始修改前先讀。"]
 # new_args = ["--session-id", "{conversation}"]
 # resume_args = ["--resume", "{conversation}"]
 # cleanup = ["sbx", "stop", "agt-{session}"]

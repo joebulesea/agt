@@ -451,7 +451,8 @@ pub fn finish_preview(
     auto_commit: bool,
 ) -> Result<String> {
     let groups = load_groups(worktree)?;
-    let mut out = vec![];
+    // 提醒放最前面：視窗高度不夠時，後面的內容會被截掉
+    let mut out = finish_warnings(repo, worktree, base, !groups.is_empty())?;
     if groups.is_empty() {
         let msg = read_note(worktree, COMMIT_MSG_FILE)?;
         let title = msg
