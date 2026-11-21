@@ -146,6 +146,48 @@ fn order_by_after(groups: Vec<Group>) -> Result<Vec<Group>> {
     Ok(out)
 }
 
+/// 收尾檢查：參數是組名與這組 branch 的暫時 checkout 目錄。`Err` 是要顯示給使用者的失敗原因。
+pub type GroupCheck<'a> = &'a dyn Fn(&str, &Path) -> std::result::Result<(), String>;
+
+/// 在每組 branch 的暫時 checkout（detached worktree）中執行檢查。任何一組失敗就停下並回報，
+/// 呼叫端在這之前不會 push 或合併任何一組。暫時目錄放在 Agent 的 worktree 旁邊
+/// （`<worktree>.check-<組名>`），沙箱 Agent 能掛載它的 worktree，也就能掛載這裡。
+fn check_groups(
+    repo: &Path,
+    worktree: &Path,
+    groups: &[Group],
+    branches: &[String],
+    check: GroupCheck,
+) -> Result<()> {
+    let name = worktree
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "agt".into());
+    let parent = worktree.parent().unwrap_or(worktree);
+    for (g, gb) in groups.iter().zip(branches) {
+        let dir = parent.join(format!("{name}.check-{}", g.name));
+        let dir_s = dir.to_string_lossy().into_owned();
+        let cleanup = || {
+            let _ = git(repo, &["worktree", "remove", "--force", &dir_s]);
+            if std::fs::symlink_metadata(&dir).is_ok() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            let _ = git(repo, &["worktree", "prune"]);
+        };
+        cleanup(); // 上次中斷留下的
+        git(repo, &["worktree", "add", "--detach", "-q", &dir_s, gb])?;
+        let r = check(&g.name, &dir);
+        cleanup();
+        if let Err(e) = r {
+            return Err(GitError::Refused(format!(
+                "分組 {} 的收尾檢查沒有通過（branch {gb}），沒有 push 或合併任何一組：\n{e}",
+                g.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// 分組的 branch 名稱。
 pub(crate) fn group_branch(branch: &str, name: &str) -> String {
     format!("{branch}-{name}")
@@ -309,6 +351,7 @@ pub fn create_group_prs(
     base: &str,
     task: &str,
     groups: Vec<Group>,
+    check: Option<GroupCheck>,
 ) -> Result<String> {
     let gitdir = trusted_gitdir(repo, worktree)?;
     let groups = with_rest(repo, worktree, base, groups)?;
@@ -319,9 +362,17 @@ pub fn create_group_prs(
     } else {
         (base.to_string(), None)
     };
-    let mut lines = vec![];
+    // 先建好每組的 branch 並檢查，全部通過才開始 push（不會只推出一部分）
+    let mut built = vec![];
     for g in &groups {
         let (gb, _) = make_group_branch(repo, worktree, &gitdir, branch, base, g, task)?;
+        built.push(gb);
+    }
+    if let Some(check) = check {
+        check_groups(repo, worktree, &groups, &built, check)?;
+    }
+    let mut lines = vec![];
+    for (g, gb) in groups.iter().zip(built) {
         if !gh {
             lines.push(format!(
                 "▸ [{}] {}\n    找不到 gh，請手動執行：git -C \"{}\" push -u {remote} {gb}",
@@ -419,6 +470,7 @@ fn with_rest(repo: &Path, wt: &Path, base: &str, mut groups: Vec<Group>) -> Resu
 /// 分組 merge：每組先建成獨立 branch（一個 commit），再依序在主工作目錄合進 base。
 /// `Merge` 每組一個 merge commit、`Squash` 每組一個 commit、`Rebase` 把每組的 commit cherry-pick 上去
 /// （線性歷史）。任何一組衝突就停下（已合進去的組保留），不自動解決。
+#[allow(clippy::too_many_arguments)]
 pub fn merge_groups(
     repo: &Path,
     worktree: &Path,
@@ -427,6 +479,7 @@ pub fn merge_groups(
     task: &str,
     strategy: Strategy,
     groups: Vec<Group>,
+    check: Option<GroupCheck>,
 ) -> Result<String> {
     let gitdir = trusted_gitdir(repo, worktree)?;
     if is_dirty(repo, false)? {
@@ -469,6 +522,10 @@ pub fn merge_groups(
             None => mb.clone(),
         };
         branches.push((gb, start, tip));
+    }
+    if let Some(check) = check {
+        let names: Vec<String> = branches.iter().map(|b| b.0.clone()).collect();
+        check_groups(repo, worktree, &groups, &names, check)?;
     }
     let mut lines = vec![];
     for (g, (gb, start, tip)) in groups.iter().zip(&branches) {

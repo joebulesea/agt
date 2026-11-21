@@ -128,6 +128,12 @@ worktree = false
 # resume_args = ["--resume", "{conversation}"]
 # cleanup = ["docker", "rm", "-f", "agt-{session}"]   # 關閉分頁時一併移除容器
 # auto_commit = true               # 收尾（merge / pr）前自動 commit 容器內做的修改
+# # 收尾檢查（[repos] 的 finish_check）在同一個映像檔的容器裡執行，不在主機上執行 Agent 寫的程式碼。
+# # {dir} = 這組 branch 的暫時 checkout，{check} = finish_check 的內容。沒有設定時，沙箱 Agent 的檢查會略過。
+# # 映像檔要有建置工具（agt-claude 只有 Node；Rust 專案可改用 rust:1-slim 等）。
+# check_command = ["docker", "run", "--rm", "--init", "--label", "agt=1",
+#         "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=2048",
+#         "-v", "{dir}:/check", "-w", "/check", "agt-claude", "sh", "-c", "{check}"]
 # # 更新 Claude Code 到最新版（裝進 agt-claude-tools）：agt daemon 啟動時在背景執行，
 # # 新建分頁時也會先在分頁中執行一次再啟動 Claude（update_on_new = false 可關閉；R 重新啟動不會執行）
 # update = ["docker", "run", "--rm", "-v", "agt-claude-tools:/opt/agt-tools", "agt-claude", "claude", "--version"]
@@ -240,3 +246,8 @@ worktree = false
 # copy_files = [".env", ".env.local"]
 # setup = "npm install"
 # base_branch = "main"
+# # 分組收尾（.agt/groups/）時，在每組 branch 的乾淨 checkout 執行，任何一組失敗就不 push、不合併。
+# # 確認拆開後每組都能單獨建置。只能寫在這裡（使用者設定檔），.agt.toml 裡的不會生效。
+# # 沙箱 Agent 要另外設定 check_command（見上面的 claude-docker），否則略過；其他 Agent 在主機上執行。
+# # checkout 裡沒有 copy_files 的檔案，也沒有建置快取（每組都從頭建置）。每組最多 30 分鐘。
+# finish_check = "cargo build --workspace"

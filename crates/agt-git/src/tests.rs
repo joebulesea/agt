@@ -794,7 +794,7 @@ fn merge_groups_merge_strategy_one_merge_commit_per_group() {
     let (repo, _w, wt, branch) = grouped_worktree();
     let root = repo.path();
     let g = load_groups(&wt).unwrap();
-    let out = merge_groups(root, &wt, &branch, "main", "任務", Strategy::Merge, g).unwrap();
+    let out = merge_groups(root, &wt, &branch, "main", "任務", Strategy::Merge, g, None).unwrap();
     assert!(out.contains("分成 3 組"), "{out}");
     // one、two、rest 各一個 merge commit
     assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 3);
@@ -814,7 +814,17 @@ fn merge_groups_squash_and_rebase_make_linear_commits() {
     let (repo, _w, wt, branch) = grouped_worktree();
     let root = repo.path();
     let g = load_groups(&wt).unwrap();
-    merge_groups(root, &wt, &branch, "main", "任務", Strategy::Squash, g).unwrap();
+    merge_groups(
+        root,
+        &wt,
+        &branch,
+        "main",
+        "任務",
+        Strategy::Squash,
+        g,
+        None,
+    )
+    .unwrap();
     assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 0);
     assert_eq!(count(root, &["rev-list", "--count", "main"]), 4); // init + 3 組
     let subjects = git(root, &["log", "--format=%s", "-3", "main"]).unwrap();
@@ -825,7 +835,17 @@ fn merge_groups_squash_and_rebase_make_linear_commits() {
     let (repo, _w, wt, branch) = grouped_worktree();
     let root = repo.path();
     let g = load_groups(&wt).unwrap();
-    merge_groups(root, &wt, &branch, "main", "任務", Strategy::Rebase, g).unwrap();
+    merge_groups(
+        root,
+        &wt,
+        &branch,
+        "main",
+        "任務",
+        Strategy::Rebase,
+        g,
+        None,
+    )
+    .unwrap();
     assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 0);
     assert_eq!(count(root, &["rev-list", "--count", "main"]), 4);
     assert!(root.join("two.txt").exists() && root.join("rest.txt").exists());
@@ -838,7 +858,7 @@ fn merge_groups_refuses_before_touching_base() {
     let root = repo.path();
     std::fs::write(root.join("a.txt"), "dirty\n").unwrap();
     let g = load_groups(&wt).unwrap();
-    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).unwrap_err();
+    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g, None).unwrap_err();
     assert!(matches!(e, GitError::Dirty(_)), "{e}");
 
     // 主工作目錄不在 base 上
@@ -846,7 +866,7 @@ fn merge_groups_refuses_before_touching_base() {
     let root = repo.path();
     git(root, &["checkout", "-q", "-b", "other"]).unwrap();
     let g = load_groups(&wt).unwrap();
-    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).unwrap_err();
+    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g, None).unwrap_err();
     assert!(e.to_string().contains("不是 main"), "{e}");
 
     // 其中一組是空的：在合併任何一組之前就停下，base 沒有變
@@ -855,7 +875,7 @@ fn merge_groups_refuses_before_touching_base() {
     write_group(&wt, "zzz", "no-such-file.txt\n", None);
     let g = load_groups(&wt).unwrap();
     let head = git(root, &["rev-parse", "main"]).unwrap();
-    assert!(merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).is_err());
+    assert!(merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g, None).is_err());
     assert_eq!(git(root, &["rev-parse", "main"]).unwrap(), head);
 }
 
@@ -868,7 +888,7 @@ fn merge_groups_stops_on_conflict_and_keeps_finished_groups() {
     git(root, &["add", "."]).unwrap();
     git(root, &["commit", "-q", "-m", "base two"]).unwrap();
     let g = load_groups(&wt).unwrap();
-    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g).unwrap_err();
+    let e = merge_groups(root, &wt, &branch, "main", "t", Strategy::Merge, g, None).unwrap_err();
     assert!(matches!(e, GitError::Conflict(_)), "{e}");
     assert!(e.to_string().contains("two"), "{e}");
     // 前面的組 one 已合進去
@@ -1195,7 +1215,7 @@ fn merge_groups_handles_stacked_groups_with_every_strategy() {
         let (repo, _w, wt, branch) = stacked_worktree();
         let root = repo.path();
         let g = load_groups(&wt).unwrap();
-        let out = merge_groups(root, &wt, &branch, "main", "任務", strategy, g).unwrap();
+        let out = merge_groups(root, &wt, &branch, "main", "任務", strategy, g, None).unwrap();
         assert!(out.contains("分成 3 組"), "{strategy:?}: {out}");
         for f in ["one/a.txt", "one/b.txt", "two.txt", "rest.txt"] {
             assert!(root.join(f).exists(), "{strategy:?}: {f}");
@@ -1225,7 +1245,17 @@ fn merge_groups_rebase_keeps_every_commit_of_an_updated_group_branch() {
     groups::make_group_branch(root, &wt, &gitdir, &branch, "main", &g[1], "任務").unwrap();
     std::fs::write(wt.join("one/b.txt"), "1b changed\n").unwrap();
     let g = load_groups(&wt).unwrap();
-    merge_groups(root, &wt, &branch, "main", "任務", Strategy::Rebase, g).unwrap();
+    merge_groups(
+        root,
+        &wt,
+        &branch,
+        "main",
+        "任務",
+        Strategy::Rebase,
+        g,
+        None,
+    )
+    .unwrap();
     assert_eq!(count(root, &["rev-list", "--count", "--merges", "main"]), 0);
     // init + one 的 2 個 commit + two + rest
     assert_eq!(count(root, &["rev-list", "--count", "main"]), 5);
@@ -1245,4 +1275,93 @@ fn preview_shows_which_group_a_stacked_group_follows() {
         "{p}"
     );
     assert!(p.contains("[one] 加入 one（1 個路徑）"), "{p}");
+}
+
+// ---- 收尾檢查（finish_check）----
+
+#[test]
+fn merge_groups_runs_check_on_every_group_checkout_before_merging() {
+    let (repo, _w, wt, branch) = stacked_worktree();
+    let root = repo.path();
+    let g = load_groups(&wt).unwrap();
+    let seen = std::cell::RefCell::new(vec![]);
+    let check = |name: &str, dir: &Path| -> std::result::Result<(), String> {
+        // 暫時目錄是這組 branch 的乾淨 checkout：有這組（與它接的組）的檔案，沒有別組與說明檔
+        let has = |f: &str| dir.join(f).exists();
+        seen.borrow_mut().push((
+            name.to_string(),
+            has("one/a.txt"),
+            has("two.txt"),
+            has("rest.txt"),
+            has(".agt"),
+            dir.to_path_buf(),
+        ));
+        // 檢查時 base 還沒被動過
+        assert_eq!(count(root, &["rev-list", "--count", "main"]), 1);
+        Ok(())
+    };
+    merge_groups(
+        root,
+        &wt,
+        &branch,
+        "main",
+        "任務",
+        Strategy::Squash,
+        g,
+        Some(&check),
+    )
+    .unwrap();
+    let seen = seen.into_inner();
+    let summary: Vec<(&str, bool, bool, bool, bool)> = seen
+        .iter()
+        .map(|(n, a, b, c, d, _)| (n.as_str(), *a, *b, *c, *d))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("one", true, false, false, false),
+            ("two", true, true, false, false), // 接在 one 後面
+            ("rest", false, false, true, false),
+        ]
+    );
+    // 暫時目錄都清掉了，git 也不再登記它們
+    for (_, _, _, _, _, dir) in &seen {
+        assert!(!dir.exists(), "{}", dir.display());
+    }
+    let list = git(root, &["worktree", "list", "--porcelain"]).unwrap();
+    assert!(!list.contains(".check-"), "{list}");
+    assert_eq!(count(root, &["rev-list", "--count", "main"]), 4);
+}
+
+#[test]
+fn failed_check_stops_before_touching_base() {
+    let (repo, _w, wt, branch) = grouped_worktree();
+    let root = repo.path();
+    let g = load_groups(&wt).unwrap();
+    let check = |name: &str, _dir: &Path| -> std::result::Result<(), String> {
+        if name == "two" {
+            Err("error[E0425]: cannot find value `x`".into())
+        } else {
+            Ok(())
+        }
+    };
+    let e = merge_groups(
+        root,
+        &wt,
+        &branch,
+        "main",
+        "任務",
+        Strategy::Merge,
+        g,
+        Some(&check),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(e.contains("分組 two 的收尾檢查沒有通過"), "{e}");
+    assert!(e.contains("E0425"), "{e}");
+    // 一組都沒有合併；說明檔保留，修好後可以再收尾一次
+    assert_eq!(count(root, &["rev-list", "--count", "main"]), 1);
+    assert!(wt.join(NOTES_DIR).join("groups/one").exists());
+    let list = git(root, &["worktree", "list", "--porcelain"]).unwrap();
+    assert!(!list.contains(".check-"), "{list}");
 }

@@ -409,9 +409,189 @@ pub fn path_too_long(path: &Path) -> bool {
     cfg!(windows) && path.as_os_str().len() > 240
 }
 
+/// 用使用者的 shell 執行一段指令的 argv（Windows：`pwsh`／`powershell -Command`；Unix：`/bin/sh -c`）。
+/// 給收尾檢查（`finish_check`）在主機上執行用。
+pub fn shell_argv(script: &str) -> Vec<String> {
+    if cfg!(windows) {
+        let shell = if which("pwsh").is_some() {
+            "pwsh"
+        } else {
+            "powershell"
+        };
+        vec![
+            shell.into(),
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-Command".into(),
+            script.into(),
+        ]
+    } else {
+        vec!["/bin/sh".into(), "-c".into(), script.into()]
+    }
+}
+
+/// 收尾檢查失敗時附上的輸出行數（最後幾行）。
+pub const CHECK_OUTPUT_LINES: usize = 40;
+
+/// 在 `cwd` 執行檢查指令並等它結束（最多 `timeout`，逾時就結束整個行程樹）。
+/// 成功回傳 `Ok(())`；失敗回傳要顯示給使用者的說明（含結束代碼與輸出的最後幾行）。
+/// 輸出（stdout 與 stderr）先寫到暫存檔，避免大量輸出塞滿管線而卡住。
+pub fn run_check(argv: &[String], cwd: &Path, timeout: std::time::Duration) -> Result<(), String> {
+    let Some((first, rest)) = argv.split_first() else {
+        return Err("檢查指令是空的".into());
+    };
+    let (program, pre_args) = resolve_program(first);
+    check_cmd_args(&pre_args, rest)?;
+    let log = std::env::temp_dir().join(format!(
+        "agt-check-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let out = std::fs::File::create(&log).map_err(|e| format!("無法建立暫存檔：{e}"))?;
+    let err = out
+        .try_clone()
+        .map_err(|e| format!("無法建立暫存檔：{e}"))?;
+    let mut c = std::process::Command::new(&program);
+    c.args(&pre_args)
+        .args(rest)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(unix)]
+    {
+        // 自成一個行程群組：逾時時 kill_tree 才能連同子行程（例如 cargo 啟動的 rustc）一起結束
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    let result = (|| {
+        let mut child = c.spawn().map_err(|e| format!("無法執行 {first}：{e}"))?;
+        let start = std::time::Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) if start.elapsed() >= timeout => {
+                    kill_tree(child.id());
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("超過 {} 秒沒有結束，已中止", timeout.as_secs()));
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
+                Err(e) => return Err(format!("等待檢查指令時發生錯誤：{e}")),
+            }
+        };
+        if status.success() {
+            Ok(())
+        } else {
+            Err(match status.code() {
+                Some(code) => format!("結束代碼 {code}"),
+                None => "被訊號中止".to_string(),
+            })
+        }
+    })();
+    let tail = std::fs::read(&log)
+        .map(|b| tail_lines(&String::from_utf8_lossy(&b), CHECK_OUTPUT_LINES))
+        .unwrap_or_default();
+    let _ = std::fs::remove_file(&log);
+    result.map_err(|why| {
+        if tail.is_empty() {
+            why
+        } else {
+            format!("{why}；輸出的最後 {CHECK_OUTPUT_LINES} 行：\n{tail}")
+        }
+    })
+}
+
+/// 最後 `n` 個非空白行（去掉控制字元）。
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<String> = text
+        .lines()
+        .map(agt_proto::text::printable_line)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_check_reports_success_failure_and_output_tail() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("marker.txt"), "x").unwrap();
+        // 在指定的目錄執行
+        let ok = if cfg!(windows) {
+            "if (Test-Path marker.txt) { exit 0 } else { exit 1 }"
+        } else {
+            "test -f marker.txt"
+        };
+        run_check(
+            &shell_argv(ok),
+            d.path(),
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        // 失敗：結束代碼與輸出的最後幾行（stdout 與 stderr 都收）
+        let fail = if cfg!(windows) {
+            "Write-Output 'first'; [Console]::Error.WriteLine('boom'); exit 3"
+        } else {
+            "echo first; echo boom >&2; exit 3"
+        };
+        let e = run_check(
+            &shell_argv(fail),
+            d.path(),
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap_err();
+        assert!(e.contains("結束代碼 3"), "{e}");
+        assert!(e.contains("first") && e.contains("boom"), "{e}");
+    }
+
+    #[test]
+    fn run_check_times_out() {
+        let d = tempfile::tempdir().unwrap();
+        let slow = if cfg!(windows) {
+            "Start-Sleep -Seconds 30"
+        } else {
+            "sleep 30"
+        };
+        let t = std::time::Instant::now();
+        let e = run_check(
+            &shell_argv(slow),
+            d.path(),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(e.contains("超過 1 秒"), "{e}");
+        assert!(t.elapsed() < std::time::Duration::from_secs(20));
+    }
+
+    #[test]
+    fn tail_lines_keeps_last_non_empty_lines() {
+        assert_eq!(
+            tail_lines(
+                "a
+
+b
+c
+", 2
+            ),
+            "b
+c"
+        );
+        assert_eq!(tail_lines("", 3), "");
+    }
 
     #[test]
     fn update_script_quotes_args_and_never_fails() {

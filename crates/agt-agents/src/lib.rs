@@ -80,6 +80,13 @@ pub struct AgentSettings {
     /// 由設定檔載入時展開（見 agt-daemon 的 `config.rs`）；展開後只留作紀錄。
     #[serde(default)]
     pub extends: String,
+    /// 收尾檢查（`[repos."<路徑>"] finish_check`）要怎麼執行：完整的指令，變數 `{dir}` = 這組 branch 的
+    /// 暫時 checkout、`{check}` = finish_check 的內容、`{session}`。例如沙箱 Agent 在同一個映像檔的容器裡執行：
+    /// `["docker", "run", "--rm", "-v", "{dir}:/check", "-w", "/check", "agt-claude", "sh", "-c", "{check}"]`。
+    /// 空的 = 在主機上用 shell 執行；但指令是 docker / sbx / podman 的沙箱 Agent 不會在主機上執行它寫的程式碼，
+    /// 沒設定時略過檢查。
+    #[serde(default)]
+    pub check_command: Vec<String>,
 }
 
 /// 可用的 `adapter` 值。
@@ -123,11 +130,22 @@ impl Default for AgentSettings {
             restart_args: vec![],
             extra_args: vec![],
             extends: String::new(),
+            check_command: vec![],
         }
     }
 }
 
 impl AgentSettings {
+    /// Agent 是否在沙箱（容器、microVM）中執行：指令是 docker、sbx 或 podman。
+    /// 這種 Agent 寫的程式碼不在主機上執行（見 `check_command`）。
+    pub fn sandboxed(&self) -> bool {
+        let name = std::path::Path::new(&self.command)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        matches!(name.as_str(), "docker" | "sbx" | "podman")
+    }
+
     pub fn source(&self) -> StatusSourceKind {
         match self.status_source.as_str() {
             "hooks" => StatusSourceKind::Hooks,
@@ -263,6 +281,27 @@ mod tests {
             resume: false,
             restarted: false,
             gitdir: None,
+        }
+    }
+
+    #[test]
+    fn sandboxed_means_docker_sbx_or_podman() {
+        let a = |c: &str| AgentSettings {
+            command: c.into(),
+            ..Default::default()
+        };
+        for c in [
+            "docker",
+            "sbx",
+            "podman",
+            "/usr/bin/docker",
+            "C:/bin/Docker.exe",
+            "sbx.exe",
+        ] {
+            assert!(a(c).sandboxed(), "{c}");
+        }
+        for c in ["", "claude", "pwsh", "dockerish"] {
+            assert!(!a(c).sandboxed(), "{c}");
         }
     }
 
