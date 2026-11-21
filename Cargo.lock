@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agt-agents"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "agt-core",
  "agt-git",
@@ -18,7 +18,7 @@ dependencies = [
 
 [[package]]
 name = "agt-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "agt-daemon",
  "agt-proto",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "agt-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "agt-proto",
  "alacritty_terminal",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "agt-daemon"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "agt-agents",
  "agt-core",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "agt-git"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.21",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "agt-proto"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "interprocess",
  "libc",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "agt-store"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "tempfile",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "agt-tui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "agt-proto",
  "crossterm 0.29.0",
