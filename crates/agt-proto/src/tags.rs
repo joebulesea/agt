@@ -25,8 +25,7 @@ pub fn normalize(tags: &[String]) -> Result<Vec<String>, String> {
         if t.chars().count() > MAX_TAG_CHARS {
             return Err(format!("標籤太長（最多 {MAX_TAG_CHARS} 個字元）：{t}"));
         }
-        if t
-            .chars()
+        if t.chars()
             .any(|c| c.is_whitespace() || c.is_control() || c == ',' || c == '，')
         {
             return Err(format!("標籤不能含空白、逗號或控制字元：{t:?}"));
@@ -76,9 +75,15 @@ mod tests {
 
     #[test]
     fn normalizes_dedupes_and_keeps_order() {
-        assert_eq!(normalize(&v(&["#bug", "Bug", "ui", " "])).unwrap(), ["bug", "ui"]);
+        assert_eq!(
+            normalize(&v(&["#bug", "Bug", "ui", " "])).unwrap(),
+            ["bug", "ui"]
+        );
         // 大小寫不敏感（含非 ASCII），保留第一次出現的寫法
-        assert_eq!(normalize(&v(&["中文", "ÄB", "äb"])).unwrap(), ["中文", "ÄB"]);
+        assert_eq!(
+            normalize(&v(&["中文", "ÄB", "äb"])).unwrap(),
+            ["中文", "ÄB"]
+        );
     }
 
     #[test]
@@ -86,7 +91,11 @@ mod tests {
         assert!(normalize(&v(&["a b"])).unwrap_err().contains("空白"));
         assert!(normalize(&v(&["a,b"])).is_err());
         assert!(normalize(&v(&["a\u{1b}b"])).is_err());
-        assert!(normalize(&v(&[&"x".repeat(25)])).unwrap_err().contains("太長"));
+        assert!(
+            normalize(&v(&[&"x".repeat(25)]))
+                .unwrap_err()
+                .contains("太長")
+        );
         assert!(normalize(&v(&[&"x".repeat(24)])).is_ok());
         let many: Vec<String> = (0..9).map(|i| format!("t{i}")).collect();
         assert!(normalize(&many).unwrap_err().contains("最多"));

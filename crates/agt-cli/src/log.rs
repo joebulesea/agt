@@ -35,7 +35,10 @@ pub async fn run(o: Options) -> anyhow::Result<()> {
     )?;
     let files = agt_daemon::session_log_files(&s.id);
     if files.is_empty() {
-        bail!("找不到分頁 {} 的紀錄檔（設定檔的 log_output 是否為 false？）", s.short_id);
+        bail!(
+            "找不到分頁 {} 的紀錄檔（設定檔的 log_output 是否為 false？）",
+            s.short_id
+        );
     }
     let mut bytes = Vec::new();
     for f in &files {
@@ -282,7 +285,13 @@ mod tests {
 
     #[test]
     fn markdown_fence_is_longer_than_any_backtick_run() {
-        let md = to_markdown("修 bug", "claude", "ab12", Some("agt/claude/x"), "```rust\nfn f(){}\n```\n");
+        let md = to_markdown(
+            "修 bug",
+            "claude",
+            "ab12",
+            Some("agt/claude/x"),
+            "```rust\nfn f(){}\n```\n",
+        );
         assert!(md.starts_with("# agt 分頁紀錄：修 bug\n"), "{md}");
         assert!(md.contains("- Agent：claude") && md.contains("- 分頁：ab12"));
         assert!(md.contains("- Branch：agt/claude/x"));

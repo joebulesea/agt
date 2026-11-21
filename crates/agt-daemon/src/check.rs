@@ -412,10 +412,7 @@ mod tests {
         let v = json_report(&c, &f, Some(repo.path()));
         assert_eq!(v["repo"], repo.path().display().to_string());
         assert!(
-            v["warnings"][0]
-                .as_str()
-                .unwrap()
-                .contains("copy_files"),
+            v["warnings"][0].as_str().unwrap().contains("copy_files"),
             "{v}"
         );
     }

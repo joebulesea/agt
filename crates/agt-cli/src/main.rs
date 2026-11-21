@@ -418,7 +418,11 @@ fn edit_tags(current: &[String], e: &TagEdit) -> Vec<String> {
     }
     let mut out: Vec<String> = current
         .iter()
-        .filter(|t| !e.remove.iter().any(|r| r.to_lowercase() == t.to_lowercase()))
+        .filter(|t| {
+            !e.remove
+                .iter()
+                .any(|r| r.to_lowercase() == t.to_lowercase())
+        })
         .cloned()
         .collect();
     out.extend(e.add.iter().cloned());
@@ -429,7 +433,10 @@ fn format_tags(tags: &[String]) -> String {
     if tags.is_empty() {
         "（沒有標籤）".into()
     } else {
-        tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")
+        tags.iter()
+            .map(|t| format!("#{t}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -582,7 +589,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Cmd::Stats { days, json }) => {
             let list = stats::collect(days)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&stats::to_json(days, &list))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&stats::to_json(days, &list))?
+                );
             } else {
                 print!("{}", stats::to_text(days, &list));
             }
@@ -675,7 +685,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let c = ensure_daemon("cli").await?.client;
             let cur = expect_session(c.request(ClientMsg::GetSession { id: id.clone() }).await?)?;
             let split = |v: &[String]| -> Vec<String> {
-                v.iter().flat_map(|t| agt_proto::tags::split_input(t)).collect()
+                v.iter()
+                    .flat_map(|t| agt_proto::tags::split_input(t))
+                    .collect()
             };
             let edit = TagEdit {
                 add: split(&add),
@@ -1331,8 +1343,20 @@ mod tag_tests {
     #[test]
     fn noop_is_detected() {
         assert!(TagEdit::default().is_noop());
-        assert!(!TagEdit { clear: true, ..Default::default() }.is_noop());
-        assert!(!TagEdit { set: Some(vec![]), ..Default::default() }.is_noop());
+        assert!(
+            !TagEdit {
+                clear: true,
+                ..Default::default()
+            }
+            .is_noop()
+        );
+        assert!(
+            !TagEdit {
+                set: Some(vec![]),
+                ..Default::default()
+            }
+            .is_noop()
+        );
     }
 
     #[test]

@@ -404,7 +404,10 @@ async fn tags_popup_enter_sends_set_tags_and_closes() {
     app.on_event(key('t'));
     app.on_event(key('#'));
     app.on_event(key('a'));
-    app.on_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
     assert!(app.popup.is_none());
     let frame = tokio::time::timeout(std::time::Duration::from_secs(2), sent.recv())
         .await

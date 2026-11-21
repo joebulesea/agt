@@ -301,7 +301,11 @@ pub(super) fn apply_template(cfg: &Config, mut req: CreateSession) -> OpResult<C
     if req.task.trim().is_empty() {
         req.task = t.task.clone();
     }
-    if req.base_branch.as_deref().is_none_or(|b| b.trim().is_empty()) {
+    if req
+        .base_branch
+        .as_deref()
+        .is_none_or(|b| b.trim().is_empty())
+    {
         req.base_branch = t.base.clone();
     }
     let mut tags = t.tags.clone();
@@ -379,7 +383,11 @@ mod template_tests {
         let mut r = req("shell", "t");
         r.template = Some("nope".into());
         let e = apply_template(&cfg_with_template(), r.clone()).unwrap_err();
-        assert!(e.message.contains("nope") && e.message.contains("fix"), "{}", e.message);
+        assert!(
+            e.message.contains("nope") && e.message.contains("fix"),
+            "{}",
+            e.message
+        );
         let e = apply_template(&Config::defaults(), r).unwrap_err();
         assert!(e.message.contains("沒有設定任何範本"), "{}", e.message);
     }

@@ -309,7 +309,11 @@ mod tests {
         let text = to_text(7, &list);
         assert!(text.contains("a1") && text.contains("1m 30s"), "{text}");
         // 任務中的換行不會破壞表格
-        assert_eq!(text.lines().filter(|l| l.starts_with("a1")).count(), 1, "{text}");
+        assert_eq!(
+            text.lines().filter(|l| l.starts_with("a1")).count(),
+            1,
+            "{text}"
+        );
         assert!(to_text(7, &[]).contains("沒有分頁紀錄"));
     }
 }

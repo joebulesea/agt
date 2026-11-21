@@ -25,7 +25,11 @@ pub fn db_path() -> std::path::PathBuf {
 
 /// 分頁的終端機紀錄檔（輪替出去的舊檔在前），不存在的略過。`session_id` 必須是 daemon 回報的完整 id。
 pub fn session_log_files(session_id: &str) -> Vec<std::path::PathBuf> {
-    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
         return Vec::new();
     }
     let logs = Paths::detect().logs();

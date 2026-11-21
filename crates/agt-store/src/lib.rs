@@ -519,7 +519,12 @@ mod tests {
         // 沒有標籤的分頁（舊資料列、NULL）
         s.insert_session(&row("id2", "bbbb")).unwrap();
         assert!(s.get_session("id2").unwrap().unwrap().tags.is_empty());
-        assert!(s.open_sessions().unwrap().iter().all(|r| r.id != "id1" || r.tags.is_empty()));
+        assert!(
+            s.open_sessions()
+                .unwrap()
+                .iter()
+                .all(|r| r.id != "id1" || r.tags.is_empty())
+        );
     }
 
     #[test]

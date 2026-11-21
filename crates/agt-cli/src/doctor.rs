@@ -65,17 +65,16 @@ impl Report {
 /// `agt doctor --json` 的輸出：`{ok, failures, warnings, items: [{level, text, hint}]}`。
 /// `level` 是 ok | info | warn | fail；`ok` 在沒有 fail 時為 true。
 fn to_json(r: &Report) -> serde_json::Value {
-    let items: Vec<_> = r
-        .0
-        .iter()
-        .map(|i| {
-            serde_json::json!({
-                "level": i.level.as_str(),
-                "text": i.text,
-                "hint": i.hint,
+    let items: Vec<_> =
+        r.0.iter()
+            .map(|i| {
+                serde_json::json!({
+                    "level": i.level.as_str(),
+                    "text": i.text,
+                    "hint": i.hint,
+                })
             })
-        })
-        .collect();
+            .collect();
     serde_json::json!({
         "ok": r.count(Level::Fail) == 0,
         "failures": r.count(Level::Fail),

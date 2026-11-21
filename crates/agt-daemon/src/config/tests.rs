@@ -324,7 +324,10 @@ fn long_running_notify_defaults_off_and_loads() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("config.toml");
     std::fs::write(&f, "[general]\nlong_running_notify_secs = 600\n").unwrap();
-    assert_eq!(Config::load(&f).unwrap().general.long_running_notify_secs, 600);
+    assert_eq!(
+        Config::load(&f).unwrap().general.long_running_notify_secs,
+        600
+    );
 }
 
 #[test]

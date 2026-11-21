@@ -81,9 +81,7 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
             status_style(s.status)
         };
         let row_style = if active {
-            Style::new()
-                .bg(theme().sel_bg)
-                .add_modifier(Modifier::BOLD)
+            Style::new().bg(theme().sel_bg).add_modifier(Modifier::BOLD)
         } else {
             Style::new()
         };
@@ -373,7 +371,12 @@ pub(super) fn draw_exit_hint(buf: &mut Buffer, app: &mut App, area: Rect) {
     }
     buf.set_string(area.x, y, " ".repeat(area.width as usize), Style::new());
     let mut x = area.x;
-    buf.set_string(x, y, note, Style::new().fg(theme().on_accent).bg(theme().yellow));
+    buf.set_string(
+        x,
+        y,
+        note,
+        Style::new().fg(theme().on_accent).bg(theme().yellow),
+    );
     x += note.width() as u16 + 1;
     x += button(
         buf,

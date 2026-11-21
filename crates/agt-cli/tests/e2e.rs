@@ -874,7 +874,12 @@ async fn gc_json() {
     let mut env = Env::new();
     let Connected { client: c, .. } = env.connect("cli").await;
     // 和 full_flow 一樣先有一個分頁，gc 才會掃描這個 repo
-    expect_session(c.request(create("fake", &env.repo, "gc json")).await.unwrap()).unwrap();
+    expect_session(
+        c.request(create("fake", &env.repo, "gc json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
 
     // 一致：items 為空，pruned = false
     let (code, v) = agt_json(&env, &["gc", "--json"]);
@@ -990,7 +995,10 @@ fn config_check_json() {
     let (code, v) = agt_json(&env, &["config", "check", "--json", "--file", &bad]);
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["ok"], false);
-    assert!(v["error"].as_str().unwrap().contains("sidebar_width"), "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("sidebar_width"),
+        "{v}"
+    );
 
     // 錯誤：TOML 語法錯誤
     let broken = write("broken.toml", "[general\n");
@@ -1042,7 +1050,10 @@ fn update_check_json() {
     // 版本格式錯誤：exit 1，stdout 是 {error}
     let (code, v) = check("not-a-version");
     assert_eq!(code, 1, "{v}");
-    assert!(v["error"].as_str().unwrap().contains("版本格式不正確"), "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("版本格式不正確"),
+        "{v}"
+    );
     assert!(v.get("status").is_none());
 
     // AGT_REPO 格式不對：exit 1，錯誤訊息提到 AGT_REPO
@@ -1087,7 +1098,12 @@ fn gc_items(v: &serde_json::Value) -> &Vec<serde_json::Value> {
 async fn gc_json_closed_worktree() {
     let mut env = Env::new();
     let Connected { client: c, .. } = env.connect("cli").await;
-    let k = expect_session(c.request(create("fake", &env.repo, "closed")).await.unwrap()).unwrap();
+    let k = expect_session(
+        c.request(create("fake", &env.repo, "closed"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let wk = PathBuf::from(k.worktree.clone().unwrap());
     let bk = k.branch.clone().unwrap();
     c.request(ClientMsg::Kill {
@@ -1153,7 +1169,12 @@ async fn gc_json_closed_worktree() {
 async fn gc_json_missing_worktree() {
     let mut env = Env::new();
     let Connected { client: c, .. } = env.connect("cli").await;
-    let m = expect_session(c.request(create("fake", &env.repo, "missing")).await.unwrap()).unwrap();
+    let m = expect_session(
+        c.request(create("fake", &env.repo, "missing"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let wm = PathBuf::from(m.worktree.clone().unwrap());
     // 結束 daemon 與 Agent 後再刪 worktree（Windows 不能刪除執行中 Agent 所在的目錄）
     env.stop(&c).await;
@@ -1410,26 +1431,46 @@ async fn gc_json_mixed_items_and_output_hygiene() {
     let orphan = env.home.join("orphan-mixed");
     git(
         &env.repo,
-        &["worktree", "add", "-q", "-b", "agt/x/orphan-mixed", orphan.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agt/x/orphan-mixed",
+            orphan.to_str().unwrap(),
+        ],
     );
     let foreign = env.home.join("foreign");
     git(
         &env.repo,
-        &["worktree", "add", "-q", "-b", "feature/not-agt", foreign.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature/not-agt",
+            foreign.to_str().unwrap(),
+        ],
     );
 
     // stdout 只有一份 JSON，stderr 沒有東西，exit 0（即使有項目）
     let (code, out, err) = agt_raw(&env, &["gc", "--json"]);
     assert_eq!(code, Some(0), "{out}\n{err}");
     assert!(err.is_empty(), "stderr 應為空：{err}");
-    assert!(out.trim_start().starts_with('{') && out.trim_end().ends_with('}'), "{out}");
+    assert!(
+        out.trim_start().starts_with('{') && out.trim_end().ends_with('}'),
+        "{out}"
+    );
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["pruned"], false);
     let items = gc_items(&v);
     assert_eq!(items.len(), 3, "{v}");
     let mut kinds: Vec<&str> = items.iter().map(|i| i["kind"].as_str().unwrap()).collect();
     kinds.sort();
-    assert_eq!(kinds, ["closed_worktree", "missing_worktree", "orphan_worktree"]);
+    assert_eq!(
+        kinds,
+        ["closed_worktree", "missing_worktree", "orphan_worktree"]
+    );
     for it in items {
         // 五個欄位一個不缺（沒有值是 null）
         assert_eq!(it.as_object().unwrap().len(), 5, "{it}");
@@ -1443,10 +1484,17 @@ async fn gc_json_mixed_items_and_output_hygiene() {
     assert!(by("orphan_worktree")["session"].is_null());
     assert_eq!(by("closed_worktree")["session"], k.short_id.as_str());
     assert_eq!(by("missing_worktree")["session"], m.short_id.as_str());
-    assert!(!items.iter().any(|i| i["path"].as_str().unwrap().contains("foreign")));
+    assert!(
+        !items
+            .iter()
+            .any(|i| i["path"].as_str().unwrap().contains("foreign"))
+    );
 
     // 假 Agent 可能剛好在被結束前寫了檔案：先回到 base 並清乾淨，prune 才會移除副本
-    git(&wk, &["reset", "-q", "--hard", k.base_branch.as_deref().unwrap()]);
+    git(
+        &wk,
+        &["reset", "-q", "--hard", k.base_branch.as_deref().unwrap()],
+    );
     git(&wk, &["clean", "-q", "-fd"]);
 
     // 選項順序不影響：`--json --prune` 與 `--prune --json` 相同
@@ -1484,7 +1532,14 @@ async fn gc_json_dirty_orphan_is_kept() {
     let orphan = env.home.join("orphan-dirty");
     git(
         &env.repo,
-        &["worktree", "add", "-q", "-b", "agt/x/dirty", orphan.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agt/x/dirty",
+            orphan.to_str().unwrap(),
+        ],
     );
     std::fs::write(orphan.join("wip.txt"), "unsaved").unwrap();
 
@@ -1495,7 +1550,10 @@ async fn gc_json_dirty_orphan_is_kept() {
         assert_eq!(items.len(), 1, "保留的項目每次都會列出：{v}");
         assert_eq!(items[0]["kind"], "orphan_worktree");
         assert_eq!(items[0]["branch"], "agt/x/dirty");
-        assert!(orphan.join("wip.txt").exists(), "有變更的 worktree 不能被刪");
+        assert!(
+            orphan.join("wip.txt").exists(),
+            "有變更的 worktree 不能被刪"
+        );
     }
     assert!(!git(&env.repo, &["branch", "--list", "agt/x/dirty"]).is_empty());
 
@@ -1596,7 +1654,10 @@ async fn daemon_status_text_output() {
     let (code, out, err) = agt_raw(&env, &["daemon", "status"]);
     assert_eq!(code, Some(0), "{out}\n{err}");
     assert!(
-        out.contains(&format!("agt daemon {}（pid {pid}）", env!("CARGO_PKG_VERSION"))),
+        out.contains(&format!(
+            "agt daemon {}（pid {pid}）",
+            env!("CARGO_PKG_VERSION")
+        )),
         "{out}"
     );
     assert!(out.contains(&env.sock), "{out}");
@@ -1699,7 +1760,10 @@ async fn daemon_status_reports_refused_connection() {
 
     let (code, out, _) = run(&["daemon", "status"]);
     assert_eq!(code, Some(0), "{out}");
-    assert!(out.contains("daemon 回應錯誤") && out.contains("協定版本不同"), "{out}");
+    assert!(
+        out.contains("daemon 回應錯誤") && out.contains("協定版本不同"),
+        "{out}"
+    );
 }
 
 /// `agt update --check` 的文字輸出（用 `--version` 指定，不連網）。
@@ -1730,7 +1794,10 @@ fn update_check_text_output() {
 
     let (code, out, err) = run(&["update", "--check", "--version", cur]);
     assert_eq!(code, Some(0), "{out}\n{err}");
-    assert!(out.contains(&format!("目前版本：v{cur}，可用版本：v{cur}")), "{out}");
+    assert!(
+        out.contains(&format!("目前版本：v{cur}，可用版本：v{cur}")),
+        "{out}"
+    );
     assert!(out.contains("已經是這個版本"), "{out}");
     assert!(!out.contains("執行 `agt update`"), "{out}");
 
@@ -1902,7 +1969,10 @@ esac
         assert!(out.contains("==> 下載"), "{out}");
         assert!(!out.contains("停止 daemon"), "{out}");
         assert_eq!(std::fs::read(&bin).unwrap(), original);
-        assert!(Client::connect(&env.sock, "cli").await.is_ok(), "daemon 應仍在執行");
+        assert!(
+            Client::connect(&env.sock, "cli").await.is_ok(),
+            "daemon 應仍在執行"
+        );
 
         // SHA256SUMS 裡沒有這個壓縮檔
         let other = format!("{}  something-else.tar.gz\n", "1".repeat(64));
@@ -1925,7 +1995,12 @@ esac
 
         let (code, out, err) = run_update(&env, &bin, &rel, &["update", "-y"]);
         assert_eq!(code, Some(0), "{out}\n{err}");
-        for want in ["==> 下載", "==> 核對 SHA256", "==> 安裝到", "已更新到 v999.0.0"] {
+        for want in [
+            "==> 下載",
+            "==> 核對 SHA256",
+            "==> 安裝到",
+            "已更新到 v999.0.0",
+        ] {
             assert!(out.contains(want), "缺少「{want}」：{out}");
         }
         assert_eq!(std::fs::read(&bin).unwrap(), NEW_AGT, "agt 應被換成新版");
@@ -1963,7 +2038,12 @@ esac
 async fn log_export() {
     let mut env = Env::new();
     let Connected { client: c, .. } = env.connect("cli").await;
-    let s = expect_session(c.request(create("fake", &env.repo, "log task")).await.unwrap()).unwrap();
+    let s = expect_session(
+        c.request(create("fake", &env.repo, "log task"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = s.short_id.clone();
 
     // 等 Agent 印出第一行（紀錄檔由 daemon 寫入）
@@ -1976,7 +2056,10 @@ async fn log_export() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(out.contains("agent in") && out.contains("中文輸出"), "{out:?}");
+    assert!(
+        out.contains("agent in") && out.contains("中文輸出"),
+        "{out:?}"
+    );
     assert!(!out.contains('\x1b'), "控制序列應被去掉：{out:?}");
 
     // --tail
@@ -1988,7 +2071,10 @@ async fn log_export() {
     let (code, o, err) = agt_raw(&env, &["log", &id, "--format", "md"]);
     assert_eq!(code, Some(0), "{err}");
     assert!(o.starts_with("# agt 分頁紀錄：log task\n"), "{o}");
-    assert!(o.contains(&format!("- 分頁：{id}")) && o.contains("```text"), "{o}");
+    assert!(
+        o.contains(&format!("- 分頁：{id}")) && o.contains("```text"),
+        "{o}"
+    );
 
     // 寫到檔案：已存在時拒絕，--force 才覆寫
     let file = env.home.join("exported.txt");
@@ -2024,7 +2110,12 @@ async fn log_export() {
 async fn stats_json_reports_sessions() {
     let mut env = Env::new();
     let Connected { client: c, .. } = env.connect("cli").await;
-    let s = expect_session(c.request(create("fake", &env.repo, "stats task")).await.unwrap()).unwrap();
+    let s = expect_session(
+        c.request(create("fake", &env.repo, "stats task"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     // 等狀態事件寫進資料庫（假 Agent 印出 (y/n) 後進入等待輸入）
     let mut v = serde_json::Value::Null;
     for _ in 0..50 {
@@ -2047,7 +2138,10 @@ async fn stats_json_reports_sessions() {
     // 文字模式
     let (code, out, _) = agt_raw(&env, &["stats"]);
     assert_eq!(code, Some(0));
-    assert!(out.contains(&s.short_id) && out.contains("依 Agent 合計"), "{out}");
+    assert!(
+        out.contains(&s.short_id) && out.contains("依 Agent 合計"),
+        "{out}"
+    );
 
     env.stop(&c).await;
 }
@@ -2087,18 +2181,36 @@ async fn new_with_template() {
     let (code, out, err) = agt_raw(
         &env,
         &[
-            "new", "fake", "--template", "fix", "--task", "mine", "--tag", "urgent,ui", "--tag",
-            "BUG", "--repo", &repo, "-y",
+            "new",
+            "fake",
+            "--template",
+            "fix",
+            "--task",
+            "mine",
+            "--tag",
+            "urgent,ui",
+            "--tag",
+            "BUG",
+            "--repo",
+            &repo,
+            "-y",
         ],
     );
     assert_eq!(code, Some(0), "{out}\n{err}");
     let list = ls_json(&env);
     let mine = list.iter().find(|s| s["task"] == "mine").expect("mine");
     assert_eq!(mine["agent"], "fake");
-    assert_eq!(tags_of(mine), ["bug", "urgent", "ui"], "重複的 BUG 不分大小寫去掉");
+    assert_eq!(
+        tags_of(mine),
+        ["bug", "urgent", "ui"],
+        "重複的 BUG 不分大小寫去掉"
+    );
 
     // 不存在的範本：列出可用的
-    let (code, _, err) = agt_raw(&env, &["new", "fake", "--template", "nope", "--repo", &repo, "-y"]);
+    let (code, _, err) = agt_raw(
+        &env,
+        &["new", "fake", "--template", "nope", "--repo", &repo, "-y"],
+    );
     assert_eq!(code, Some(1));
     assert!(err.contains("找不到範本") && err.contains("fix"), "{err}");
 
@@ -2109,7 +2221,10 @@ async fn new_with_template() {
 
     // 標籤不合法：太長
     let long = "x".repeat(25);
-    let (code, _, err) = agt_raw(&env, &["new", "fake", "--tag", &long, "--repo", &repo, "-y"]);
+    let (code, _, err) = agt_raw(
+        &env,
+        &["new", "fake", "--tag", &long, "--repo", &repo, "-y"],
+    );
     assert_eq!(code, Some(1));
     assert!(err.contains("太長"), "{err}");
     assert_eq!(ls_json(&env).len(), 2, "失敗的建立不應留下分頁");
@@ -2175,7 +2290,10 @@ async fn session_tags() {
     let (code, _, err) = agt_raw(&env, &["tag", &ia, "--add", &"x".repeat(25)]);
     assert_eq!(code, Some(1));
     assert!(err.contains("太長"), "{err}");
-    let nine = (0..9).map(|i| format!("t{i}")).collect::<Vec<_>>().join(",");
+    let nine = (0..9)
+        .map(|i| format!("t{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
     let (code, _, err) = agt_raw(&env, &["tag", &ia, "--set", &nine]);
     assert_eq!(code, Some(1));
     assert!(err.contains("最多"), "{err}");

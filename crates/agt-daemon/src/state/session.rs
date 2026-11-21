@@ -5,7 +5,12 @@ use super::*;
 impl Daemon {
     /// 關閉分頁時執行 Agent 設定的 `on_close`（例如刪除沙箱），在背景執行、不阻塞。
     pub(super) fn run_on_close(&self, id: &str) {
-        let Some(info) = self.entries.lock_or_recover().get(id).map(|e| e.info.clone()) else {
+        let Some(info) = self
+            .entries
+            .lock_or_recover()
+            .get(id)
+            .map(|e| e.info.clone())
+        else {
             return;
         };
         let cfg = self.cfg();
@@ -139,7 +144,11 @@ impl Daemon {
                                 _ => "已完成",
                             };
                             let body = message.unwrap_or_else(|| format!("{} {what}", info.agent));
-                            platform::notify(&format!("agt · {}", info.task), &body, Some(id.as_str()));
+                            platform::notify(
+                                &format!("agt · {}", info.task),
+                                &body,
+                                Some(id.as_str()),
+                            );
                         }
                     }
                     SessionEvent::Notify { title, body } => {
@@ -217,11 +226,7 @@ impl Daemon {
             }
             platform::notify(
                 &format!("agt · {}", info.task),
-                &format!(
-                    "{} 已連續執行超過 {}",
-                    info.agent,
-                    busy::format_secs(secs)
-                ),
+                &format!("{} 已連續執行超過 {}", info.agent, busy::format_secs(secs)),
                 Some(id.as_str()),
             );
         }
@@ -265,8 +270,8 @@ impl Daemon {
     /// 取代分頁的標籤（空清單 = 清除）。
     pub fn set_tags(&self, id: &str, tags: &[String]) -> OpResult<SessionInfo> {
         let id = self.resolve(id)?;
-        let tags = agt_proto::tags::normalize(tags)
-            .map_err(|e| OpError::new(codes::BAD_REQUEST, e))?;
+        let tags =
+            agt_proto::tags::normalize(tags).map_err(|e| OpError::new(codes::BAD_REQUEST, e))?;
         self.store().set_tags(&id, &tags)?;
         let info = self
             .update_info(&id, |i| i.tags = tags.clone())

@@ -3,8 +3,8 @@
 //! 封包格式（規格 4.2）：`len: u32 (big endian) | kind: u8 | payload (len-1 bytes)`。
 
 pub mod client;
-pub mod colors;
 pub mod codec;
+pub mod colors;
 pub mod msg;
 pub mod screen;
 pub mod sync;
