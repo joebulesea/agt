@@ -9,6 +9,8 @@
 
 ## 未發布
 
+## 0.3.0 - 2026-11-21
+
 ### 新增
 
 - 新增分頁的範本：設定檔 `[templates.<名稱>]`（`agent`、`task`、`base`、`tags`、`description`）。新增表單按 `F3` / `Ctrl+T` 切換，`agt new --template <名稱>` 可省略 Agent；自己填的值優先，標籤合併。`agt config check` 會列出範本並檢查 Agent 與標籤
@@ -25,9 +27,7 @@
 - 系統通知可選擇狀態：`[general] notify_on = ["waiting", "done", "error"]`（預設前三者；另可加 `"exited"` 在 Agent 行程結束時通知，`notify = false` 仍是全部關閉）。分頁發生錯誤時現在也會通知（原本只有等待輸入與完成）；設定值寫錯時 `agt config check` 會報錯
 - `agt completions <shell>`：輸出 bash、zsh、fish、PowerShell、elvish 的補全腳本（子命令與選項；新增相依 `clap_complete`）
 - CI 新增 `cargo deny`（`deny.toml`）：檢查相依套件的授權白名單、`*` 版本需求與來源（只允許 crates.io）；弱點檢查仍由 `cargo audit` 負責
-
 - 收尾視窗（`m`）顯示預計產生的 commit / PR 數量與標題、說明（有分組時列出每組）。
-
 - 分組收尾：Agent 在 `.agt/groups/<組名>/` 放 `FILES`、`COMMIT_MSG`、`PR_BODY.md`，收尾 pr / merge 時每組各自一個 commit（pr 各自一個 PR），未認領的變更自成 `rest` 組。說明見 `docs/Agent-分組收尾說明.md`
 - diff 視窗依「已 commit／未 commit 的變更／未追蹤的檔案」分頁（`Tab`、`←` `→`、`h` `l` 或 `1`–`9` 切換，切換後捲回頂端；`c` 複製目前這一頁），區段改用色塊標示，內容超出視窗高度時右側顯示捲軸
 - ⚠ 不相容：`agtd` 併入 `agt`，只剩單一執行檔；daemon 改以 `agt daemon run` 執行（通常由 agt 自動在背景啟動），`agt config check` 與 `agt doctor` 也不再另外啟動 `agtd`。release 壓縮檔、安裝腳本、`agt update`、`docker/publish.sh` 都改為單檔並刪除舊的 `agtd`；端對端測試移到 `crates/agt-cli/tests/`。**從舊版升級時**，舊的 daemon 還在執行（協定版本不同，`agt daemon stop` 找不到它）要先手動結束：Windows `taskkill /IM agtd.exe /F`、Linux `pkill agtd`，再執行新版 agt（分頁資料保留，可用 Ctrl+A → R 接續）
@@ -36,6 +36,17 @@
 - Agent 的指令是 `docker` 但 Docker 沒有開啟時，建立分頁與重新啟動會明確提示「Docker 沒有開啟」（找不到 docker 指令時提示尚未安裝），不再讓容器指令莫名失敗
 - `docker/proxy/`：只放行指定網域的 squid proxy 範例（容器網路限制）；`docker/agy` 可用 `AGY_INSTALL_SHA256` 建置參數核對安裝腳本
 - CI 新增 TUI 冒煙測試與安裝腳本檢查；TUI 新增不需要 daemon 的 `App` 單元測試（OSC 52 確認、前綴鍵、分頁切換、輸入轉送）
+- 收尾規則改由 agt 提供：建立分頁時在 worktree 寫入 `.agt/README.md`（說明檔格式、多個主題時如何分組），Agent 提示只需要叫它先讀這個檔案。收尾視窗會提醒 `.agt/` 裡 agt 不認得的項目（例如 Agent 自己寫的 `split/`），以及改動很大卻沒有分組的情況；`agt config check` 會提醒提示沒有提到收尾規則的 `auto_commit` Agent
+
+### 修正
+
+- daemon、核心與 client 的取鎖改用不會中毒的 helper（`agt_proto::sync`），某個執行緒 panic 後不會讓其他分頁跟著連鎖 panic
+- TUI 冒煙測試：OSC 52 預設改為 `ask` 後測試設定沒跟著更新，改成 `osc52 = "on"`，並改為逐格讀取畫面，不再因為 pyte 處理寬字元的限制而丟出 `IndexError`
+
+## 0.2.1 - 2026-11-20
+
+### 新增
+
 - 新增分頁表單的 Agent 欄位、左側欄分頁清單（第二行行尾的 `auto`）與標題列（`[auto_commit]`）會標出 `auto_commit`（該 Agent 收尾前會自動 commit）；`agt config check` 也列出每個 Agent 展開 `extends` 後的 `auto_commit` 值
 - 左側欄標題列加上可點的「«」收合按鈕，收合後顯示「»」展開按鈕（與 `b` 鍵相同）；空間太窄時「«」會隱藏
 - `agt doctor`：一次檢查執行環境，每個問題附上下一步。項目：agt 與 agtd 是否在同一個資料夾、daemon 狀態（版本與通訊協定是否一致、是否因設定檔錯誤而使用預設值）、設定檔（沿用 `agt config check`）、資料目錄可否寫入與 `agtd.log` 最近的錯誤、git（版本、`user.name` / `user.email`）、GitHub CLI 登入、Docker / Docker Sandboxes、`curl` 與 `tar`（`agt update` 需要）。只讀取不修改；有失敗項目時 exit 1，選用工具沒安裝只列為資訊
@@ -57,9 +68,6 @@
 
 ### 修正
 
-- daemon、核心與 client 的取鎖改用不會中毒的 helper（`agt_proto::sync`），某個執行緒 panic 後不會讓其他分頁跟著連鎖 panic
-
-- TUI 冒煙測試：OSC 52 預設改為 `ask` 後測試設定沒跟著更新，改成 `osc52 = "on"`，並改為逐格讀取畫面，不再因為 pyte 處理寬字元的限制而丟出 `IndexError`
 - 資料庫版本比 agt 新時（例如降版後）拒絕開啟並說明原因，不再靜默使用而可能寫壞資料
 - 錯誤訊息等文字視窗會依視窗寬度自動換行，長訊息不再被切掉（diff 視窗維持不換行）；按 `c`（或 `y`）可把全部內容複製到剪貼簿（例如收尾 pr 失敗的訊息）
 
