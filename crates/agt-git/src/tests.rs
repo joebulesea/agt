@@ -1307,6 +1307,52 @@ fn stacked_pr_body_starts_with_a_banner_and_keeps_the_body() {
     assert!(only.starts_with("> ⚠") && !only.contains("做了什麼"));
 }
 
+// ---- 合併後確認進了 base（landing）----
+
+const OID: &str = "0123456789abcdef0123456789abcdef01234567";
+
+fn landing_of(line: &str, in_base: bool) -> Result<Landing> {
+    classify(line, "main", |_| Ok(in_base))
+}
+
+#[test]
+fn landing_classifies_pr_states() {
+    assert_eq!(landing_of("OPEN main ", false).unwrap(), Landing::Open);
+    assert_eq!(landing_of("CLOSED main ", false).unwrap(), Landing::Closed);
+    // squash / rebase：合併 commit 與推出去的不同，只要它在 base 裡就算進去
+    assert_eq!(
+        landing_of(&format!("MERGED main {OID}"), true).unwrap(),
+        Landing::Landed
+    );
+    assert_eq!(
+        landing_of(&format!("MERGED main {OID}"), false).unwrap(),
+        Landing::Missing
+    );
+    assert_eq!(landing_of("MERGED main ", true).unwrap(), Landing::Missing);
+    // 堆疊 PR 合進前一組的 branch：不是 main，不必再查 git
+    let r = classify(&format!("MERGED agt/t-one {OID}"), "main", |_| {
+        panic!("base 不符時不該查 git")
+    });
+    assert_eq!(r.unwrap(), Landing::WrongBase("agt/t-one".into()));
+}
+
+#[test]
+fn landing_rejects_malformed_gh_output() {
+    for bad in [
+        "",
+        "MERGED",
+        "WEIRD main ",
+        "MERGED main nothex",
+        "MERGED main 0123",
+        "MERGED -x ",
+        "MERGED a..b ",
+        "MERGED ma\u{1b}in ",
+        &format!("MERGED main {OID} extra"),
+    ] {
+        assert!(landing_of(bad, true).is_err(), "{bad:?}");
+    }
+}
+
 // ---- 收尾檢查（finish_check）----
 
 #[test]

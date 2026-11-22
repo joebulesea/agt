@@ -365,6 +365,9 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
             d.notify(&session_id, status, message, tool)
                 .map(|_| ReplyBody::Ok),
         ),
+        ClientMsg::ListLandings { check } => {
+            blocking!(|d: &Arc<Daemon>| d.list_landings(check).map(ReplyBody::Landings))
+        }
         ClientMsg::Finish { id, action, force } => {
             blocking!(|d: &Arc<Daemon>| d.finish(&id, action, force).map(ReplyBody::Text))
         }

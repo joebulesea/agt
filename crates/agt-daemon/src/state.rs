@@ -22,6 +22,7 @@ mod close;
 mod create;
 mod finish;
 mod gc;
+mod landing;
 mod overlap;
 mod session;
 mod usage;
@@ -147,6 +148,8 @@ pub struct Daemon {
     usage_seen: Mutex<HashMap<String, std::time::SystemTime>>,
     /// 用量達到 80% 的通知紀錄（每個分頁、每個額度時間窗只通知一次）。
     usage_alerts: Mutex<usage::AlertState>,
+    /// 檢查 PR 有沒有進 base 失敗後的重試時間與連續失敗次數（key = repo 路徑、branch）。
+    landing_retry: Mutex<HashMap<(String, String), (Instant, u32)>>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -182,6 +185,7 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         tags: r.tags.clone(),
         usage: None,
         overlaps: Vec::new(),
+        landing: Vec::new(),
     }
 }
 
@@ -219,6 +223,17 @@ impl Daemon {
                 },
             );
         }
+        // 收尾開出的 PR 有沒有進 base：帶進還開著的分頁（側欄顯示用）
+        match store.landings(false) {
+            Ok(rows) => {
+                for r in rows {
+                    if let Some(e) = entries.get_mut(&r.session_id) {
+                        e.info.landing.push(landing::to_info(r));
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("讀取追蹤中的 PR 失敗：{e}"),
+        }
         // 已關閉分頁的事件與紀錄保留一段時間後清掉（可能含有 Agent 回報的內容）
         match store.prune_closed(agt_store::now() - CLOSED_RETENTION_SECS) {
             Ok(n) if n > 0 => tracing::info!("已清除 {n} 個關閉超過 30 天的分頁紀錄"),
@@ -246,6 +261,7 @@ impl Daemon {
             changed_files: Mutex::new(Default::default()),
             usage_seen: Mutex::new(Default::default()),
             usage_alerts: Mutex::new(Default::default()),
+            landing_retry: Mutex::new(Default::default()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),

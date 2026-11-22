@@ -66,6 +66,7 @@ impl Daemon {
                 .map_err(|e| OpError::new(codes::BAD_REQUEST, e))?,
             usage: None,
             overlaps: Vec::new(),
+            landing: Vec::new(),
         };
         let mut created_wt: Option<(PathBuf, PathBuf, String)> = None; // (repo, worktree, branch)
         let mut setup: Option<String> = None;

@@ -11,15 +11,18 @@ pub fn create_pr(
     branch: &str,
     base: &str,
     title: &str,
-) -> Result<String> {
+) -> Result<(String, Option<PrTarget>)> {
     // 先驗證；gh 自己也會在 worktree 裡呼叫 git，下面用同一個 gitdir 固定它
     let gitdir = trusted_gitdir(repo, worktree)?;
     let has_gh = has_gh();
     let remote = pick_remote(repo, worktree)?;
     if !has_gh {
-        return Ok(format!(
-            "找不到 gh，請手動執行：\n  git -C \"{}\" push -u {remote} {branch}",
-            worktree.display()
+        return Ok((
+            format!(
+                "找不到 gh，請手動執行：\n  git -C \"{}\" push -u {remote} {branch}",
+                worktree.display()
+            ),
+            None,
         ));
     }
     // 先讀說明檔、確認 PR 的目標：不合規定（連結、base 不在 remote 上等）時在 push 之前就停下
@@ -38,9 +41,17 @@ pub fn create_pr(
     if r.is_ok() && body.is_some() {
         remove_note(worktree, PR_BODY_FILE);
     }
-    r.map(|out| match note {
-        Some(n) => format!("{out}\n{n}"),
-        None => out,
+    let target = PrTarget {
+        name: "pr".into(),
+        branch: branch.to_string(),
+        base: base.to_string(),
+    };
+    r.map(|out| {
+        let text = match note {
+            Some(n) => format!("{out}\n{n}"),
+            None => out,
+        };
+        (text, Some(target))
     })
 }
 
@@ -167,10 +178,19 @@ pub(crate) fn open_or_update_pr(
 }
 
 pub(crate) fn gh_run(worktree: &Path, gitdir: &Path, args: &[&str]) -> Result<String> {
+    let mut gh = gh_command(worktree, args);
+    gh.env("GIT_DIR", gitdir).env("GIT_WORK_TREE", worktree);
+    gh_output(gh, args)
+}
+
+/// 在可信的主 repo 目錄執行 `gh`（不經過 worktree，分頁關閉後也能用）。
+pub(crate) fn gh_run_repo(repo: &Path, args: &[&str]) -> Result<String> {
+    gh_output(gh_command(repo, args), args)
+}
+
+fn gh_command(dir: &Path, args: &[&str]) -> Command {
     let mut gh = Command::new("gh");
-    gh.current_dir(worktree)
-        .env("GIT_DIR", gitdir)
-        .env("GIT_WORK_TREE", worktree)
+    gh.current_dir(dir)
         // gh 自己呼叫的 git 也不能進巢狀 repo、不能啟動 fsmonitor（-c 只管我們直接執行的 git）
         .env("GIT_CONFIG_COUNT", "3")
         .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
@@ -186,6 +206,10 @@ pub(crate) fn gh_run(worktree: &Path, gitdir: &Path, args: &[&str]) -> Result<St
         use std::os::windows::process::CommandExt;
         gh.creation_flags(0x0800_0000);
     }
+    gh
+}
+
+fn gh_output(mut gh: Command, args: &[&str]) -> Result<String> {
     let out = gh.output()?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
