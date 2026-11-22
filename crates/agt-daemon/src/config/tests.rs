@@ -328,6 +328,19 @@ fn colors_section_loads_from_file() {
 }
 
 #[test]
+fn sidebar_prompt_defaults_on_and_can_be_turned_off() {
+    let c = Config::defaults();
+    assert!(c.general.sidebar_prompt);
+    assert!(c.ui().sidebar_prompt);
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("config.toml");
+    std::fs::write(&f, "[general]\nsidebar_prompt = false\n").unwrap();
+    let c = Config::load(&f).unwrap();
+    assert!(!c.general.sidebar_prompt);
+    assert!(!c.ui().sidebar_prompt);
+}
+
+#[test]
 fn long_running_notify_defaults_off_and_loads() {
     assert_eq!(Config::defaults().general.long_running_notify_secs, 0);
     let dir = tempfile::tempdir().unwrap();

@@ -126,6 +126,10 @@ pub struct SessionInfo {
     /// 只存在記憶體：daemon 重啟後是載入的時間。0 表示未知。
     #[serde(default)]
     pub status_since: i64,
+    /// 等待輸入時 Agent 在問什麼（hook 的訊息，或畫面上的提問那一行）；側欄預覽用。
+    /// 只在狀態是 `WaitingInput` 時有值，已清除控制字元並限制長度。只存在記憶體。
+    #[serde(default)]
+    pub prompt: Option<String>,
     /// 與其他工作階段共用 worktree（`--share`）。
     #[serde(default)]
     pub shared: bool,
@@ -143,6 +147,9 @@ impl SessionInfo {
     pub fn note_status_change(&mut self, before: AgentStatus) {
         if self.status != before {
             self.status_since = now_secs();
+            if self.status != AgentStatus::WaitingInput {
+                self.prompt = None;
+            }
         }
     }
 
@@ -210,6 +217,9 @@ pub struct UiConfig {
     /// 設了 `auto_commit` 的 Agent（`extends` 展開後）。新增分頁時用來提示收尾會自動 commit。
     #[serde(default)]
     pub auto_commit_agents: Vec<String>,
+    /// 側欄：等待輸入的分頁多一行預覽 Agent 在問什麼。
+    #[serde(default = "default_true")]
+    pub sidebar_prompt: bool,
     /// dark | light | colorblind：TUI 的配色
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -236,6 +246,10 @@ pub struct TemplateInfo {
     pub tags: Vec<String>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_theme() -> String {
     "dark".into()
 }
@@ -251,6 +265,7 @@ impl Default for UiConfig {
             sidebar_width: 26,
             merge_strategy: "ask".into(),
             osc52: default_osc52(),
+            sidebar_prompt: true,
             agents: vec![
                 "claude".into(),
                 "antigravity".into(),

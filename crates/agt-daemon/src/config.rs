@@ -28,6 +28,8 @@ pub struct General {
     pub osc52: String,
     /// TUI 配色：dark | light | colorblind
     pub theme: String,
+    /// 側欄：等待輸入的分頁多一行預覽 Agent 在問什麼（false = 關閉，省一行空間）
+    pub sidebar_prompt: bool,
     /// 收尾（merge / pr）前要求確認的額外路徑，加在內建清單之外。
     pub sensitive_paths: Vec<String>,
 }
@@ -130,6 +132,7 @@ struct PartialGeneral {
     log_output: Option<bool>,
     osc52: Option<String>,
     theme: Option<String>,
+    sidebar_prompt: Option<bool>,
     sensitive_paths: Option<Vec<String>>,
 }
 
@@ -544,6 +547,7 @@ impl Config {
             merge_strategy: self.general.merge_strategy.clone(),
             osc52: self.general.osc52.clone(),
             theme: self.general.theme.clone(),
+            sidebar_prompt: self.general.sidebar_prompt,
             colors: self.colors.clone(),
             templates: self
                 .templates

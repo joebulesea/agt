@@ -89,6 +89,8 @@ sel_bg = "darkgray"
 
 顏色可寫 `#rrggbb`、`0`–`255`、ANSI 名稱（`black red green yellow blue magenta cyan gray darkgray white`）或 `default`；可覆寫的名稱見 [`config/default.toml`](config/default.toml)；除了角色色之外，也可以只改單一狀態的顏色（`status_running`、`status_thinking`、`status_waiting`、`status_done`、`status_error`、`status_starting`、`status_idle`），沒設定的狀態沿用角色色。不支援真彩的終端機會自動把 `#rrggbb` 降成 256 色。名稱或顏色寫錯時設定檔視為錯誤（狀態列顯示原因，沿用上一份有效的設定）。
 
+側欄提問預覽：分頁等待輸入（不是正在看的那個）時，側欄多一行 `? …` 顯示 Agent 在問什麼。分頁很多、想省一行空間時，在 `[general]` 設 `sidebar_prompt = false` 關閉（修改後熱重載）。
+
 長時間執行提醒：`[general]` 的 `long_running_notify_secs`（預設 0 = 關閉）設為例如 `600`，分頁連續「執行中／思考中」超過 10 分鐘時會通知一次（離開忙碌狀態後重新計時，你正在看的分頁不提醒）。
 
 系統通知：分頁變成「等待輸入」、「完成」或「發生錯誤」，且你沒有在看那個分頁時，agt 會發送系統通知。`[general]` 的 `notify = false` 全部關閉，`notify_on` 選擇要通知的狀態：`waiting`、`done`、`error`、`exited`（Agent 行程結束），預設是前三者。Windows 上點擊通知會開新的終端機視窗（優先用 Windows Terminal，沒有則開新的 console）執行 `agt attach <id>` 並切到該分頁；需要 daemon 還在執行，通知進了通知中心後 daemon 若已重新啟動則點了沒反應。

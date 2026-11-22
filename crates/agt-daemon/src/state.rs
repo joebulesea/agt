@@ -170,6 +170,7 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         dirty: false,
         created_at: r.created_at,
         status_since: agt_store::now(),
+        prompt: None,
         shared: r.shared,
         tags: r.tags.clone(),
         usage: None,
@@ -584,5 +585,10 @@ mod tests {
         // 狀態改變：更新成現在
         d.update_if_current("s1", 1, |i| i.status = AgentStatus::WaitingInput);
         assert!(d.get("s1").unwrap().status_since > 1);
+        // 等待輸入時記下的提問，離開等待狀態就清掉
+        d.update_if_current("s1", 1, |i| i.prompt = Some("Allow?".into()));
+        assert_eq!(d.get("s1").unwrap().prompt.as_deref(), Some("Allow?"));
+        d.update_if_current("s1", 1, |i| i.status = AgentStatus::Running);
+        assert_eq!(d.get("s1").unwrap().prompt, None);
     }
 }

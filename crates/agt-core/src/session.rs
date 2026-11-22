@@ -492,6 +492,11 @@ impl Session {
         screen
     }
 
+    /// 畫面最後 n 行的文字（見 `Terminal::last_lines`）。
+    pub fn tail_lines(&self, n: usize) -> Vec<String> {
+        self.inner.lock_or_recover().term.last_lines(n)
+    }
+
     pub fn viewers(&self) -> usize {
         self.screens.receiver_count()
     }

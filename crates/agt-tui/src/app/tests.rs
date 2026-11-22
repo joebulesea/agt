@@ -31,6 +31,7 @@ fn session(id: &str) -> SessionInfo {
         dirty: false,
         created_at: 0,
         status_since: 0,
+        prompt: None,
         shared: false,
         tags: vec![],
         usage: None,

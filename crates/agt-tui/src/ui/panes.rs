@@ -164,6 +164,22 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
             );
         }
         y += 1;
+        // 等待輸入的分頁（不是正在看的那個）：多一行預覽 Agent 在問什麼
+        if s.status == AgentStatus::WaitingInput
+            && !active
+            && app.ui.sidebar_prompt
+            && let Some(p) = &s.prompt
+            && y < bottom
+        {
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&format!("? {p}"), w.saturating_sub(6)),
+                Style::new().fg(theme().yellow).patch(row_style),
+            );
+            y += 1;
+        }
         // 第二行：branch +N 或「無 worktree」；有 auto_commit 的 Agent 在行尾加「auto」
         if y < bottom {
             let auto = app.ui.auto_commit_agents.contains(&s.agent);
