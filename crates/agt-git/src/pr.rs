@@ -3,6 +3,7 @@
 use crate::*;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// 結果：PR 網址或要使用者手動執行的指令。
 pub fn create_pr(
@@ -180,12 +181,13 @@ pub(crate) fn open_or_update_pr(
 pub(crate) fn gh_run(worktree: &Path, gitdir: &Path, args: &[&str]) -> Result<String> {
     let mut gh = gh_command(worktree, args);
     gh.env("GIT_DIR", gitdir).env("GIT_WORK_TREE", worktree);
-    gh_output(gh, args)
+    gh_output(gh, args, None)
 }
 
 /// 在可信的主 repo 目錄執行 `gh`（不經過 worktree，分頁關閉後也能用）。
-pub(crate) fn gh_run_repo(repo: &Path, args: &[&str]) -> Result<String> {
-    gh_output(gh_command(repo, args), args)
+/// 背景輪詢用，所以有逾時：連不上網路時不能一直卡住。
+pub(crate) fn gh_run_repo(repo: &Path, args: &[&str], limit: Duration) -> Result<String> {
+    gh_output(gh_command(repo, args), args, Some(limit))
 }
 
 fn gh_command(dir: &Path, args: &[&str]) -> Command {
@@ -209,8 +211,11 @@ fn gh_command(dir: &Path, args: &[&str]) -> Command {
     gh
 }
 
-fn gh_output(mut gh: Command, args: &[&str]) -> Result<String> {
-    let out = gh.output()?;
+fn gh_output(mut gh: Command, args: &[&str], limit: Option<Duration>) -> Result<String> {
+    let out = match limit {
+        Some(limit) => output_timeout(gh, limit)?,
+        None => gh.output()?,
+    };
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {

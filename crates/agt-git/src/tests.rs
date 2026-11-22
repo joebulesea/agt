@@ -1353,6 +1353,26 @@ fn landing_rejects_malformed_gh_output() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn output_timeout_kills_a_hung_command_and_returns_normal_output() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+    let mut c = Command::new("sleep");
+    c.arg("30");
+    let t = Instant::now();
+    let e = exec::output_timeout(c, Duration::from_millis(200)).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+    assert!(t.elapsed() < Duration::from_secs(5));
+    // 正常結束：輸出完整（包含大量輸出，不會塞住管線）
+    let mut c = Command::new("sh");
+    c.args(["-c", "yes x | head -c 300000; echo err >&2; exit 3"]);
+    let o = exec::output_timeout(c, Duration::from_secs(10)).unwrap();
+    assert_eq!(o.status.code(), Some(3));
+    assert_eq!(o.stdout.len(), 300000);
+    assert_eq!(String::from_utf8_lossy(&o.stderr).trim(), "err");
+}
+
 // ---- 收尾檢查（finish_check）----
 
 #[test]
