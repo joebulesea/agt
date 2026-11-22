@@ -130,6 +130,9 @@ pub struct SessionInfo {
     /// 只在狀態是 `WaitingInput` 時有值，已清除控制字元並限制長度。只存在記憶體。
     #[serde(default)]
     pub prompt: Option<String>,
+    /// 自動檢查（`[repos] auto_check`）的狀態與結果；Agent 又開始工作時清除。只存在記憶體。
+    #[serde(default)]
+    pub check: Option<CheckInfo>,
     /// 與其他工作階段共用 worktree（`--share`）。
     #[serde(default)]
     pub shared: bool,
@@ -142,6 +145,23 @@ pub struct SessionInfo {
     pub usage: Option<crate::usage::Usage>,
 }
 
+/// 自動檢查的進度。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckState {
+    Running,
+    Passed,
+    Failed,
+}
+
+/// 自動檢查的狀態；失敗時 `detail` 是輸出的最後一行（已清除控制字元、限制長度）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckInfo {
+    pub state: CheckState,
+    #[serde(default)]
+    pub detail: String,
+}
+
 impl SessionInfo {
     /// 狀態和 `before` 不同時，把 `status_since` 更新成現在。
     pub fn note_status_change(&mut self, before: AgentStatus) {
@@ -149,6 +169,13 @@ impl SessionInfo {
             self.status_since = now_secs();
             if self.status != AgentStatus::WaitingInput {
                 self.prompt = None;
+            }
+            // Agent 又開始工作：之前的檢查結果過期了
+            if matches!(
+                self.status,
+                AgentStatus::Running | AgentStatus::Thinking | AgentStatus::Starting
+            ) {
+                self.check = None;
             }
         }
     }

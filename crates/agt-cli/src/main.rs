@@ -1406,6 +1406,7 @@ mod tag_tests {
             created_at: 0,
             status_since: 0,
             prompt: None,
+            check: None,
             shared: false,
             tags: v(tags),
             usage: None,
