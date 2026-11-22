@@ -36,6 +36,7 @@ fn session(id: &str) -> SessionInfo {
         shared: false,
         tags: vec![],
         usage: None,
+        overlaps: Vec::new(),
     }
 }
 
@@ -562,4 +563,28 @@ fn switch_popup_enter_without_match_stays_open_and_escape_cancels() {
     assert_eq!(app.active.as_deref(), Some("aaaa"));
     press(&mut app, KeyCode::Esc);
     assert!(app.popup.is_none());
+}
+
+/// `s`：對有 worktree 的分頁送出 Sync；沒有 worktree 的分頁只顯示提示，不送請求。
+#[tokio::test]
+async fn sync_key_sends_request_only_for_worktree_sessions() {
+    let (mut app, mut sent) = test_app("ask");
+    let mut plain = session("aaaa");
+    plain.worktree = None;
+    app.upsert(plain);
+    app.select(Some("aaaa".into()));
+    while sent.try_recv().is_ok() {}
+    app.on_event(ctrl('a'));
+    app.on_event(key('s'));
+    assert!(sent.try_recv().is_err(), "沒有 worktree 不該送請求");
+
+    let mut wt = session("bbbb");
+    wt.worktree = Some("/w/b".into());
+    app.upsert(wt);
+    app.select(Some("bbbb".into()));
+    while sent.try_recv().is_ok() {}
+    app.on_event(ctrl('a'));
+    app.on_event(key('s'));
+    // 請求在背景工作執行，這裡只確認有進入「同步中」
+    assert!(app.message.as_ref().is_some_and(|m| m.0.contains("同步中")));
 }

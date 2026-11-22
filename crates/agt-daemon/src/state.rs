@@ -6,7 +6,7 @@ use agt_git::GitError;
 use agt_proto::sync::{MutexExt, RwLockExt};
 use agt_proto::{
     AgentStatus, CheckInfo, CheckState, CreateSession, FinishAction, GcItem, MergeStrategy,
-    ServerMsg, SessionInfo, codes,
+    Overlap, ServerMsg, SessionInfo, codes,
 };
 use agt_store::{LOG_MAX_BYTES, LogWriter, SessionRow, Store};
 use serde_json::json;
@@ -22,6 +22,7 @@ mod close;
 mod create;
 mod finish;
 mod gc;
+mod overlap;
 mod session;
 mod usage;
 
@@ -140,6 +141,8 @@ pub struct Daemon {
     auto_checking: Mutex<std::collections::HashSet<String>>,
     /// 每個分頁上次輪詢 git 的時間與當時的狀態（見 [`gc::should_poll_git`]）。
     git_polls: Mutex<HashMap<String, (Instant, AgentStatus)>>,
+    /// 每個分頁動過的檔案（輪詢 git 時更新），用來偵測分頁之間的重疊（見 [`overlap`]）。
+    changed_files: Mutex<HashMap<String, std::collections::BTreeSet<String>>>,
     /// 每個分頁上次讀到的 `.agt/usage.json` 修改時間（見 [`usage`]）。
     usage_seen: Mutex<HashMap<String, std::time::SystemTime>>,
     /// 用量達到 80% 的通知紀錄（每個分頁、每個額度時間窗只通知一次）。
@@ -178,6 +181,7 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         shared: r.shared,
         tags: r.tags.clone(),
         usage: None,
+        overlaps: Vec::new(),
     }
 }
 
@@ -239,6 +243,7 @@ impl Daemon {
             busy: Mutex::new(Default::default()),
             auto_checking: Mutex::new(Default::default()),
             git_polls: Mutex::new(Default::default()),
+            changed_files: Mutex::new(Default::default()),
             usage_seen: Mutex::new(Default::default()),
             usage_alerts: Mutex::new(Default::default()),
             events,

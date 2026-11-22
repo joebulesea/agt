@@ -143,6 +143,25 @@ pub struct SessionInfo {
     /// 只存在記憶體，不寫進資料庫。
     #[serde(default)]
     pub usage: Option<crate::usage::Usage>,
+    /// 同一個 repo 裡，也動過同一批檔案的其他分頁（已 commit、未 commit、未追蹤的都算）。
+    /// 由 daemon 定期比對，只存在記憶體；沒有重疊時是空的。
+    #[serde(default)]
+    pub overlaps: Vec<Overlap>,
+}
+
+/// 與另一個分頁重疊的檔案。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Overlap {
+    pub short_id: String,
+    pub task: String,
+    /// 重疊的檔案（排序後最多 [`Overlap::MAX_FILES`] 個）。
+    pub files: Vec<String>,
+    /// 重疊的檔案總數。
+    pub total: usize,
+}
+
+impl Overlap {
+    pub const MAX_FILES: usize = 20;
 }
 
 /// 自動檢查的進度。
@@ -182,6 +201,18 @@ impl SessionInfo {
 
     pub fn has_worktree(&self) -> bool {
         self.worktree.is_some()
+    }
+
+    /// 與其他分頁重疊時的一行說明（側欄與 `agt ls` 用），例如 `⚠ 與 a3f 重疊（3 檔）`。
+    pub fn overlap_label(&self) -> Option<String> {
+        match self.overlaps.as_slice() {
+            [] => None,
+            [o] => Some(format!("⚠ 與 {} 重疊（{} 檔）", o.short_id, o.total)),
+            many => {
+                let ids: Vec<&str> = many.iter().map(|o| o.short_id.as_str()).collect();
+                Some(format!("⚠ 與 {} 重疊", ids.join("、")))
+            }
+        }
     }
 }
 

@@ -372,6 +372,9 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
             blocking!(|d: &Arc<Daemon>| d.finish_preview(&id, &action).map(ReplyBody::Text))
         }
         ClientMsg::Diff { id } => blocking!(|d: &Arc<Daemon>| d.diff(&id).map(ReplyBody::Text)),
+        ClientMsg::Sync { id } => {
+            blocking!(|d: &Arc<Daemon>| d.sync_base(&id).map(ReplyBody::Text))
+        }
         ClientMsg::Rename { id, task } => reply(
             out,
             req_id,

@@ -136,6 +136,21 @@ impl App {
                     self.set_message("這個分頁沒有 worktree", true);
                 }
             }
+            KeyCode::Char('s') => match self.active_info() {
+                Some(s) if s.has_worktree() => {
+                    let id = s.id.clone();
+                    let c = self.client.clone();
+                    self.set_message("同步中…", false);
+                    self.spawn(async move {
+                        AppEvent::Synced(c.request(ClientMsg::Sync { id }).await.map(|b| match b {
+                            ReplyBody::Text(t) => t,
+                            _ => String::new(),
+                        }))
+                    });
+                }
+                Some(_) => self.set_message("這個分頁沒有 worktree", true),
+                None => {}
+            },
             KeyCode::Char('r') => {
                 if let Some(s) = self.active_info() {
                     self.popup = Some(Popup::Rename {

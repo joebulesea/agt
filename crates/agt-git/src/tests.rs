@@ -1653,3 +1653,92 @@ fn rest_follows_the_snapshot_group_and_refuses_unchained_snapshots() {
         .to_string();
     assert!(e.contains("都有它們的 SNAPSHOT"), "{e}");
 }
+
+#[test]
+fn changed_files_unions_committed_uncommitted_and_untracked() {
+    let repo = init_repo();
+    let root = repo.path();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("w1");
+    add_worktree(root, &wt, "agt/test/cf-000001", "main").unwrap();
+    assert!(changed_files(root, &wt, "main").unwrap().is_empty());
+
+    std::fs::write(wt.join("committed.txt"), "c\n").unwrap();
+    git(&wt, &["add", "."]).unwrap();
+    git(&wt, &["commit", "-q", "-m", "c"]).unwrap();
+    std::fs::write(wt.join("a.txt"), "changed\n").unwrap(); // 已追蹤、未 commit
+    std::fs::write(wt.join("新增 檔案.txt"), "u\n").unwrap(); // 未追蹤，檔名含中文與空白
+    std::fs::create_dir_all(wt.join(".agt")).unwrap();
+    std::fs::write(wt.join(".agt/COMMIT_MSG"), "x\n").unwrap(); // agt 自己的說明檔不算
+
+    let files: Vec<String> = changed_files(root, &wt, "main")
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(files, ["a.txt", "committed.txt", "新增 檔案.txt"]);
+}
+
+#[test]
+fn changed_files_ignores_what_base_changed_after_branching() {
+    let repo = init_repo();
+    let root = repo.path();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("w1");
+    add_worktree(root, &wt, "agt/test/cf-000002", "main").unwrap();
+    // base 之後多了 commit：用 base...HEAD（merge-base），不能把它算成這個分頁改的
+    std::fs::write(root.join("on-main.txt"), "m\n").unwrap();
+    git(root, &["add", "."]).unwrap();
+    git(root, &["commit", "-q", "-m", "m"]).unwrap();
+    assert!(changed_files(root, &wt, "main").unwrap().is_empty());
+}
+
+#[test]
+fn sync_with_base_merges_refuses_dirty_and_aborts_on_conflict() {
+    let repo = init_repo();
+    let root = repo.path();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("w1");
+    add_worktree(root, &wt, "agt/test/sy-000001", "main").unwrap();
+
+    // 已同步：不動
+    assert!(sync_with_base(root, &wt, "main").unwrap().contains("已經"));
+
+    // base 前進，分頁落後
+    std::fs::write(root.join("on-main.txt"), "m\n").unwrap();
+    git(root, &["add", "."]).unwrap();
+    git(root, &["commit", "-q", "-m", "m"]).unwrap();
+    assert_eq!(status(root, &wt, "main").unwrap().behind, 1);
+
+    // 有未 commit 的變更：拒絕，內容不變
+    std::fs::write(wt.join("a.txt"), "local\n").unwrap();
+    assert!(matches!(
+        sync_with_base(root, &wt, "main"),
+        Err(GitError::Dirty(_))
+    ));
+    assert!(!wt.join("on-main.txt").exists());
+    git(&wt, &["checkout", "--", "a.txt"]).unwrap();
+
+    // 乾淨：合併成功
+    let msg = sync_with_base(root, &wt, "main").unwrap();
+    assert!(msg.contains('1'), "{msg}");
+    assert!(wt.join("on-main.txt").exists());
+    assert_eq!(status(root, &wt, "main").unwrap().behind, 0);
+
+    // 衝突：還原，worktree 乾淨、HEAD 不變
+    std::fs::write(root.join("a.txt"), "main side\n").unwrap();
+    git(root, &["commit", "-q", "-am", "main edit"]).unwrap();
+    std::fs::write(wt.join("a.txt"), "branch side\n").unwrap();
+    git(&wt, &["commit", "-q", "-am", "branch edit"]).unwrap();
+    let head = git(&wt, &["rev-parse", "HEAD"]).unwrap();
+    match sync_with_base(root, &wt, "main") {
+        Err(GitError::Conflict(m)) => assert!(m.contains("a.txt"), "{m}"),
+        other => panic!("應該回報衝突：{other:?}"),
+    }
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert!(!is_dirty_wt(root, &wt, true).unwrap());
+    assert!(
+        !git(&wt, &["status", "--porcelain=v1"])
+            .unwrap()
+            .contains("UU")
+    );
+}

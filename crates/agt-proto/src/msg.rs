@@ -83,6 +83,11 @@ pub enum ClientMsg {
     Diff {
         id: String,
     },
+    /// 把 base 的最新 commit 合併進分頁的 branch（`git merge`）；回覆 `Text`（結果說明）。
+    /// 分頁的 Agent 忙碌中、或 worktree 有未 commit 的變更時拒絕；衝突時還原並回報 `conflict`。
+    Sync {
+        id: String,
+    },
     /// 收尾前的預覽：預計產生幾個 commit / PR 與其內容。
     FinishPreview {
         id: String,

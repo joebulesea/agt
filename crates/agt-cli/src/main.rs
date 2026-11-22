@@ -153,6 +153,8 @@ enum Cmd {
     },
     /// 顯示分頁的 diff
     Diff { id: String },
+    /// 把 base 的最新 commit 合併進分頁的 branch（Agent 忙碌或有未 commit 的變更時拒絕）
+    Sync { id: String },
     /// 重新命名任務
     Rename { id: String, task: String },
     /// 在同一個 worktree 重新啟動已結束的 Agent（支援時接續上次的對話）
@@ -485,15 +487,24 @@ fn print_sessions(list: &[SessionInfo]) {
         .iter()
         .map(|s| {
             let git = match &s.branch {
-                Some(b) => format!(
-                    "{b}{}{}",
-                    if s.ahead > 0 {
-                        format!(" +{}", s.ahead)
+                Some(b) => {
+                    format!(
+                        "{b}{}{}",
+                        if s.ahead > 0 {
+                            format!(" +{}", s.ahead)
+                        } else {
+                            String::new()
+                        },
+                        if s.dirty { " ✎" } else { "" }
+                    ) + &(if s.behind > 0 {
+                        format!(" ↓{}", s.behind)
                     } else {
                         String::new()
-                    },
-                    if s.dirty { " ✎" } else { "" }
-                ),
+                    }) + &s
+                        .overlap_label()
+                        .map(|l| format!(" {l}"))
+                        .unwrap_or_default()
+                }
                 None => "無 worktree".into(),
             };
             [
@@ -827,6 +838,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let c = ensure_daemon("cli").await?.client;
             if let ReplyBody::Text(t) = c.request(ClientMsg::Diff { id }).await? {
                 // 檔案內容可能含有控制序列（例如改寫剪貼簿的 OSC 52），不能原樣送到終端機
+                println!("{}", agt_proto::text::printable(&t));
+            }
+            Ok(())
+        }
+        Some(Cmd::Sync { id }) => {
+            let c = ensure_daemon("cli").await?.client;
+            if let ReplyBody::Text(t) = c.request(ClientMsg::Sync { id }).await? {
                 println!("{}", agt_proto::text::printable(&t));
             }
             Ok(())
@@ -1418,6 +1436,7 @@ mod tag_tests {
             shared: false,
             tags: v(tags),
             usage: None,
+            overlaps: Vec::new(),
         }
     }
 

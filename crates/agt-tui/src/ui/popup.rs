@@ -223,6 +223,10 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ("Space、p", "快速切換器：輸入關鍵字篩選分頁，Enter 跳過去"),
                 ("d", "浮動視窗顯示 diff"),
                 ("m", "收尾選單：merge / pr / keep / discard"),
+                (
+                    "s",
+                    "把 base 的最新 commit 合併進這個分頁的 branch（↓N 時用）",
+                ),
                 ("r", "重新命名任務"),
                 ("t", "編輯標籤（空白或逗號分隔）"),
                 ("R", "重新啟動已結束的 Agent，接續上次的對話"),
@@ -255,7 +259,11 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 Style::new().fg(theme().gray),
             ));
             lines.push(Line::styled(
-                "  +N 領先 base 的 commit 數，✎ 有未 commit 的變更",
+                "  +N 領先 base 的 commit 數，↓N 落後 base，✎ 有未 commit 的變更",
+                Style::new().fg(theme().gray),
+            ));
+            lines.push(Line::styled(
+                "  ⚠ 與 xxx 重疊：另一個分頁也動了同一個檔案，收尾時可能衝突",
                 Style::new().fg(theme().gray),
             ));
             lines.push(Line::styled(
