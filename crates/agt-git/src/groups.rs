@@ -576,14 +576,23 @@ pub fn create_group_prs(
         }
         git_wt(repo, worktree, &["push", "-u", &remote, &gb])?;
         let title = group_title(g, task);
-        let staged = match &g.pr_body {
-            Some(t) => Some(stage_note(&gitdir, "AGT_PR_BODY.md", t)?),
-            None => None,
-        };
         // 堆疊的組：PR 的 base 是它接的那組的 branch
         let base_for = match &g.after {
             Some(a) => group_branch(branch, a),
             None => pr_base.clone(),
+        };
+        let text = match &g.after {
+            Some(a) => Some(stacked_pr_body(
+                a,
+                &base_for,
+                &pr_base,
+                g.pr_body.as_deref(),
+            )),
+            None => g.pr_body.clone(),
+        };
+        let staged = match &text {
+            Some(t) => Some(stage_note(&gitdir, "AGT_PR_BODY.md", t)?),
+            None => None,
         };
         let r = open_or_update_pr(worktree, &gitdir, &gb, &base_for, &title, staged.as_deref());
         if let Some(p) = &staged {
@@ -614,7 +623,46 @@ pub fn create_group_prs(
     if let Some(n) = note {
         out.push_str(&format!("\n\n{n}"));
     }
+    if let Some(n) = stack_guard_note(&groups, &pr_base) {
+        out.push_str(&format!("\n\n{n}"));
+    }
     Ok(out)
+}
+
+/// 堆疊 PR 的合併順序提醒（沒有任何組有 `AFTER` 時回傳 None）。
+/// 堆疊 PR 的 base 是前一組的 branch：沒先確認前一組已進 base 就合併，內容只會進堆疊 branch，
+/// 進不了 main（nightly 也建置不到）。`groups` 要已依 `AFTER` 排好。
+pub(crate) fn stack_guard_note(groups: &[Group], base: &str) -> Option<String> {
+    if groups.iter().all(|g| g.after.is_none()) {
+        return None;
+    }
+    let order = groups
+        .iter()
+        .map(|g| g.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" → ");
+    Some(format!(
+        "⚠ 堆疊 PR：請由前往後合併（{order}）。每合併一組，先確認下一個 PR 的 base 已改成 {base}，\
+         且 {base} 真的包含那組的內容，再合併下一個；否則內容只會進堆疊 branch。\
+         建議在 repo 設定開啟 Automatically delete head branches，base 才會自動改回 {base}"
+    ))
+}
+
+/// 堆疊的組在 PR 說明最前面加一段提醒，讓審查與合併的人在 GitHub 上就看得到。
+pub(crate) fn stacked_pr_body(
+    after: &str,
+    after_branch: &str,
+    base: &str,
+    body: Option<&str>,
+) -> String {
+    let banner = format!(
+        "> ⚠ **堆疊 PR**：這個 PR 接在 `{after_branch}`（組 `{after}`）後面，base 是那個 branch。\n\
+         > 請先合併前一個 PR，並確認這個 PR 的 base 已改成 `{base}` 再合併；否則內容只會進堆疊 branch，不會進 `{base}`。\n"
+    );
+    match body {
+        Some(b) => format!("{banner}\n{b}"),
+        None => banner,
+    }
 }
 
 fn group_title(g: &Group, task: &str) -> String {
@@ -949,6 +997,9 @@ pub fn finish_preview(
         if !merge && let Some(b) = &g.pr_body {
             out.extend(preview_lines(b, 2).into_iter().map(|l| format!("    {l}")));
         }
+    }
+    if !merge && let Some(n) = stack_guard_note(&groups, base) {
+        out.push(n);
     }
     Ok(out.join("\n"))
 }

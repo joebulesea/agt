@@ -1277,6 +1277,36 @@ fn preview_shows_which_group_a_stacked_group_follows() {
     assert!(p.contains("[one] 加入 one（1 個路徑）"), "{p}");
 }
 
+#[test]
+fn stack_guard_warns_about_merge_order_only_for_stacked_groups() {
+    let (repo, _w, wt, _b) = stacked_worktree();
+    let p = preview(repo.path(), &wt, false, "ask", false);
+    assert!(p.contains("堆疊 PR：請由前往後合併（one → two"), "{p}");
+    // 合併進 base 時不開 PR，不需要這段提醒
+    let m = preview(repo.path(), &wt, true, "merge", false);
+    assert!(!m.contains("堆疊 PR"), "{m}");
+    // 沒有 AFTER 的分組沒有提醒
+    let g = load_groups(&wt).unwrap();
+    let plain: Vec<_> = g
+        .into_iter()
+        .map(|mut g| {
+            g.after = None;
+            g
+        })
+        .collect();
+    assert!(groups::stack_guard_note(&plain, "main").is_none());
+}
+
+#[test]
+fn stacked_pr_body_starts_with_a_banner_and_keeps_the_body() {
+    let b = groups::stacked_pr_body("one", "task-one", "main", Some("做了什麼"));
+    assert!(b.starts_with("> ⚠ **堆疊 PR**"), "{b}");
+    assert!(b.contains("`task-one`") && b.contains("`main`"), "{b}");
+    assert!(b.ends_with("做了什麼"), "{b}");
+    let only = groups::stacked_pr_body("one", "task-one", "main", None);
+    assert!(only.starts_with("> ⚠") && !only.contains("做了什麼"));
+}
+
 // ---- 收尾檢查（finish_check）----
 
 #[test]
