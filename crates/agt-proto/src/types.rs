@@ -122,6 +122,10 @@ pub struct SessionInfo {
     pub dirty: bool,
     #[serde(default)]
     pub created_at: i64,
+    /// 進入目前狀態的時間（Unix 秒）；側欄用它顯示「等待輸入多久了」。
+    /// 只存在記憶體：daemon 重啟後是載入的時間。0 表示未知。
+    #[serde(default)]
+    pub status_since: i64,
     /// 與其他工作階段共用 worktree（`--share`）。
     #[serde(default)]
     pub shared: bool,
@@ -135,6 +139,13 @@ pub struct SessionInfo {
 }
 
 impl SessionInfo {
+    /// 狀態和 `before` 不同時，把 `status_since` 更新成現在。
+    pub fn note_status_change(&mut self, before: AgentStatus) {
+        if self.status != before {
+            self.status_since = now_secs();
+        }
+    }
+
     pub fn has_worktree(&self) -> bool {
         self.worktree.is_some()
     }
@@ -267,4 +278,11 @@ pub struct GcItem {
     pub branch: Option<String>,
     #[serde(default)]
     pub session: Option<String>,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

@@ -7,6 +7,10 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
     let mut y = area.y;
     let w = area.width as usize;
     let bottom = area.y + area.height;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     if collapsed {
         // 收合時第一列只放一個「+」按鈕
         buf.set_string(area.x, y, pad("", w), Style::new());
@@ -134,9 +138,23 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
         buf.set_string(area.x + 2, y, s.status.symbol(), sym_style.patch(row_style));
         let agent = truncate(&s.agent, 7);
         let mark = if s.dirty { " ✎" } else { "" };
-        let avail = w.saturating_sub(4 + 8 + mark.width());
+        // 等待輸入超過 1 分鐘：在列尾（✎ 之前）顯示等了多久
+        let wait = (s.status == AgentStatus::WaitingInput && s.status_since > 0)
+            .then(|| format_wait(now - s.status_since))
+            .flatten();
+        let wait_w = wait.as_ref().map_or(0, |t| t.width() + 1);
+        let avail = w.saturating_sub(4 + 8 + mark.width() + wait_w);
         let text = format!("{} {}", pad(&agent, 7), truncate(&s.task, avail));
         buf.set_string(area.x + 4, y, &text, row_style);
+        if let Some(t) = &wait {
+            let x = w.saturating_sub(mark.width() + wait_w);
+            buf.set_string(
+                area.x + x as u16,
+                y,
+                t,
+                Style::new().fg(theme().yellow).patch(row_style),
+            );
+        }
         if !mark.is_empty() {
             buf.set_string(
                 area.x + w as u16 - 2,

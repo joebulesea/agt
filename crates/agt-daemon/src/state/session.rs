@@ -116,6 +116,8 @@ impl Daemon {
                         if let Err(e) = d.store().update_status(&id, to.as_str()) {
                             tracing::warn!("更新狀態失敗：{e}");
                         }
+                        // StatusChanged 只帶狀態；status_since 要靠完整的 SessionUpdated 才到得了 UI
+                        d.publish(info.clone());
                         match to {
                             AgentStatus::Running | AgentStatus::Thinking => {
                                 d.busy.lock_or_recover().enter(&id, Instant::now());
@@ -351,6 +353,7 @@ impl Daemon {
                 .ok_or_else(|| OpError::not_found(&id))?;
             e.session = Some(session.clone());
             e.info.status = AgentStatus::Starting;
+            e.info.status_since = agt_store::now();
             e.info.exit_code = None;
             e.conversation = Some(conversation.clone());
             e.info.clone()

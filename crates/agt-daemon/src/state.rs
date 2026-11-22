@@ -169,6 +169,7 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         behind: 0,
         dirty: false,
         created_at: r.created_at,
+        status_since: agt_store::now(),
         shared: r.shared,
         tags: r.tags.clone(),
         usage: None,
@@ -338,7 +339,9 @@ impl Daemon {
     fn update_info(&self, id: &str, f: impl FnOnce(&mut SessionInfo)) -> Option<SessionInfo> {
         let mut entries = self.entries.lock_or_recover();
         let e = entries.get_mut(id)?;
+        let before = e.info.status;
         f(&mut e.info);
+        e.info.note_status_change(before);
         Some(e.info.clone())
     }
 
@@ -352,7 +355,9 @@ impl Daemon {
     ) -> Option<SessionInfo> {
         let mut entries = self.entries.lock_or_recover();
         let e = entries.get_mut(id).filter(|e| e.generation == generation)?;
+        let before = e.info.status;
         f(&mut e.info);
+        e.info.note_status_change(before);
         Some(e.info.clone())
     }
 
@@ -544,5 +549,40 @@ mod tests {
         assert_eq!(d.get("s1").unwrap().status, AgentStatus::Done);
         // 分頁已移除
         assert!(d.update_if_current("nope", 2, |_| {}).is_none());
+    }
+
+    #[test]
+    fn status_since_changes_only_when_status_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("config.toml"),
+            data_dir: dir.path().join("data"),
+            home: dir.path().to_path_buf(),
+            logs_dir: None,
+        };
+        let d = Daemon::new(paths, "test".into(), "agt".into(), Config::defaults(), None).unwrap();
+        let mut info = row_to_info(&SessionRow {
+            id: "s1".into(),
+            short_id: "aaaaaa".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        info.status_since = 1;
+        d.entries.lock_or_recover().insert(
+            "s1".into(),
+            Entry {
+                info,
+                session: None,
+                conversation: None,
+                generation: 1,
+                resume_attempt: None,
+            },
+        );
+        // 狀態沒變：維持原值
+        d.update_if_current("s1", 1, |i| i.exit_code = Some(0));
+        assert_eq!(d.get("s1").unwrap().status_since, 1);
+        // 狀態改變：更新成現在
+        d.update_if_current("s1", 1, |i| i.status = AgentStatus::WaitingInput);
+        assert!(d.get("s1").unwrap().status_since > 1);
     }
 }
