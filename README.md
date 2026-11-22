@@ -36,6 +36,14 @@ irm https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.ps1 | 
 
 腳本會下載最新 Release、用 `SHA256SUMS` 核對後安裝（Linux：`~/.local/bin`；Windows：`%APPDATA%\agt`，加入使用者 PATH），最後執行 `agt setup`。用環境變數 `AGT_REPO`（`<owner>/<repo>`，預設 `joebulesea/agt`；fork 要測試時改成自己的）、`AGT_VERSION`、`AGT_NO_SETUP=1` 調整。之後用 `agt update` 自我更新（需要系統有 `curl` 與 `tar`；Windows 10 以後內建）。測試版：每次 PR 合併到 `main` 且 CI 通過後，`.github/workflows/nightly.yml` 會自動建置 Linux 與 Windows 版，更新固定的預發行版 `nightly`（tag 移到最新的 commit，附 `SHA256SUMS` 與 `nightly.json`）。用 `agt update --nightly` 更新（`agt update --check --json --nightly` 查詢），全新安裝設定 `AGT_VERSION=nightly` 再執行安裝腳本；`agt --version` 會顯示建置編號（例如 `0.4.0 (nightly.412.ab12cd3)`）。一般的 `agt update` 與安裝腳本只看正式版（`/releases/latest` 不含預發行版），在測試版上執行 `agt update` 會改裝最新正式版。測試版沒有經過正式發布流程，可能不穩定。發布方式：把 `Cargo.toml` 的版號改好，打 tag `vX.Y.Z` 並推送，`.github/workflows/release.yml` 會建置各平台壓縮檔與 `SHA256SUMS` 並發布。
 
+發布的檔案附有 build attestation（v0.4.0 與更早的版本沒有），可以確認它是由這個 repo 的 workflow 建置的（壓縮檔或解開後的執行檔都可以）：
+
+```sh
+gh attestation verify <檔案> --repo joebulesea/agt
+```
+
+執行檔沒有程式碼簽章，Windows Defender 可能誤判（例如 `Trojan:Win32/Bearfoos.A!ml`，`!ml` 是機器學習判定）。遇到時先用上面的指令確認來源；驗證通過再到 [Microsoft 的提交頁面](https://www.microsoft.com/en-us/wdsi/filesubmission) 回報誤判，不要直接把整個資料夾加進排除清單。
+
 ## 使用
 
 ```sh

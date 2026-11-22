@@ -88,6 +88,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
+      # build attestation：id-token 用來向 Sigstore 換短期簽章憑證，attestations 用來存證明
+      id-token: write
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -106,7 +109,20 @@ jobs:
         env:
           AGT_REPO: ${{ github.repository }}
           AGT_BUILD: nightly.${{ github.run_number }}.${{ needs.gate.outputs.short }}
-      - name: 打包並上傳
+      # 執行檔沒有版本資訊就不發布（build.rs 嵌入的）
+      - name: 檢查版本資訊與 manifest
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-Item "target/${{ matrix.target }}/release/agt.exe"
+          $v = $exe.VersionInfo
+          $v | Format-List ProductName, FileDescription, ProductVersion, FileVersionRaw, OriginalFilename
+          if ($v.ProductName -ne 'agt' -or $v.OriginalFilename -ne 'agt.exe') { throw '沒有嵌入版本資訊' }
+          $want = (& $exe.FullName --version) -replace '^agt ', ''
+          if ($v.ProductVersion -ne $want) { throw "版本資訊 $($v.ProductVersion) 與 agt --version 的 $want 不一致" }
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe.FullName))
+          if (-not $text.Contains('requestedExecutionLevel level="asInvoker"')) { throw '沒有嵌入 manifest' }
+      - name: 打包
         shell: bash
         run: |
           name="agt-nightly-${{ matrix.target }}"
@@ -118,6 +134,18 @@ jobs:
             cp "target/${{ matrix.target }}/release/agt" "$name/"
             tar -czf "$name.tar.gz" "$name"
           fi
+      # 證明這些檔案是由這個 workflow、從這個 commit 建置的（公開 repo 免費）。上傳前先產生，
+      # 沒有證明的檔案就不會發布。用 `gh attestation verify <檔案> --repo <owner>/<repo>` 驗證
+      - name: 產生 build attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            agt-nightly-${{ matrix.target }}.${{ matrix.ext }}
+            agt-nightly-${{ matrix.target }}/agt${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: 上傳
+        shell: bash
+        run: |
+          name="agt-nightly-${{ matrix.target }}"
           gh release upload nightly --repo "$GITHUB_REPOSITORY" "$name.${{ matrix.ext }}" --clobber
 
   publish:
