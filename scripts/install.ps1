@@ -4,7 +4,7 @@ agt 安裝腳本（Windows x64，不需要系統管理員）
 
 先設定環境變數可調整行為（因為用 iex 執行，沒有參數可傳）：
   $env:AGT_REPO        GitHub repo（預設 joebulesea/agt）
-  $env:AGT_VERSION     指定版本（例如 v0.3.0），預設最新版
+  $env:AGT_VERSION     指定版本（例如 v0.3.0），預設最新版；nightly = main 的最新測試版
   $env:AGT_NO_SETUP=1  安裝後不執行 agt setup
 #>
 
@@ -31,7 +31,8 @@ function Install-Agt {
         $version = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
     }
     if ($version -match '^\d') { $version = "v$version" }
-    if ($version -notmatch '^v\d+\.\d+\.\d+([-+][\w.]+)?$') { Fail "無法判斷版本：$version" }
+    # nightly = main 的最新測試版（預發行版；releases/latest 不包含它，所以要明確指定）
+    if ($version -ne 'nightly' -and $version -notmatch '^v\d+\.\d+\.\d+([-+][\w.]+)?$') { Fail "無法判斷版本：$version" }
 
     $name = "agt-$version-$target"
     $base = "https://github.com/$repo/releases/download/$version"

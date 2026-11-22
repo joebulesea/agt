@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install
 irm https://raw.githubusercontent.com/joebulesea/agt/main/scripts/install.ps1 | iex           # Windows x64
 ```
 
-腳本會下載最新 Release、用 `SHA256SUMS` 核對後安裝（Linux：`~/.local/bin`；Windows：`%APPDATA%\agt`，加入使用者 PATH），最後執行 `agt setup`。用環境變數 `AGT_REPO`（`<owner>/<repo>`，預設 `joebulesea/agt`；fork 要測試時改成自己的）、`AGT_VERSION`、`AGT_NO_SETUP=1` 調整。之後用 `agt update` 自我更新（需要系統有 `curl` 與 `tar`；Windows 10 以後內建）。發布方式：把 `Cargo.toml` 的版號改好，打 tag `vX.Y.Z` 並推送，`.github/workflows/release.yml` 會建置各平台壓縮檔與 `SHA256SUMS` 並發布。
+腳本會下載最新 Release、用 `SHA256SUMS` 核對後安裝（Linux：`~/.local/bin`；Windows：`%APPDATA%\agt`，加入使用者 PATH），最後執行 `agt setup`。用環境變數 `AGT_REPO`（`<owner>/<repo>`，預設 `joebulesea/agt`；fork 要測試時改成自己的）、`AGT_VERSION`、`AGT_NO_SETUP=1` 調整。之後用 `agt update` 自我更新（需要系統有 `curl` 與 `tar`；Windows 10 以後內建）。測試版：每次 PR 合併到 `main` 且 CI 通過後，`.github/workflows/nightly.yml` 會自動建置 Linux 與 Windows 版，更新固定的預發行版 `nightly`（tag 移到最新的 commit，附 `SHA256SUMS` 與 `nightly.json`）。用 `agt update --nightly` 更新（`agt update --check --json --nightly` 查詢），全新安裝設定 `AGT_VERSION=nightly` 再執行安裝腳本；`agt --version` 會顯示建置編號（例如 `0.4.0 (nightly.412.ab12cd3)`）。一般的 `agt update` 與安裝腳本只看正式版（`/releases/latest` 不含預發行版），在測試版上執行 `agt update` 會改裝最新正式版。測試版沒有經過正式發布流程，可能不穩定。發布方式：把 `Cargo.toml` 的版號改好，打 tag `vX.Y.Z` 並推送，`.github/workflows/release.yml` 會建置各平台壓縮檔與 `SHA256SUMS` 並發布。
 
 ## 使用
 
@@ -56,7 +56,7 @@ agt gc [--prune] [--json]                       # 比對 git worktree 與資料�
 agt setup [--yes [--install] [--build]]   # 檢查並安裝 git / Docker / Docker Sandboxes，加入 Agent（第一次執行 agt 時自動執行）
 agt doctor [--json]                    # 檢查執行環境（daemon、設定檔、git、Docker、gh…）並說明下一步；有失敗項目時 exit 1
 agt config check [--file F] [--repo DIR] [--json]   # 檢查設定檔（不需要 daemon）：錯誤含行號，另列出找不到的指令、拼錯的變數等警告
-agt update [--check [--json]] [--version 0.3.0] [-y]   # 從 GitHub Release 更新 agt（核對 SHA256、重新啟動 daemon）
+agt update [--check [--json]] [--version 0.3.0 | --nightly] [-y]   # 從 GitHub Release 更新 agt（核對 SHA256、重新啟動 daemon）；--nightly = main 的最新測試版
 agt uninstall [--dry-run] [--purge] [--worktrees] [-y]   # 解除安裝（預設保留設定、資料與 worktree）
 agt daemon start|stop|restart|status [--json]   # status --json：`daemon_running`、`socket`，執行中時另有 pid、version、sessions、running（執行中的分頁數）…
 agt completions <bash|zsh|fish|powershell|elvish>   # 輸出 shell 補全腳本（不需要 daemon）

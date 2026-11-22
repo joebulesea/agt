@@ -1,0 +1,159 @@
+name: Nightly
+
+# main 的 CI 通過後（PR 合併或直接推送）自動建置測試版，更新固定的預發行版 `nightly`：
+# tag `nightly` 會移到最新的 commit，附各平台壓縮檔、SHA256SUMS 與 nightly.json。
+# 用 `agt update --nightly` 更新；安裝腳本用 AGT_VERSION=nightly。
+# 正式版仍由推送 v* 標籤的 release.yml 發布。`/releases/latest` 不包含預發行版，所以
+# 一般的 `agt update` 與安裝腳本不會抓到測試版。
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # 手動執行：只有在 main 的最新 commit 上才會建置（不檢查 CI 結果）
+  workflow_dispatch:
+
+# 預設唯讀；只有需要寫入 Release 的 job 才提高權限
+permissions:
+  contents: read
+
+# 一次只發布一個：不取消進行中的發布（避免 Release 停在只上傳一半的狀態），排隊的只留最新一個
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    # 只處理 CI 成功的 push；手動執行直接放行
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.pick.outputs.go }}
+      sha: ${{ steps.pick.outputs.sha }}
+      short: ${{ steps.pick.outputs.short }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - id: pick
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          # CI 完成的順序不一定等於 commit 的順序：不是 main 最新的 commit 就略過，
+          # 避免舊的 commit 晚完成而把 nightly 退回舊版
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$SHA" = "$tip" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+            echo "short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$SHA 不是 main 的最新 commit（$tip），略過"
+          fi
+
+  create:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 確認預發行版 nightly 存在
+        env:
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          # 第一次才建立；之後只更新檔案，tag 在 publish 才移到新的 commit
+          if ! gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create nightly --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+              --prerelease --latest=false --title "nightly（測試版）" \
+              --notes "main 的最新測試版，尚未建置完成。"
+          fi
+
+  build:
+    needs: [gate, create]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+          # 用較舊的 Ubuntu 編譯，產出的執行檔相容較多 glibc 版本
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      # 測試已經在 CI 跑過，這裡只建置。
+      # AGT_REPO：agt update 用這個 repo 查詢與下載新版；AGT_BUILD：顯示在 agt --version，
+      # 也是 agt update --nightly 判斷新舊的依據（run 編號越大越新）
+      - run: cargo build --release --locked --workspace --target ${{ matrix.target }}
+        env:
+          AGT_REPO: ${{ github.repository }}
+          AGT_BUILD: nightly.${{ github.run_number }}.${{ needs.gate.outputs.short }}
+      - name: 打包並上傳
+        shell: bash
+        run: |
+          name="agt-nightly-${{ matrix.target }}"
+          mkdir "$name"
+          if [ "${{ matrix.ext }}" = zip ]; then
+            cp "target/${{ matrix.target }}/release/agt.exe" "$name/"
+            7z a "$name.zip" "$name" >/dev/null
+          else
+            cp "target/${{ matrix.target }}/release/agt" "$name/"
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          gh release upload nightly --repo "$GITHUB_REPOSITORY" "$name.${{ matrix.ext }}" --clobber
+
+  publish:
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ needs.gate.outputs.sha }}
+      SHORT: ${{ needs.gate.outputs.short }}
+      RUN: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: 產生 SHA256SUMS 與 nightly.json
+        run: |
+          mkdir dl && cd dl
+          gh release download nightly --repo "$GITHUB_REPOSITORY" --pattern 'agt-nightly-*'
+          sha256sum agt-nightly-* > SHA256SUMS
+          cat SHA256SUMS
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' ../Cargo.toml | tr -d '\r')
+          printf '{"build":"nightly.%s.%s","run":%s,"sha":"%s","version":"%s","built_at":"%s"}\n' \
+            "$RUN" "$SHORT" "$RUN" "$SHA" "$version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > nightly.json
+          cat nightly.json
+          # 最後才上傳：agt update --nightly 先讀 nightly.json，再核對 SHA256SUMS
+          gh release upload nightly --repo "$GITHUB_REPOSITORY" SHA256SUMS nightly.json --clobber
+      - name: 把 nightly 標籤移到這個 commit 並更新說明
+        run: |
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$SHA" -F force=true
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+            --title "nightly（測試版）" \
+            --notes "main 的最新測試版：nightly.$RUN.$SHORT（commit $SHA）。
+
+          這是每次 PR 合併後自動建置的版本，沒有經過正式發布流程，可能不穩定。
+          更新：\`agt update --nightly\`；全新安裝：設定 \`AGT_VERSION=nightly\` 再執行安裝腳本。
+          要回到正式版：\`agt update\`。"
