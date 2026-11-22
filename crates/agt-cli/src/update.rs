@@ -93,6 +93,8 @@ struct Nightly {
     build: String,
     run: u64,
     version: String,
+    /// 這個測試版的 commit（十六進位，7–40 字元）；沒有或格式不對時是 None（只是不列出變更）。
+    sha: Option<String>,
 }
 
 fn parse_nightly(json: &str) -> anyhow::Result<Nightly> {
@@ -116,11 +118,115 @@ fn parse_nightly(json: &str) -> anyhow::Result<Nightly> {
         .filter(|s| parse_version(s).is_some())
         .context("nightly.json 的 version 不正確")?
         .to_string();
+    let sha = v["sha"].as_str().filter(|s| is_sha(s)).map(str::to_string);
     Ok(Nightly {
         build,
         run,
         version,
+        sha,
     })
+}
+
+/// 十六進位的 commit（7–40 字元）。會放進網址，所以只接受這個格式。
+fn is_sha(s: &str) -> bool {
+    (7..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// 目前版本到最新測試版之間的變更（給 `agt update --nightly` 與 `--check --json --nightly` 看）。
+#[derive(Debug, Clone, PartialEq)]
+struct Changes {
+    /// 比較的起點（短 commit 或 `vX.Y.Z`），顯示用。
+    since: String,
+    total: usize,
+    /// 新的在前；每筆是（短 sha, 標題），最多 [`CHANGES_SHOWN`] 筆。
+    commits: Vec<(String, String)>,
+}
+
+/// 最多列出幾筆變更。
+const CHANGES_SHOWN: usize = 15;
+
+/// 解析 GitHub 的 compare API（`/compare/<base>...<head>`）。標題來自 commit 訊息（不可信）：
+/// 取第一行、去掉控制字元、限制長度。
+fn parse_compare(json: &str, since: &str) -> anyhow::Result<Changes> {
+    let v: serde_json::Value = serde_json::from_str(json).context("compare 不是有效的 JSON")?;
+    let list = v["commits"].as_array().context("compare 缺少 commits")?;
+    let total = v["total_commits"]
+        .as_u64()
+        .map_or(list.len(), |n| n as usize);
+    let commits = list
+        .iter()
+        .rev() // API 由舊到新
+        .take(CHANGES_SHOWN)
+        .filter_map(|c| {
+            let sha = c["sha"].as_str().filter(|s| is_sha(s))?;
+            let msg = c["commit"]["message"].as_str().unwrap_or("");
+            let title: String = msg
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(100)
+                .collect();
+            Some((sha.chars().take(7).collect(), title))
+        })
+        .collect();
+    Ok(Changes {
+        since: since.to_string(),
+        total,
+        commits,
+    })
+}
+
+/// 比較的起點：目前是測試版就用建置編號裡的短 commit；正式版用它的標籤（`vX.Y.Z`）。
+/// 本機編譯沒有建置編號、也不一定是發布的版本，起點只是近似（標籤）。格式不對時回傳 None。
+fn changes_base(current: &str, build: Option<&str>) -> Option<String> {
+    match build {
+        Some(b) => {
+            let sha = b.strip_prefix("nightly.")?.split('.').nth(1)?;
+            is_sha(sha).then(|| sha.to_string())
+        }
+        None => parse_version(current)
+            .is_some()
+            .then(|| format!("v{current}")),
+    }
+}
+
+/// 查變更。連不上、起點不存在（例如 commit 不在 main）等任何失敗都回傳 None：這只是附加資訊。
+fn fetch_changes(
+    repo: &str,
+    current: &str,
+    build: Option<&str>,
+    remote: &Nightly,
+) -> Option<Changes> {
+    let base = changes_base(current, build)?;
+    let head = remote.sha.as_deref()?;
+    let url = format!("https://api.github.com/repos/{repo}/compare/{base}...{head}");
+    let out = curl_ok(&[
+        "--max-time",
+        "15",
+        "-H",
+        "Accept: application/vnd.github+json",
+        &url,
+    ])
+    .ok()?;
+    parse_compare(&String::from_utf8_lossy(&out.stdout), &base).ok()
+}
+
+/// 畫面上的變更清單。
+fn print_changes(c: &Changes) {
+    println!("自 {} 以來的變更（共 {} 個）：", c.since, c.total);
+    for (sha, title) in &c.commits {
+        println!("  {sha} {title}");
+    }
+    if c.total > c.commits.len() {
+        println!("  …還有 {} 個", c.total - c.commits.len());
+    }
 }
 
 fn fetch_nightly(repo: &str) -> anyhow::Result<Nightly> {
@@ -340,11 +446,13 @@ fn check_json(version: Option<String>, nightly: bool) -> anyhow::Result<()> {
     let result = (|| -> anyhow::Result<serde_json::Value> {
         let repo = repo()?;
         if nightly {
-            return Ok(nightly_report(
-                env!("CARGO_PKG_VERSION"),
-                BUILD,
-                &fetch_nightly(&repo)?,
-            ));
+            let remote = fetch_nightly(&repo)?;
+            let current = env!("CARGO_PKG_VERSION");
+            let changes = (nightly_status(current, build_run(BUILD), &remote)
+                == "update_available")
+                .then(|| fetch_changes(&repo, current, BUILD, &remote))
+                .flatten();
+            return Ok(nightly_report(current, BUILD, &remote, changes.as_ref()));
         }
         let explicit = version.is_some();
         let tag = match version {
@@ -366,9 +474,14 @@ fn check_json(version: Option<String>, nightly: bool) -> anyhow::Result<()> {
 }
 
 /// `--check --json --nightly` 的內容（不連網，方便測試）。
-fn nightly_report(current: &str, build: Option<&str>, remote: &Nightly) -> serde_json::Value {
+fn nightly_report(
+    current: &str,
+    build: Option<&str>,
+    remote: &Nightly,
+    changes: Option<&Changes>,
+) -> serde_json::Value {
     let status = nightly_status(current, build_run(build), remote);
-    serde_json::json!({
+    let mut v = serde_json::json!({
         "channel": "nightly",
         "current": current,
         "current_build": build,
@@ -377,7 +490,16 @@ fn nightly_report(current: &str, build: Option<&str>, remote: &Nightly) -> serde
         "tag": "nightly",
         "status": status,
         "update_available": status == "update_available",
-    })
+    });
+    // 只有可更新、而且查得到時才有；查不到不是錯誤
+    if let Some(c) = changes {
+        v["changes"] = serde_json::json!({
+            "since": c.since,
+            "total": c.total,
+            "commits": c.commits.iter().map(|(sha, title)| serde_json::json!({"sha": sha, "title": title})).collect::<Vec<_>>(),
+        });
+    }
+    v
 }
 
 /// `check_report` 加上目前的建置編號（`current_build`，正式版是 null）。
@@ -453,6 +575,9 @@ pub async fn run(
                 return Ok(());
             }
             _ => {}
+        }
+        if let Some(c) = fetch_changes(&repo, current, BUILD, &info) {
+            print_changes(&c);
         }
         ("nightly".to_string(), info.build)
     } else {
@@ -833,6 +958,7 @@ mod tests {
             build: format!("nightly.{run}.abc1234"),
             run,
             version: version.into(),
+            sha: None,
         }
     }
 
@@ -863,6 +989,7 @@ mod tests {
                 build: "nightly.412.ab12cd3".into(),
                 run: 412,
                 version: "0.5.0".into(),
+                sha: Some("ab12cd3ef".into()),
             }
         );
     }
@@ -904,7 +1031,7 @@ mod tests {
     #[test]
     fn nightly_report_json_shape() {
         let r = nightly(10, "0.5.0");
-        let v = nightly_report("0.4.0", Some("nightly.9.aaaaaaa"), &r);
+        let v = nightly_report("0.4.0", Some("nightly.9.aaaaaaa"), &r, None);
         assert_eq!(v["channel"], "nightly");
         assert_eq!(v["current"], "0.4.0");
         assert_eq!(v["current_build"], "nightly.9.aaaaaaa");
@@ -912,8 +1039,84 @@ mod tests {
         assert_eq!(v["tag"], "nightly");
         assert_eq!(v["status"], "update_available");
         assert_eq!(v["update_available"], true);
-        let v = nightly_report("0.4.0", None, &r);
+        assert!(v.get("changes").is_none()); // 查不到變更時沒有這個欄位
+        let v = nightly_report("0.4.0", None, &r, None);
         assert!(v["current_build"].is_null());
+        // 查得到時附上變更
+        let c = Changes {
+            since: "aaaaaaa".into(),
+            total: 3,
+            commits: vec![("bbbbbbb".into(), "修正".into())],
+        };
+        let v = nightly_report("0.4.0", Some("nightly.9.aaaaaaa"), &r, Some(&c));
+        assert_eq!(v["changes"]["since"], "aaaaaaa");
+        assert_eq!(v["changes"]["total"], 3);
+        assert_eq!(v["changes"]["commits"][0]["title"], "修正");
+    }
+
+    #[test]
+    fn parse_compare_lists_newest_first_and_sanitizes_titles() {
+        let json = r#"{"total_commits":3,"commits":[
+          {"sha":"1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","commit":{"message":"最舊\n\n內文"}},
+          {"sha":"2222222aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","commit":{"message":"中間\u001b[2J  有\t空白"}},
+          {"sha":"3333333aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","commit":{"message":"最新"}}]}"#;
+        let c = parse_compare(json, "v0.4.0").unwrap();
+        assert_eq!((c.since.as_str(), c.total), ("v0.4.0", 3));
+        let titles: Vec<&str> = c.commits.iter().map(|x| x.1.as_str()).collect();
+        assert_eq!(titles[0], "最新");
+        assert_eq!(titles[2], "最舊"); // 只取第一行
+        assert!(
+            !titles[1].contains(|ch: char| ch.is_control()),
+            "{titles:?}"
+        );
+        assert_eq!(c.commits[0].0, "3333333");
+        // 太多時只列前 15 筆（最新的），total 仍是總數
+        let many: Vec<String> = (0..40)
+            .map(|i| format!(r#"{{"sha":"{i:07x}aaaa","commit":{{"message":"c{i}"}}}}"#))
+            .collect();
+        let big = format!(r#"{{"total_commits":40,"commits":[{}]}}"#, many.join(","));
+        let c = parse_compare(&big, "x").unwrap();
+        assert_eq!(
+            (c.commits.len(), c.total, c.commits[0].1.as_str()),
+            (CHANGES_SHOWN, 40, "c39")
+        );
+        // 格式不對的 sha 被略過；長標題被截斷
+        let weird = format!(
+            r#"{{"commits":[{{"sha":"zzzzzzz","commit":{{"message":"x"}}}},{{"sha":"4444444","commit":{{"message":"{}"}}}}]}}"#,
+            "長".repeat(300)
+        );
+        let c = parse_compare(&weird, "x").unwrap();
+        assert_eq!(c.commits.len(), 1);
+        assert_eq!(c.commits[0].1.chars().count(), 100);
+        assert!(parse_compare("not json", "x").is_err());
+        assert!(parse_compare("{}", "x").is_err());
+    }
+
+    #[test]
+    fn changes_base_uses_short_sha_on_nightly_and_tag_on_release() {
+        assert_eq!(
+            changes_base("0.4.0", Some("nightly.412.ab12cd3")).as_deref(),
+            Some("ab12cd3")
+        );
+        assert_eq!(changes_base("0.4.0", None).as_deref(), Some("v0.4.0"));
+        for bad in ["nightly.1", "nightly.1.zz", "nightly.1.a/b"] {
+            assert_eq!(changes_base("0.4.0", Some(bad)), None, "{bad}");
+        }
+        assert_eq!(changes_base("weird", None), None);
+    }
+
+    #[test]
+    fn parse_nightly_keeps_only_a_valid_sha() {
+        let p = |sha: &str| {
+            parse_nightly(&format!(
+                r#"{{"build":"nightly.1.abc1234","run":1,"version":"0.5.0","sha":"{sha}"}}"#
+            ))
+            .unwrap()
+            .sha
+        };
+        assert!(p("ab12cd3ef01234567").is_some());
+        assert_eq!(p("../../x"), None); // 會放進網址，不能含路徑字元
+        assert_eq!(p("abc"), None);
     }
 
     #[test]

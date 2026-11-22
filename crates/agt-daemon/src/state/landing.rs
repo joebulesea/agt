@@ -6,8 +6,8 @@
 //! 已關閉的分頁都一樣處理。
 
 use super::*;
-use agt_git::{Landing, PrTarget};
-use agt_proto::{LandingInfo, LandingState};
+use agt_git::{Ci, CiStatus, Landing, PrTarget};
+use agt_proto::{CiState, LandingInfo, LandingState};
 use agt_store::LandingRow;
 
 /// 檢查失敗後第一次重試的間隔；之後每次加倍，最長 [`RETRY_MAX`]。
@@ -49,6 +49,17 @@ pub(super) fn to_info(r: LandingRow) -> LandingInfo {
         detail: r.detail,
         created_at: r.created_at,
         checked_at: r.checked_at,
+        ci: r.ci.parse().unwrap_or_default(),
+        ci_detail: r.ci_detail,
+    }
+}
+
+fn ci_state(c: Ci) -> CiState {
+    match c {
+        Ci::None => CiState::None,
+        Ci::Pending => CiState::Pending,
+        Ci::Success => CiState::Success,
+        Ci::Failure => CiState::Failure,
     }
 }
 
@@ -120,7 +131,7 @@ impl Daemon {
 
     /// 查還沒有結果的 PR。`force` 為 true 時忽略失敗後的重試間隔。
     pub fn poll_landing(&self, force: bool) {
-        self.poll_landing_with(force, &agt_git::check_landing);
+        self.poll_landing_with(force, &agt_git::check_landing, &agt_git::check_ci);
     }
 
     /// [`Self::poll_landing`]，檢查函式可替換（測試用，不必真的呼叫 `gh`）。
@@ -128,6 +139,7 @@ impl Daemon {
         &self,
         force: bool,
         check: &dyn Fn(&Path, &PrTarget) -> agt_git::Result<Landing>,
+        ci: &dyn Fn(&Path, &PrTarget) -> agt_git::Result<CiStatus>,
     ) {
         let pending = match self.store().landings(true) {
             Ok(p) => p,
@@ -155,6 +167,10 @@ impl Daemon {
                     self.landing_retry.lock_or_recover().remove(&key);
                     let (state, detail) = describe(&l, &r.base);
                     if state == LandingState::Open {
+                        // 還開著：順便查 CI。這個查詢失敗不影響上面「有沒有進 base」的結果，下次再試
+                        if self.update_ci(&r, ci(Path::new(&r.repo_path), &target)) {
+                            touched.push(r.session_id.clone());
+                        }
                         continue;
                     }
                     if let Err(e) =
@@ -191,6 +207,44 @@ impl Daemon {
         touched.dedup();
         let ids: Vec<&str> = touched.iter().map(String::as_str).collect();
         self.refresh_landing_info(&ids);
+    }
+
+    /// 寫入 CI 狀態；有變化回傳 true。CI 變成失敗時發通知（只通知異常，通過與執行中不通知）。
+    fn update_ci(&self, r: &LandingRow, res: agt_git::Result<CiStatus>) -> bool {
+        let c = match res {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(branch = %r.branch, "查 PR 的 CI 失敗：{e}");
+                return false;
+            }
+        };
+        // 名稱來自 PR 的檢查（不可信）：agt-git 已清過，這裡再保險一次
+        let detail = agt_proto::text::printable_line(&c.failed);
+        let state = ci_state(c.ci);
+        match self
+            .store()
+            .set_landing_ci(&r.repo_path, &r.branch, state.as_str(), &detail)
+        {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(e) => {
+                tracing::warn!("無法寫入 PR {} 的 CI 狀態：{e}", r.branch);
+                return false;
+            }
+        }
+        if state == CiState::Failure {
+            let data =
+                json!({"name": r.name, "branch": r.branch, "ci": "failure", "failed": detail});
+            if self.entries.lock_or_recover().contains_key(&r.session_id) {
+                self.record(&r.session_id, "landing", data);
+            }
+            let body = format!("[{}] {}（{}）", r.name, detail, r.branch);
+            tracing::warn!(session = %r.short_id, "PR 的 CI 失敗：{body}");
+            if self.cfg().general.notify {
+                platform::notify(&format!("agt · {} 的 PR CI 失敗", r.task), &body, None);
+            }
+        }
+        true
     }
 
     /// 寫進事件記錄；只有異常（沒進預期的 base）才發通知。
@@ -258,6 +312,11 @@ mod tests {
         info
     }
 
+    /// 不查 CI（回傳錯誤，等於 gh 沒有這項資料）。
+    fn no_ci(_: &Path, _: &PrTarget) -> agt_git::Result<CiStatus> {
+        Err(agt_git::GitError::Refused("沒有 CI".into()))
+    }
+
     fn target(name: &str) -> PrTarget {
         PrTarget {
             name: name.into(),
@@ -298,7 +357,7 @@ mod tests {
                 _ => Landing::Open, // 還開著：下次還要再查
             })
         };
-        d.poll_landing_with(false, &answer);
+        d.poll_landing_with(false, &answer, &no_ci);
         let got = states(&d);
         assert_eq!(got["one"], LandingState::Landed);
         assert_eq!(got["two"], LandingState::WrongBase);
@@ -314,8 +373,59 @@ mod tests {
         ));
         // 有結果的不再查；還開著的繼續查
         calls.borrow_mut().clear();
-        d.poll_landing_with(false, &answer);
+        d.poll_landing_with(false, &answer, &no_ci);
         assert_eq!(*calls.borrow(), vec!["three".to_string()]);
+    }
+
+    #[test]
+    fn open_prs_get_ci_status_in_sidebar_and_ci_errors_do_not_affect_landing() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = daemon(dir.path());
+        let info = add_session(&d, "s1");
+        d.track_landings(&info, "/r", &[target("one")]);
+        let open = |_: &Path, _: &PrTarget| Ok(Landing::Open);
+        let ci = |c: Ci, failed: &str| {
+            let failed = failed.to_string();
+            move |_: &Path, _: &PrTarget| {
+                Ok(CiStatus {
+                    ci: c,
+                    failed: failed.clone(),
+                })
+            }
+        };
+        let sidebar = |d: &Daemon| d.get("s1").unwrap().landing.remove(0);
+        let mut rx = d.events.subscribe();
+
+        d.poll_landing_with(true, &open, &ci(Ci::Pending, ""));
+        assert_eq!(sidebar(&d).ci, CiState::Pending);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ServerMsg::SessionUpdated { .. })
+        ));
+        // 沒有變化：不再推播
+        d.poll_landing_with(true, &open, &ci(Ci::Pending, ""));
+        assert!(rx.try_recv().is_err());
+        // 失敗：帶出失敗的檢查名稱（控制字元會被清掉）
+        d.poll_landing_with(true, &open, &ci(Ci::Failure, "clippy\u{1b}[31m, test"));
+        let l = sidebar(&d);
+        assert_eq!(l.ci, CiState::Failure);
+        assert!(!l.ci_detail.contains('\u{1b}'), "{:?}", l.ci_detail);
+        assert!(l.ci_detail.starts_with("clippy"), "{:?}", l.ci_detail);
+        let label = d
+            .get("s1")
+            .unwrap()
+            .landing_label(agt_store::now())
+            .unwrap();
+        assert!(label.text.starts_with("✗ CI 失敗："), "{}", label.text);
+        // 查 CI 失敗（gh 不支援等）：維持上次的 CI 狀態，也不影響「有沒有進 base」
+        d.poll_landing_with(true, &open, &no_ci);
+        assert_eq!(sidebar(&d).ci, CiState::Failure);
+        d.poll_landing_with(true, &|_: &Path, _: &PrTarget| Ok(Landing::Landed), &no_ci);
+        assert_eq!(states(&d)["one"], LandingState::Landed);
+        // 已進 base 的 PR 不再查 CI
+        d.poll_landing_with(true, &open, &|_: &Path, _: &PrTarget| {
+            panic!("已有結果，不該再查 CI")
+        });
     }
 
     #[test]
@@ -329,7 +439,7 @@ mod tests {
             *n.borrow_mut() += 1;
             Err(agt_git::GitError::Refused("連不上\n網路\u{1b}[31m".into()))
         };
-        d.poll_landing_with(false, &fail);
+        d.poll_landing_with(false, &fail, &no_ci);
         assert_eq!(*n.borrow(), 1);
         // 失敗：維持等待，原因（單行、無控制字元）給 `agt landing` 看
         let l = d.list_landings(false).unwrap().remove(0);
@@ -337,12 +447,12 @@ mod tests {
         assert!(l.detail.starts_with("上次檢查失敗："), "{}", l.detail);
         assert!(!l.detail.contains(['\n', '\u{1b}']), "{:?}", l.detail);
         // 還在退避：一般輪詢不查，`--check`（force）才查
-        d.poll_landing_with(false, &fail);
+        d.poll_landing_with(false, &fail, &no_ci);
         assert_eq!(*n.borrow(), 1);
-        d.poll_landing_with(true, &fail);
+        d.poll_landing_with(true, &fail, &no_ci);
         assert_eq!(*n.borrow(), 2);
         // 恢復後寫入結果並清掉退避
-        d.poll_landing_with(true, &|_: &Path, _: &PrTarget| Ok(Landing::Landed));
+        d.poll_landing_with(true, &|_: &Path, _: &PrTarget| Ok(Landing::Landed), &no_ci);
         let l = d.list_landings(false).unwrap().remove(0);
         assert_eq!((l.state, l.detail.as_str()), (LandingState::Landed, ""));
         assert!(d.landing_retry.lock_or_recover().is_empty());
@@ -367,13 +477,17 @@ mod tests {
                 .unwrap();
             info = add_session(&d, "s1");
             d.track_landings(&info, "/r", &[target("one"), target("two")]);
-            d.poll_landing_with(false, &|_: &Path, t: &PrTarget| {
-                Ok(if t.name == "one" {
-                    Landing::Landed
-                } else {
-                    Landing::Missing
-                })
-            });
+            d.poll_landing_with(
+                false,
+                &|_: &Path, t: &PrTarget| {
+                    Ok(if t.name == "one" {
+                        Landing::Landed
+                    } else {
+                        Landing::Missing
+                    })
+                },
+                &no_ci,
+            );
         }
         // daemon 重啟：分頁從資料庫載入，側欄的 PR 進度跟著回來
         let d = daemon(dir.path());
@@ -386,7 +500,11 @@ mod tests {
         // 分頁關閉（不在 entries）後，`agt landing` 仍查得到，也不會 panic
         d.entries.lock_or_recover().remove("s1");
         assert_eq!(states(&d).len(), 2);
-        d.poll_landing_with(true, &|_: &Path, _: &PrTarget| panic!("已有結果，不該再查"));
+        d.poll_landing_with(
+            true,
+            &|_: &Path, _: &PrTarget| panic!("已有結果，不該再查"),
+            &no_ci,
+        );
     }
 
     #[test]

@@ -256,6 +256,42 @@ impl std::str::FromStr for LandingState {
     }
 }
 
+/// PR 的 CI 狀態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CiState {
+    /// 沒有檢查，或還沒查到。
+    #[default]
+    None,
+    Pending,
+    Success,
+    Failure,
+}
+
+impl CiState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CiState::None => "none",
+            CiState::Pending => "pending",
+            CiState::Success => "success",
+            CiState::Failure => "failure",
+        }
+    }
+}
+
+impl std::str::FromStr for CiState {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        Ok(match s {
+            "none" => CiState::None,
+            "pending" => CiState::Pending,
+            "success" => CiState::Success,
+            "failure" => CiState::Failure,
+            other => return Err(format!("不認得的 CI 狀態：{other}")),
+        })
+    }
+}
+
 /// 追蹤中的一個 PR（`agt landing`）。不綁分頁：分頁關閉後仍在。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LandingInfo {
@@ -274,6 +310,12 @@ pub struct LandingInfo {
     pub created_at: i64,
     #[serde(default)]
     pub checked_at: Option<i64>,
+    /// CI 狀態；只有 PR 還開著（`state = open`）時會更新。
+    #[serde(default)]
+    pub ci: CiState,
+    /// CI 失敗的檢查名稱（逗號分隔，已清除控制字元、限制長度）。
+    #[serde(default)]
+    pub ci_detail: String,
 }
 
 impl SessionInfo {
@@ -328,6 +370,19 @@ impl SessionInfo {
                 level: LandingLevel::Notice,
             });
         }
+        // PR 還開著、CI 失敗：這是現在最需要處理的事
+        let open = |l: &&LandingInfo| l.state == LandingState::Open;
+        if let Some(f) = ls.iter().filter(open).find(|l| l.ci == CiState::Failure) {
+            let what = if f.ci_detail.is_empty() {
+                f.name.as_str()
+            } else {
+                f.ci_detail.as_str()
+            };
+            return Some(LandingLabel {
+                text: format!("✗ CI 失敗：{what}"),
+                level: LandingLevel::Problem,
+            });
+        }
         let landed = ls
             .iter()
             .filter(|l| l.state == LandingState::Landed)
@@ -337,6 +392,20 @@ impl SessionInfo {
                 && l.checked_at.is_some_and(|t| now - t < LANDED_SHOW_SECS)
         });
         if landed == 0 || !recent {
+            // 沒有剛進 base 的：還開著的 PR 顯示 CI 進度（全部通過才顯示通過）
+            let opens: Vec<&LandingInfo> = ls.iter().filter(open).collect();
+            if opens.iter().any(|l| l.ci == CiState::Pending) {
+                return Some(LandingLabel {
+                    text: "… CI 執行中".to_string(),
+                    level: LandingLevel::Progress,
+                });
+            }
+            if !opens.is_empty() && opens.iter().all(|l| l.ci == CiState::Success) {
+                return Some(LandingLabel {
+                    text: "✓ CI 通過".to_string(),
+                    level: LandingLevel::Done,
+                });
+            }
             return None;
         }
         let base = &ls[0].base;
@@ -526,7 +595,15 @@ mod landing_label_tests {
             detail: String::new(),
             created_at: 0,
             checked_at: checked,
+            ci: CiState::None,
+            ci_detail: String::new(),
         }
+    }
+
+    fn with_ci(mut l: LandingInfo, ci: CiState, detail: &str) -> LandingInfo {
+        l.ci = ci;
+        l.ci_detail = detail.into();
+        l
     }
 
     fn info(landing: Vec<LandingInfo>) -> SessionInfo {
@@ -562,6 +639,50 @@ mod landing_label_tests {
             (l.text.as_str(), l.level),
             ("✗ PR 已關閉：a", LandingLevel::Notice)
         );
+    }
+
+    #[test]
+    fn label_shows_ci_for_open_prs() {
+        use CiState::{Failure, Pending, Success};
+        use LandingState::*;
+        let now = 1_000_000;
+        let open = |ci, d: &str| with_ci(li("a", Open, None), ci, d);
+        let l = info(vec![open(Failure, "clippy, test")])
+            .landing_label(now)
+            .unwrap();
+        assert_eq!(
+            (l.text.as_str(), l.level),
+            ("✗ CI 失敗：clippy, test", LandingLevel::Problem)
+        );
+        let l = info(vec![open(Pending, "")]).landing_label(now).unwrap();
+        assert_eq!(
+            (l.text.as_str(), l.level),
+            ("… CI 執行中", LandingLevel::Progress)
+        );
+        let l = info(vec![open(Success, "")]).landing_label(now).unwrap();
+        assert_eq!(
+            (l.text.as_str(), l.level),
+            ("✓ CI 通過", LandingLevel::Done)
+        );
+        // 沒有檢查：不顯示；有一個還沒通過：不顯示「通過」
+        assert!(
+            info(vec![open(CiState::None, "")])
+                .landing_label(now)
+                .is_none()
+        );
+        assert!(
+            info(vec![
+                open(Success, ""),
+                with_ci(li("b", Open, None), CiState::None, "")
+            ])
+            .landing_label(now)
+            .is_none()
+        );
+        // 進 base 的異常比 CI 失敗優先
+        let l = info(vec![open(Failure, "x"), li("b", WrongBase, Some(now))])
+            .landing_label(now)
+            .unwrap();
+        assert!(l.text.starts_with("⚠ PR 沒進"), "{}", l.text);
     }
 
     #[test]

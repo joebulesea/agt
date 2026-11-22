@@ -323,6 +323,8 @@ fn sidebar_shows_landing_problem_and_landed() {
         detail: String::new(),
         created_at: now,
         checked_at: Some(now),
+        ci: agt_proto::CiState::None,
+        ci_detail: String::new(),
     };
     let render = |landing: Vec<LandingInfo>| {
         let (client, _sent) = agt_proto::client::Client::detached();

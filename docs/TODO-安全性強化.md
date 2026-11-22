@@ -79,4 +79,4 @@
 - [ ] Windows 紀錄檔搬移只有單元測試，沒有在真實的 `%APPDATA%` / `%LOCALAPPDATA%` 上實跑
 - [ ] 用第二個 Windows 帳號實測「其他使用者被 pipe ACL 拒絕」（目前只驗證了 ACL 內容）
 - [ ] 各 Agent 在加固參數（`--cap-drop=ALL` 等）與唯讀 tools volume 下的完整登入與使用流程（目前只驗證了容器能啟動、執行檔能執行、版本固定有效）
-- [ ] 把「Agent 竄改 `.git` / 巢狀 repo 後主機不執行任何東西」做成端對端測試（目前是 `agt-git` 的單元測試）
+- [x] 把「Agent 竄改 `.git` / 巢狀 repo 後主機不執行任何東西」做成端對端測試：`crates/agt-cli/tests/e2e.rs` 的 `tampered_git_dir_runs_nothing_on_the_host`（真的 daemon、被入侵的假 Agent 把 `.git` 換成目錄或指到自備的 gitdir，設定裡塞 `core.fsmonitor`、`diff.external`、`core.hooksPath`；背景輪詢、收尾預覽、diff、同步、收尾 merge / pr、關閉都要拒絕且不執行任何東西）。巢狀 repo 仍是 `agt-git` 的單元測試
