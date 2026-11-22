@@ -229,3 +229,14 @@ fn diff_popup_renders_tab_bar_and_scrollbar() {
     assert!(all.contains("（無）") && !all.contains("+line0"), "{all}");
     assert!(!has_bar(&buf), "內容放得下時不應有捲軸");
 }
+
+#[test]
+fn format_wait_units() {
+    assert_eq!(format_wait(-5), None);
+    assert_eq!(format_wait(59), None);
+    assert_eq!(format_wait(60).as_deref(), Some("1m"));
+    assert_eq!(format_wait(59 * 60 + 59).as_deref(), Some("59m"));
+    assert_eq!(format_wait(3600).as_deref(), Some("1h00m"));
+    assert_eq!(format_wait(2 * 3600 + 5 * 60).as_deref(), Some("2h05m"));
+    assert_eq!(format_wait(86_400 * 3 + 100).as_deref(), Some("3d"));
+}

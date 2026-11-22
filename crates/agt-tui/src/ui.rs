@@ -3,7 +3,7 @@
 use crate::app::{App, CLOSE_ITEMS, Click, ClickHit, Confirm, FINISH_ITEMS, Popup, STRATEGIES};
 use crate::theme::theme;
 use agt_proto::screen::{Color as PColor, Screen, flags};
-use agt_proto::{AgentStatus, SessionInfo};
+use agt_proto::{AgentStatus, CheckState, SessionInfo};
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -111,6 +111,20 @@ pub fn truncate(s: &str, width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// 等待輸入的時間，例如 `3m`、`2h05m`、`1d`；不到 1 分鐘（或時間未知）不顯示。
+pub fn format_wait(secs: i64) -> Option<String> {
+    if secs < 60 {
+        return None;
+    }
+    Some(if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h{:02}m", secs / 3600, secs % 3600 / 60)
+    } else {
+        format!("{}d", secs / 86_400)
+    })
 }
 
 fn pad(s: &str, width: usize) -> String {

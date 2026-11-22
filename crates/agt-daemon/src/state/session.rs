@@ -109,12 +109,28 @@ impl Daemon {
                         source,
                         message,
                     } => {
-                        let Some(info) = d.update_if_current(&id, generation, |i| i.status = to)
-                        else {
+                        // 等待輸入時記下 Agent 在問什麼，側欄預覽用
+                        let prompt = (to == AgentStatus::WaitingInput)
+                            .then(|| {
+                                agt_proto::text::waiting_prompt(
+                                    message.as_deref(),
+                                    &session.tail_lines(12),
+                                )
+                            })
+                            .flatten();
+                        let Some(info) = d.update_if_current(&id, generation, |i| {
+                            i.status = to;
+                            i.prompt = prompt;
+                        }) else {
                             break; // 分頁已關閉，或已重新啟動（這是舊 Agent 的事件）
                         };
                         if let Err(e) = d.store().update_status(&id, to.as_str()) {
                             tracing::warn!("更新狀態失敗：{e}");
+                        }
+                        // StatusChanged 只帶狀態；status_since、prompt、check 要靠完整的 SessionUpdated 才到得了 UI
+                        d.publish(info.clone());
+                        if to == AgentStatus::Done {
+                            d.spawn_auto_check(&info, generation);
                         }
                         match to {
                             AgentStatus::Running | AgentStatus::Thinking => {
@@ -351,6 +367,9 @@ impl Daemon {
                 .ok_or_else(|| OpError::not_found(&id))?;
             e.session = Some(session.clone());
             e.info.status = AgentStatus::Starting;
+            e.info.status_since = agt_store::now();
+            e.info.prompt = None;
+            e.info.check = None;
             e.info.exit_code = None;
             e.conversation = Some(conversation.clone());
             e.info.clone()

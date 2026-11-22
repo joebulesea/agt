@@ -220,6 +220,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ("j / k、↓ / ↑", "切換分頁"),
                 ("1 – 9", "跳到第 N 個分頁"),
                 ("w", "跳到下一個等待輸入的分頁"),
+                ("Space、p", "快速切換器：輸入關鍵字篩選分頁，Enter 跳過去"),
                 ("d", "浮動視窗顯示 diff"),
                 ("m", "收尾選單：merge / pr / keep / discard"),
                 ("r", "重新命名任務"),
@@ -561,6 +562,78 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 rect: r,
                 click: Click::Nothing,
             });
+        }
+        Popup::Switch { input, selected } => {
+            const MAX_ROWS: usize = 10;
+            let matches = app.switch_matches(input);
+            let shown = matches.len().clamp(1, MAX_ROWS);
+            let r = centered(area, 72, shown as u16 + 5);
+            let inner_w = r.width.saturating_sub(2) as usize;
+            let list_h = (r.height as usize).saturating_sub(5).max(1);
+            let sel = (*selected).min(matches.len().saturating_sub(1));
+            let offset = (sel + 1).saturating_sub(list_h);
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled(" ❯ ", Style::new().fg(theme().cyan)),
+                    Span::raw(format!("{input}▏")),
+                ]),
+                Line::styled(
+                    format!(" {} 個分頁", matches.len()),
+                    Style::new().fg(theme().dark_gray),
+                ),
+            ];
+            if matches.is_empty() {
+                lines.push(Line::styled(" 沒有符合的分頁", Style::new().fg(theme().gray)));
+            }
+            for (i, s) in matches.iter().enumerate().skip(offset).take(list_h) {
+                let repo = s.repo_name.as_deref().unwrap_or("");
+                let tags = if s.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("  #{}", s.tags.join(" #"))
+                };
+                let text = truncate(
+                    &format!(
+                        " {} {} {}  {repo}{tags}",
+                        s.status.symbol(),
+                        pad(&s.agent, 7),
+                        s.task
+                    ),
+                    inner_w,
+                );
+                let fill = " ".repeat(inner_w.saturating_sub(text.width()));
+                let style = if i == sel {
+                    Style::new().fg(theme().on_accent).bg(theme().cyan)
+                } else {
+                    status_style(s.status)
+                };
+                lines.push(Line::styled(format!("{text}{fill}"), style));
+            }
+            while lines.len() < list_h + 2 {
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::styled(
+                " ↑↓ / Tab 選擇 · Enter 跳過去 · Esc 取消",
+                Style::new().fg(theme().dark_gray),
+            ));
+            f.render_widget(Clear, r);
+            f.render_widget(Paragraph::new(lines).block(block("切換分頁")), r);
+            hits.push(ClickHit {
+                rect: r,
+                click: Click::Nothing,
+            });
+            let visible = matches.len().saturating_sub(offset).min(list_h);
+            for row in 0..visible {
+                hits.push(ClickHit {
+                    rect: Rect::new(
+                        r.x + 1,
+                        r.y + 3 + row as u16,
+                        r.width.saturating_sub(2),
+                        1,
+                    ),
+                    click: Click::Item(offset + row),
+                });
+            }
         }
         Popup::Tags { input } => {
             let r = centered(area, 60, 3);

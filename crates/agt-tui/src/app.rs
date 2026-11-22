@@ -210,6 +210,11 @@ pub enum Popup {
     Tags {
         input: String,
     },
+    /// 快速切換器：輸入關鍵字篩選分頁，Enter 跳過去。
+    Switch {
+        input: String,
+        selected: usize,
+    },
 }
 
 pub const FINISH_ITEMS: [(&str, &str); 4] = [
@@ -350,6 +355,29 @@ impl App {
         groups.into_iter().flat_map(|(_, v)| v).collect()
     }
 
+    /// 快速切換器的候選：每個以空白分隔的關鍵字都要出現在
+    /// Agent、任務、repo、branch、短 id、標籤或狀態其中之一（不分大小寫），順序同側欄。
+    pub fn switch_matches(&self, query: &str) -> Vec<&SessionInfo> {
+        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        self.ordered()
+            .into_iter()
+            .filter(|s| {
+                let hay = format!(
+                    "{} {} {} {} {} {} {}",
+                    s.agent,
+                    s.task,
+                    s.repo_name.as_deref().unwrap_or(""),
+                    s.branch.as_deref().unwrap_or(""),
+                    s.short_id,
+                    s.tags.join(" "),
+                    s.status.as_str()
+                )
+                .to_lowercase();
+                terms.iter().all(|t| hay.contains(t.as_str()))
+            })
+            .collect()
+    }
+
     pub fn active_info(&self) -> Option<&SessionInfo> {
         let id = self.active.as_ref()?;
         self.sessions.iter().find(|s| &s.id == id)
@@ -447,7 +475,9 @@ impl App {
 
 fn text_field(p: &mut Popup) -> Option<&mut String> {
     match p {
-        Popup::Rename { input } | Popup::Tags { input } => Some(input),
+        Popup::Rename { input } | Popup::Tags { input } | Popup::Switch { input, .. } => {
+            Some(input)
+        }
         Popup::New(f) => match f.field {
             1 => Some(&mut f.repo),
             2 => Some(&mut f.task),

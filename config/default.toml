@@ -8,6 +8,7 @@
 prefix_key = "ctrl-a"
 theme = "dark"                   # dark | light（亮色終端機）| colorblind（避開紅綠對比）
 sidebar_width = 26
+sidebar_prompt = true            # 等待輸入的分頁，側欄多一行預覽 Agent 在問什麼（false = 關閉，省一行空間）
 worktree_root = "~/.agt/worktrees"
 notify = true                    # 系統通知（false = 全部關閉）
 # 哪些狀態要通知：waiting（等待輸入）、done（完成）、error（發生錯誤）、exited（Agent 行程結束）。
@@ -251,3 +252,7 @@ worktree = false
 # # 沙箱 Agent 要另外設定 check_command（見上面的 claude-docker），否則略過；其他 Agent 在主機上執行。
 # # checkout 裡沒有 copy_files 的檔案，也沒有建置快取（每組都從頭建置）。每組最多 30 分鐘。
 # finish_check = "cargo build --workspace"
+# # Agent 完成（狀態變成 Done）後，自動在它的 worktree 執行的檢查，結果顯示在側欄（✓ 測試通過 / ✗ 測試失敗）並發系統通知。
+# # 同樣只能寫在這裡；沙箱 Agent 要設定 check_command（{dir} = 這個分頁的 worktree），否則略過。
+# # worktree 沒有任何變更時不執行；Agent 又開始工作就清掉舊結果。每次最多 30 分鐘。
+# auto_check = "cargo test --workspace"
