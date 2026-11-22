@@ -1373,6 +1373,31 @@ fn output_timeout_kills_a_hung_command_and_returns_normal_output() {
     assert_eq!(String::from_utf8_lossy(&o.stderr).trim(), "err");
 }
 
+#[test]
+fn parse_ci_reads_state_and_sanitizes_failed_names() {
+    let ok = |l: &str| parse_ci(l).unwrap();
+    assert_eq!(ok("none\t").ci, Ci::None);
+    assert_eq!(ok("pending\t").ci, Ci::Pending);
+    assert_eq!(ok("success").ci, Ci::Success); // 沒有 tab 也接受
+    let f = ok("failure\ttest (windows-latest), clippy");
+    assert_eq!(
+        (f.ci, f.failed.as_str()),
+        (Ci::Failure, "test (windows-latest), clippy")
+    );
+    // 名稱不可信：控制字元換成空白、限制長度
+    let f = ok("failure\ta\u{1b}[31m\nb");
+    assert!(
+        !f.failed.contains(|c: char| c.is_control()),
+        "{:?}",
+        f.failed
+    );
+    let long = format!("failure\t{}", "x".repeat(500));
+    assert_eq!(ok(&long).failed.chars().count(), 120);
+    for bad in ["", "weird\t", "FAILURE\t"] {
+        assert!(parse_ci(bad).is_none(), "{bad:?}");
+    }
+}
+
 // ---- 收尾檢查（finish_check）----
 
 #[test]

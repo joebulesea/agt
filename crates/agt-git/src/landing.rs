@@ -148,3 +148,75 @@ fn pick_remote_repo(repo: &Path) -> Result<String> {
         .map(str::to_string)
         .ok_or_else(|| GitError::Refused("這個 repo 沒有設定 remote".into()))
 }
+
+/// 一個 PR 的 CI 結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ci {
+    /// 沒有任何檢查。
+    None,
+    /// 還有檢查在執行或排隊。
+    Pending,
+    /// 全部通過（或略過）。
+    Success,
+    /// 有檢查失敗。
+    Failure,
+}
+
+/// PR 的 CI 狀態與失敗的檢查名稱（以逗號分隔，已限制長度；沒有失敗時是空字串）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiStatus {
+    pub ci: Ci,
+    pub failed: String,
+}
+
+/// `gh pr view --json statusCheckRollup --jq` 用的運算式。輸出 `<none|pending|success|failure>\t<失敗的檢查名稱>`。
+/// 檢查有兩種：CheckRun（`status` / `conclusion` / `name`）與 StatusContext（`state` / `context`）。
+const CI_JQ: &str = r#"(.statusCheckRollup // []) as $c
+| ($c | map(select((.conclusion // .state // "") as $r | ["FAILURE","TIMED_OUT","CANCELLED","ERROR","STARTUP_FAILURE","ACTION_REQUIRED"] | any(. == $r)))) as $bad
+| ($c | map(select(((.status // "COMPLETED") != "COMPLETED") or ((.state // "") as $s | ["PENDING","EXPECTED"] | any(. == $s))))) as $pend
+| (if ($c | length) == 0 then "none" elif ($bad | length) > 0 then "failure" elif ($pend | length) > 0 then "pending" else "success" end)
+  + "\t" + ($bad | map(.name // .context // "?") | join(", "))"#;
+
+/// 失敗的檢查名稱最多保留幾個字元。
+const CI_FAILED_MAX: usize = 120;
+
+/// 解析 [`CI_JQ`] 的輸出；格式不符時回傳 None。名稱來自 PR 的檢查（不可信）：去掉控制字元並限制長度。
+pub(crate) fn parse_ci(line: &str) -> Option<CiStatus> {
+    let (head, failed) = line.split_once('\t').unwrap_or((line, ""));
+    let ci = match head.trim() {
+        "none" => Ci::None,
+        "pending" => Ci::Pending,
+        "success" => Ci::Success,
+        "failure" => Ci::Failure,
+        _ => return None,
+    };
+    let failed: String = failed
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(CI_FAILED_MAX)
+        .collect();
+    Some(CiStatus { ci, failed })
+}
+
+/// 查 PR 的 CI 狀態。和 [`check_landing`] 分開查：這個查詢失敗（例如 `gh` 版本不支援）不影響「有沒有進 base」。
+pub fn check_ci(repo: &Path, target: &PrTarget) -> Result<CiStatus> {
+    let line = gh_run_repo(
+        repo,
+        &[
+            "pr",
+            "view",
+            &target.branch,
+            "--json",
+            "statusCheckRollup",
+            "--jq",
+            CI_JQ,
+        ],
+        NET_TIMEOUT,
+    )?;
+    parse_ci(&line).ok_or_else(|| GitError::Refused("gh 的 CI 輸出格式不符，略過這次檢查".into()))
+}

@@ -198,6 +198,25 @@ struct Checked {
     worktree_root: PathBuf,
 }
 
+/// repo 看起來是 Rust 專案時建議的 `finish_check`：和 CI 跑的檢查一樣，在本機先攔住 fmt 與 clippy 的失敗。
+pub(crate) const RUST_FINISH_CHECK: &str =
+    "cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings";
+
+/// 沒設定 `finish_check` 時的建議（只提示，不會自動執行）。目前只認得 Rust：主 repo 根目錄有一般檔案的
+/// `Cargo.toml`（只看檔案存在，不讀內容；連結不算）。
+pub(crate) fn finish_check_suggestion(repo: &Path) -> Option<&'static str> {
+    let m = std::fs::symlink_metadata(repo.join("Cargo.toml")).ok()?;
+    (m.is_file() && !m.file_type().is_symlink()).then_some(RUST_FINISH_CHECK)
+}
+
+/// 建議文字：說明為什麼、怎麼設定、什麼時候才會執行。
+pub(crate) fn finish_check_hint(repo: &Path) -> String {
+    format!(
+        "💡 這個 repo 沒有設定 finish_check。分組收尾時 agt 會在每組 branch 執行它，先攔住 CI 會擋的問題；可在使用者設定檔加：\n    [repos.\"{}\"]\n    finish_check = \"{RUST_FINISH_CHECK}\"\n  （沙箱 Agent 另外要設定 check_command，見 `agt config check`）",
+        repo.display()
+    )
+}
+
 /// 載入設定並做可疑項目檢查（含 `--repo` 的 `.agt.toml`）。錯誤是要顯示給使用者的訊息。
 /// `cmd_exists`：指令是否找得到（測試時可替換）。
 fn collect(
@@ -220,6 +239,9 @@ fn collect(
             ));
         }
         let r = cfg.repo(paths, root)?;
+        if r.finish_check.is_none() && finish_check_suggestion(root).is_some() {
+            warnings.push(format!("建議：{}", finish_check_hint(root)));
+        }
         for f in &r.copy_files {
             if escapes_repo(f) {
                 warnings.push(format!("copy_files：{f:?} 必須是 repo 內的相對路徑"));
@@ -646,6 +668,54 @@ copy_files = [".env", "../secret", "/etc/passwd"]
         assert!(all.contains("../secret"), "{all}");
         assert!(all.contains("/etc/passwd"), "{all}");
         assert!(!all.contains("\".env\"：\".env\""), "{all}");
+    }
+
+    #[test]
+    fn finish_check_suggestion_only_for_rust_repos_with_a_real_cargo_toml() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(finish_check_suggestion(d.path()).is_none());
+        std::fs::write(d.path().join("Cargo.toml"), "").unwrap();
+        let s = finish_check_suggestion(d.path()).unwrap();
+        assert!(s.contains("cargo fmt") && s.contains("clippy"), "{s}");
+        // 提示文字包含可以直接貼進設定檔的段落
+        let h = finish_check_hint(d.path());
+        assert!(
+            h.contains("[repos.") && h.contains("finish_check = "),
+            "{h}"
+        );
+        // 連結不算
+        #[cfg(unix)]
+        {
+            let e = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(d.path().join("Cargo.toml"), e.path().join("Cargo.toml"))
+                .unwrap();
+            assert!(finish_check_suggestion(e.path()).is_none());
+        }
+    }
+
+    #[test]
+    fn config_check_suggests_finish_check_for_rust_repo_unless_configured() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("Cargo.toml"), "").unwrap();
+        let key = repo.path().to_string_lossy().replace('\\', "/");
+        let (_d, f) = write_config("");
+        let c = collect(&f, Some(repo.path()), &paths(), &|_| true).unwrap();
+        assert!(
+            c.warnings
+                .iter()
+                .any(|w| w.starts_with("建議：") && w.contains("finish_check")),
+            "{:?}",
+            c.warnings
+        );
+        let (_d, f) = write_config(&format!(
+            "[repos.\"{key}\"]\nfinish_check = \"cargo build\"\n"
+        ));
+        let c = collect(&f, Some(repo.path()), &paths(), &|_| true).unwrap();
+        assert!(
+            !c.warnings.iter().any(|w| w.starts_with("建議：")),
+            "{:?}",
+            c.warnings
+        );
     }
 
     #[test]

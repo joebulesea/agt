@@ -576,11 +576,20 @@ fn print_landings(list: &[LandingInfo]) {
             LandingState::Closed => ("✗", "PR 已關閉，沒有合併".to_string()),
         };
         // 還沒有結果時，detail 可能是上次檢查失敗的原因
-        let note = if l.state == LandingState::Open && !l.detail.is_empty() {
+        let mut note = if l.state == LandingState::Open && !l.detail.is_empty() {
             format!("（{}）", l.detail)
         } else {
             String::new()
         };
+        if l.state == LandingState::Open {
+            match l.ci {
+                CiState::None => {}
+                CiState::Pending => note.push_str("  CI 執行中"),
+                CiState::Success => note.push_str("  CI 通過"),
+                CiState::Failure if l.ci_detail.is_empty() => note.push_str("  CI 失敗"),
+                CiState::Failure => note.push_str(&format!("  CI 失敗：{}", l.ci_detail)),
+            }
+        }
         println!(
             "{mark} {} [{}] {}  {}  {text}{note}",
             l.short_id, l.name, l.task, l.branch

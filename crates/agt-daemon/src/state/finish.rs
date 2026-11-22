@@ -417,9 +417,24 @@ impl Daemon {
             &strategy,
             auto_commit,
         )?;
+        // 沒設定 finish_check、而且看得出是 Rust 專案：提示可以設定（只提示，不執行）
+        let hint = {
+            let configured = self
+                .cfg()
+                .repo(&self.paths, Path::new(&repo))
+                .ok()
+                .and_then(|r| r.finish_check)
+                .is_some_and(|s| !s.trim().is_empty());
+            (!configured && crate::check::finish_check_suggestion(Path::new(&repo)).is_some())
+                .then(|| crate::check::finish_check_hint(Path::new(&repo)))
+        };
+        let with_hint = |out: String| match &hint {
+            Some(h) => format!("{out}\n\n{h}"),
+            None => out,
+        };
         // 有分組時才會執行收尾檢查
         if agt_git::load_groups(Path::new(&wt))?.is_empty() {
-            return Ok(out);
+            return Ok(with_hint(out));
         }
         let (check, note) = self.group_check(&info, &repo)?;
         let script = self
@@ -433,7 +448,7 @@ impl Daemon {
                 "{out}\n收尾前會在每組 branch 執行檢查：{script}（任何一組失敗就不 push、不合併）"
             ),
             (None, Some(n)) => format!("{out}\n{n}"),
-            (None, None) => out,
+            (None, None) => with_hint(out),
         })
     }
 

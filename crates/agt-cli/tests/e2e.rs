@@ -15,6 +15,8 @@ struct Env {
     home: PathBuf,
     sock: String,
     repo: PathBuf,
+    /// 竄改 `.git` 的假 Agent 在設定裡塞的指令會建立這個檔案；它出現就代表主機執行了不該執行的東西。
+    marker: PathBuf,
     daemon: Option<Child>,
 }
 
@@ -71,6 +73,29 @@ echo "answer=$x"
 sleep 60
 "#;
 
+/// 假 Agent：模擬被入侵的 Agent，竄改 worktree 的 `.git`，塞進會執行指令的設定
+/// （`core.fsmonitor`、`diff.external`、`core.hooksPath`）。`$1` 是標記檔，`$2` 是竄改方式：
+/// `dir` = `.git` 換成目錄；`file` = `.git` 檔案改指到 worktree 裡自備的 gitdir。
+const TAMPER_AGENT: &str = r#"
+marker="$1"
+evil() {
+  mkdir -p "$1/objects" "$1/refs" "$1/hooks"
+  echo 'ref: refs/heads/main' > "$1/HEAD"
+  printf '#!/bin/sh\ntouch "%s"\n' "$marker" > "$1/hooks/pre-commit"
+  chmod +x "$1/hooks/pre-commit"
+  printf '[core]\n\trepositoryformatversion = 0\n\tfsmonitor = touch %s\n\thooksPath = %s/hooks\n[diff]\n\texternal = touch %s\n' "$marker" "$1" "$marker" > "$1/config"
+}
+if [ "$2" = dir ]; then
+  rm -f .git
+  evil .git
+else
+  evil "$PWD/evil"
+  echo "gitdir: $PWD/evil" > .git
+fi
+echo done > tampered
+sleep 60
+"#;
+
 /// 假 Agent：做出三個互不相關的變更，並用 .agt/groups/ 分成 one、two 兩組（其餘自成 rest）。
 /// two 的 FILES 最後寫，測試以它出現當作「Agent 做完了」。
 const GROUP_AGENT: &str = r#"
@@ -102,6 +127,8 @@ impl Env {
 
         // 路徑用 TOML 的 literal string（'...'），Windows 的反斜線才不會被當成跳脫字元
         let sh = sh();
+        let marker = dir.path().join("MARKER");
+        let marker_s = marker.to_string_lossy().replace('\\', "/");
         let config = format!(
             r#"
 [general]
@@ -125,6 +152,18 @@ resume_args = ["resume", "{{conversation}}"]
 [agents.grp]
 command = '{sh}'
 args = ["-c", '''{GROUP_AGENT}''']
+status_source = "none"
+auto_commit = true
+
+[agents.tamper_dir]
+command = '{sh}'
+args = ["-c", '''{TAMPER_AGENT}''', "tamper", '{marker_s}', "dir"]
+status_source = "none"
+auto_commit = true
+
+[agents.tamper_file]
+command = '{sh}'
+args = ["-c", '''{TAMPER_AGENT}''', "tamper", '{marker_s}', "file"]
 status_source = "none"
 auto_commit = true
 
@@ -156,6 +195,7 @@ copy_files = [".env"]
             home,
             sock,
             repo,
+            marker,
             daemon: None,
         };
         e.start();
@@ -2521,5 +2561,80 @@ async fn grouped_pr_without_remote_fails_before_creating_branches() {
     assert!(e.to_string().contains("remote"), "{e}");
     // 沒有 remote：不能留下半成品的分組 branch
     assert!(git(&env.repo, &["branch", "--list", &format!("{branch}-*")]).is_empty());
+    env.stop(&c).await;
+}
+
+/// 被入侵的 Agent 竄改 worktree 的 `.git`（換成目錄、或指到自備的 gitdir）並塞進會執行指令的設定：
+/// 主機端所有會碰 git 的操作（背景輪詢、預覽、diff、同步、收尾、關閉）都要拒絕，而且不能執行任何東西。
+#[tokio::test(flavor = "multi_thread")]
+async fn tampered_git_dir_runs_nothing_on_the_host() {
+    let mut env = Env::new();
+    let Connected { client: c, .. } = env.connect("tui").await;
+    for agent in ["tamper_dir", "tamper_file"] {
+        let s = expect_session(c.request(create(agent, &env.repo, agent)).await.unwrap()).unwrap();
+        let wt = PathBuf::from(s.worktree.clone().unwrap());
+        let start = Instant::now();
+        while !wt.join("tampered").exists() {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "{agent}：Agent 沒有完成竄改"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // 讓背景的 git 輪詢（每 3 秒）在竄改後至少跑過兩次
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        assert!(
+            !env.marker.exists(),
+            "{agent}：背景輪詢執行了竄改過的 .git 裡的指令"
+        );
+
+        let id = s.id.clone();
+        let must_refuse = |what: &str, r: Result<ReplyBody, agt_proto::client::ClientError>| {
+            let e = r.expect_err(&format!("{agent}：{what} 應該拒絕"));
+            assert!(e.to_string().contains("不可信"), "{agent}：{what}：{e}");
+        };
+        must_refuse(
+            "收尾預覽",
+            c.request(ClientMsg::FinishPreview {
+                id: id.clone(),
+                action: "merge".into(),
+            })
+            .await,
+        );
+        must_refuse("diff", c.request(ClientMsg::Diff { id: id.clone() }).await);
+        must_refuse(
+            "收尾 merge（auto_commit 會碰 git）",
+            c.request(finish(
+                &id,
+                FinishAction::Merge {
+                    strategy: Some(MergeStrategy::Merge),
+                },
+            ))
+            .await,
+        );
+        must_refuse("收尾 pr", c.request(finish(&id, FinishAction::Pr)).await);
+        assert!(
+            c.request(ClientMsg::Sync { id: id.clone() }).await.is_err(),
+            "{agent}：同步應該拒絕"
+        );
+        assert!(
+            !env.marker.exists(),
+            "{agent}：主機執行了竄改過的 .git 裡的指令"
+        );
+
+        // 關閉並清除 worktree：不管成功與否，都不能執行東西，daemon 也要繼續運作
+        let _ = c
+            .request(ClientMsg::Kill {
+                id: id.clone(),
+                cleanup: true,
+                force: true,
+            })
+            .await;
+        assert!(
+            !env.marker.exists(),
+            "{agent}：關閉時執行了竄改過的 .git 裡的指令"
+        );
+        expect_sessions(c.request(ClientMsg::ListSessions).await.unwrap()).unwrap();
+    }
     env.stop(&c).await;
 }

@@ -92,6 +92,11 @@ CREATE TABLE landings (
   UNIQUE (repo_path, branch)
 );
 "#,
+    // 6：PR 的 CI 狀態（none / pending / success / failure）與失敗的檢查名稱
+    r#"
+ALTER TABLE landings ADD COLUMN ci TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE landings ADD COLUMN ci_detail TEXT NOT NULL DEFAULT '';
+"#,
 ];
 
 pub fn now() -> i64 {
@@ -139,6 +144,10 @@ pub struct LandingRow {
     pub detail: String,
     pub created_at: i64,
     pub checked_at: Option<i64>,
+    /// CI 狀態：none / pending / success / failure。
+    pub ci: String,
+    /// 失敗的檢查名稱（逗號分隔）。
+    pub ci_detail: String,
 }
 
 pub struct Store {
@@ -436,7 +445,8 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', '', ?8, NULL)
              ON CONFLICT (repo_path, branch) DO UPDATE SET
                session_id = ?1, short_id = ?2, task = ?3, name = ?5, base = ?7,
-               state = 'open', detail = '', created_at = ?8, checked_at = NULL",
+               state = 'open', detail = '', created_at = ?8, checked_at = NULL,
+               ci = 'none', ci_detail = ''",
             params![
                 r.session_id,
                 r.short_id,
@@ -454,7 +464,7 @@ impl Store {
     /// 所有追蹤中的 PR，新的在前。`only_open` 為 true 時只列還沒有結果（state = open）的。
     pub fn landings(&self, only_open: bool) -> Result<Vec<LandingRow>> {
         let sql = format!(
-            "SELECT session_id, short_id, task, repo_path, name, branch, base, state, detail, created_at, checked_at
+            "SELECT session_id, short_id, task, repo_path, name, branch, base, state, detail, created_at, checked_at, ci, ci_detail
              FROM landings {} ORDER BY created_at DESC, id DESC",
             if only_open { "WHERE state = 'open'" } else { "" }
         );
@@ -472,6 +482,8 @@ impl Store {
                 detail: r.get(8)?,
                 created_at: r.get(9)?,
                 checked_at: r.get(10)?,
+                ci: r.get(11)?,
+                ci_detail: r.get(12)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -490,6 +502,22 @@ impl Store {
             params![repo_path, branch, state, detail, now()],
         )?;
         Ok(())
+    }
+
+    /// 寫入 CI 狀態。內容和目前相同時不動並回傳 false（呼叫方只在有變化時通知與推播）。
+    pub fn set_landing_ci(
+        &self,
+        repo_path: &str,
+        branch: &str,
+        ci: &str,
+        detail: &str,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE landings SET ci = ?3, ci_detail = ?4
+             WHERE repo_path = ?1 AND branch = ?2 AND (ci != ?3 OR ci_detail != ?4)",
+            params![repo_path, branch, ci, detail],
+        )?;
+        Ok(n > 0)
     }
 
     /// 刪除 `before`（Unix 秒）之前建立的追蹤紀錄。回傳刪除的筆數。
@@ -832,6 +860,7 @@ mod tests {
         assert!(MIGRATIONS[1].contains("trusted_setups"));
         assert!(MIGRATIONS[2].contains("conversation_id"));
         assert!(MIGRATIONS[4].contains("CREATE TABLE landings"));
+        assert!(MIGRATIONS[5].contains("ci_detail"));
         assert!(MIGRATIONS.iter().all(|m| !m.trim().is_empty()));
     }
 
@@ -887,6 +916,33 @@ mod tests {
             (one.state.as_str(), one.detail.as_str(), one.checked_at),
             ("open", "", None)
         );
+        // CI 狀態：有變化才回傳 true；重新收尾會重設
+        assert!(
+            s.set_landing_ci("/r", "agt/t-one", "failure", "clippy")
+                .unwrap()
+        );
+        assert!(
+            !s.set_landing_ci("/r", "agt/t-one", "failure", "clippy")
+                .unwrap()
+        );
+        let one = s
+            .landings(false)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.branch == "agt/t-one")
+            .unwrap();
+        assert_eq!(
+            (one.ci.as_str(), one.ci_detail.as_str()),
+            ("failure", "clippy")
+        );
+        s.upsert_landing(&l("agt/t-one", 300)).unwrap();
+        let one = s
+            .landings(false)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.branch == "agt/t-one")
+            .unwrap();
+        assert_eq!((one.ci.as_str(), one.ci_detail.as_str()), ("none", ""));
         assert_eq!(s.prune_landings(250).unwrap(), 1);
         assert_eq!(s.landings(false).unwrap().len(), 1);
     }
