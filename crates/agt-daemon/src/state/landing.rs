@@ -120,6 +120,15 @@ impl Daemon {
 
     /// 查還沒有結果的 PR。`force` 為 true 時忽略失敗後的重試間隔。
     pub fn poll_landing(&self, force: bool) {
+        self.poll_landing_with(force, &agt_git::check_landing);
+    }
+
+    /// [`Self::poll_landing`]，檢查函式可替換（測試用，不必真的呼叫 `gh`）。
+    fn poll_landing_with(
+        &self,
+        force: bool,
+        check: &dyn Fn(&Path, &PrTarget) -> agt_git::Result<Landing>,
+    ) {
         let pending = match self.store().landings(true) {
             Ok(p) => p,
             Err(e) => {
@@ -141,7 +150,7 @@ impl Daemon {
                 branch: r.branch.clone(),
                 base: r.base.clone(),
             };
-            match agt_git::check_landing(Path::new(&r.repo_path), &target) {
+            match check(Path::new(&r.repo_path), &target) {
                 Ok(l) => {
                     self.landing_retry.lock_or_recover().remove(&key);
                     let (state, detail) = describe(&l, &r.base);
@@ -177,6 +186,11 @@ impl Daemon {
             }
         }
         let _ = self.store().prune_landings(agt_store::now() - KEEP_SECS);
+        // 有結果的分頁：把最新的 PR 進度帶進側欄資料並推播
+        touched.sort();
+        touched.dedup();
+        let ids: Vec<&str> = touched.iter().map(String::as_str).collect();
+        self.refresh_landing_info(&ids);
     }
 
     /// 寫進事件記錄；只有異常（沒進預期的 base）才發通知。
@@ -203,6 +217,177 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, Paths};
+    use agt_store::SessionRow;
+    use std::cell::RefCell;
+
+    fn paths(dir: &Path) -> Paths {
+        Paths {
+            config_file: dir.join("config.toml"),
+            data_dir: dir.join("data"),
+            home: dir.to_path_buf(),
+            logs_dir: None,
+        }
+    }
+
+    fn daemon(dir: &Path) -> Arc<Daemon> {
+        let mut cfg = Config::defaults();
+        cfg.general.notify = false; // 測試不要真的跳系統通知
+        Daemon::new(paths(dir), "test".into(), "agt".into(), cfg, None).unwrap()
+    }
+
+    /// 在 entries 放一個還開著的分頁（側欄會顯示它的 PR 進度）。
+    fn add_session(d: &Daemon, id: &str) -> SessionInfo {
+        let info = row_to_info(&SessionRow {
+            id: id.into(),
+            short_id: "aaaaaa".into(),
+            task: "任務".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        d.entries.lock_or_recover().insert(
+            id.into(),
+            Entry {
+                info: info.clone(),
+                session: None,
+                conversation: None,
+                generation: 1,
+                resume_attempt: None,
+            },
+        );
+        info
+    }
+
+    fn target(name: &str) -> PrTarget {
+        PrTarget {
+            name: name.into(),
+            branch: format!("agt/t-{name}"),
+            base: "main".into(),
+        }
+    }
+
+    /// 組名 → 狀態（排序後，不依賴資料庫的列出順序）。
+    fn states(d: &Daemon) -> std::collections::BTreeMap<String, LandingState> {
+        d.list_landings(false)
+            .unwrap()
+            .into_iter()
+            .map(|l| (l.name, l.state))
+            .collect()
+    }
+
+    #[test]
+    fn poll_records_results_updates_sidebar_info_and_stops_polling_finished_prs() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = daemon(dir.path());
+        let info = add_session(&d, "s1");
+        d.track_landings(
+            &info,
+            "/r",
+            &[target("one"), target("two"), target("three")],
+        );
+        // 追蹤時就帶進側欄的資料（都還在等待）
+        assert_eq!(d.get("s1").unwrap().landing.len(), 3);
+        let mut rx = d.events.subscribe();
+
+        let calls = RefCell::new(vec![]);
+        let answer = |_: &Path, t: &PrTarget| {
+            calls.borrow_mut().push(t.name.clone());
+            Ok(match t.name.as_str() {
+                "one" => Landing::Landed,
+                "two" => Landing::WrongBase("agt/t-one".into()),
+                _ => Landing::Open, // 還開著：下次還要再查
+            })
+        };
+        d.poll_landing_with(false, &answer);
+        let got = states(&d);
+        assert_eq!(got["one"], LandingState::Landed);
+        assert_eq!(got["two"], LandingState::WrongBase);
+        assert_eq!(got["three"], LandingState::Open);
+        // 側欄的資料跟著更新，並推播完整的 SessionUpdated
+        let landing = d.get("s1").unwrap().landing;
+        let two = landing.iter().find(|l| l.name == "two").unwrap();
+        assert_eq!(two.state, LandingState::WrongBase);
+        assert_eq!(two.detail, "合進 agt/t-one，不是 main");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ServerMsg::SessionUpdated { .. })
+        ));
+        // 有結果的不再查；還開著的繼續查
+        calls.borrow_mut().clear();
+        d.poll_landing_with(false, &answer);
+        assert_eq!(*calls.borrow(), vec!["three".to_string()]);
+    }
+
+    #[test]
+    fn failed_checks_back_off_keep_waiting_and_recover() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = daemon(dir.path());
+        let info = add_session(&d, "s1");
+        d.track_landings(&info, "/r", &[target("one")]);
+        let n = RefCell::new(0);
+        let fail = |_: &Path, _: &PrTarget| {
+            *n.borrow_mut() += 1;
+            Err(agt_git::GitError::Refused("連不上\n網路\u{1b}[31m".into()))
+        };
+        d.poll_landing_with(false, &fail);
+        assert_eq!(*n.borrow(), 1);
+        // 失敗：維持等待，原因（單行、無控制字元）給 `agt landing` 看
+        let l = d.list_landings(false).unwrap().remove(0);
+        assert_eq!(l.state, LandingState::Open);
+        assert!(l.detail.starts_with("上次檢查失敗："), "{}", l.detail);
+        assert!(!l.detail.contains(['\n', '\u{1b}']), "{:?}", l.detail);
+        // 還在退避：一般輪詢不查，`--check`（force）才查
+        d.poll_landing_with(false, &fail);
+        assert_eq!(*n.borrow(), 1);
+        d.poll_landing_with(true, &fail);
+        assert_eq!(*n.borrow(), 2);
+        // 恢復後寫入結果並清掉退避
+        d.poll_landing_with(true, &|_: &Path, _: &PrTarget| Ok(Landing::Landed));
+        let l = d.list_landings(false).unwrap().remove(0);
+        assert_eq!((l.state, l.detail.as_str()), (LandingState::Landed, ""));
+        assert!(d.landing_retry.lock_or_recover().is_empty());
+    }
+
+    #[test]
+    fn finished_tabs_keep_their_landings_and_restart_restores_the_sidebar() {
+        let dir = tempfile::tempdir().unwrap();
+        let info;
+        {
+            let d = daemon(dir.path());
+            d.store()
+                .insert_session(&SessionRow {
+                    id: "s1".into(),
+                    short_id: "aaaaaa".into(),
+                    agent: "claude".into(),
+                    task: "任務".into(),
+                    status: "idle".into(),
+                    created_at: agt_store::now(),
+                    ..Default::default()
+                })
+                .unwrap();
+            info = add_session(&d, "s1");
+            d.track_landings(&info, "/r", &[target("one"), target("two")]);
+            d.poll_landing_with(false, &|_: &Path, t: &PrTarget| {
+                Ok(if t.name == "one" {
+                    Landing::Landed
+                } else {
+                    Landing::Missing
+                })
+            });
+        }
+        // daemon 重啟：分頁從資料庫載入，側欄的 PR 進度跟著回來
+        let d = daemon(dir.path());
+        let got = d.get("s1").unwrap().landing;
+        assert_eq!(got.len(), 2);
+        assert_eq!(
+            got.iter().find(|l| l.name == "two").unwrap().state,
+            LandingState::Missing
+        );
+        // 分頁關閉（不在 entries）後，`agt landing` 仍查得到，也不會 panic
+        d.entries.lock_or_recover().remove("s1");
+        assert_eq!(states(&d).len(), 2);
+        d.poll_landing_with(true, &|_: &Path, _: &PrTarget| panic!("已有結果，不該再查"));
+    }
 
     #[test]
     fn retry_delay_doubles_and_caps() {

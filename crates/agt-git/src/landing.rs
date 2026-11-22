@@ -9,6 +9,10 @@
 
 use crate::*;
 use std::path::Path;
+use std::time::Duration;
+
+/// `gh pr view` 與 `git fetch` 各自最多等多久（背景輪詢，連不上網路時不能卡住）。
+const NET_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 收尾時開出的一個 PR，之後要追蹤它有沒有進 base。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,13 +103,11 @@ pub fn check_landing(repo: &Path, target: &PrTarget) -> Result<Landing> {
             "--jq",
             ".state + \" \" + .baseRefName + \" \" + (.mergeCommit.oid // \"\")",
         ],
+        NET_TIMEOUT,
     )?;
     classify(&line, &target.base, |oid| {
         let remote = pick_remote_repo(repo)?;
-        git(
-            repo,
-            &["fetch", "--no-tags", "--quiet", &remote, &target.base],
-        )?;
+        fetch_base(repo, &remote, &target.base)?;
         // fetch 之後 repo 裡仍沒有這個 commit：它不在 base 的歷史裡（不是錯誤，不必重試）
         let known = run_raw(repo, &["cat-file", "-e", &format!("{oid}^{{commit}}")])?;
         if !known.status.success() {
@@ -121,6 +123,20 @@ pub fn check_landing(repo: &Path, target: &PrTarget) -> Result<Landing> {
             ))),
         }
     })
+}
+
+fn fetch_base(repo: &Path, remote: &str, base: &str) -> Result<()> {
+    let mut c = crate::exec::command(repo);
+    c.args(["fetch", "--no-tags", "--quiet", remote, base]);
+    let o = crate::exec::output_timeout(c, NET_TIMEOUT)?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        Err(GitError::Command {
+            args: "fetch".into(),
+            stderr: String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        })
+    }
 }
 
 fn pick_remote_repo(repo: &Path) -> Result<String> {
