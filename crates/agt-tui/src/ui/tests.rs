@@ -240,3 +240,151 @@ fn format_wait_units() {
     assert_eq!(format_wait(2 * 3600 + 5 * 60).as_deref(), Some("2h05m"));
     assert_eq!(format_wait(86_400 * 3 + 100).as_deref(), Some("3d"));
 }
+
+/// 側欄：落後 base 顯示 ↓N；與其他分頁重疊時多一行 ⚠ 警示。
+#[test]
+fn sidebar_shows_behind_and_overlap() {
+    use agt_proto::{AgentStatus, Overlap, SessionInfo};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let (client, _sent) = agt_proto::client::Client::detached();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(client, Default::default(), None, ".".into(), tx);
+    let s = SessionInfo {
+        id: "aaaa1111".into(),
+        short_id: "aaaa".into(),
+        agent: "claude".into(),
+        repo_path: Some("/r".into()),
+        repo_name: Some("proj".into()),
+        task: "task".into(),
+        worktree: Some("/w".into()),
+        branch: Some("agt/claude/x".into()),
+        base_branch: Some("main".into()),
+        cwd: "/w".into(),
+        status: AgentStatus::Idle,
+        exit_code: None,
+        ahead: 2,
+        behind: 3,
+        dirty: false,
+        created_at: 0,
+        status_since: 0,
+        prompt: None,
+        check: None,
+        shared: false,
+        tags: vec![],
+        usage: None,
+        overlaps: vec![Overlap {
+            short_id: "bbbb".into(),
+            task: "other".into(),
+            files: vec!["src/x.rs".into()],
+            total: 1,
+        }],
+        landing: vec![],
+    };
+    app.upsert(s);
+    let (w, h) = (40u16, 12u16);
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    t.draw(|f| {
+        let area = f.area();
+        panes::draw_sidebar(f.buffer_mut(), &mut app, area, false);
+    })
+    .unwrap();
+    let buf = t.backend().buffer().clone();
+    let all: String = (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let compact: String = all.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("+2↓3"), "{all}");
+    assert!(compact.contains("⚠與bbbb重疊（1檔）"), "{all}");
+}
+
+#[test]
+fn sidebar_shows_landing_problem_and_landed() {
+    use agt_proto::{AgentStatus, LandingInfo, LandingState, SessionInfo};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let li = |name: &str, state| LandingInfo {
+        short_id: "aaaa".into(),
+        task: "task".into(),
+        repo_path: "/r".into(),
+        name: name.into(),
+        branch: format!("agt/x-{name}"),
+        base: "main".into(),
+        state,
+        detail: String::new(),
+        created_at: now,
+        checked_at: Some(now),
+        ci: agt_proto::CiState::None,
+        ci_detail: String::new(),
+    };
+    let render = |landing: Vec<LandingInfo>| {
+        let (client, _sent) = agt_proto::client::Client::detached();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(client, Default::default(), None, ".".into(), tx);
+        let s = SessionInfo {
+            id: "aaaa1111".into(),
+            short_id: "aaaa".into(),
+            agent: "claude".into(),
+            repo_path: Some("/r".into()),
+            repo_name: Some("proj".into()),
+            task: "task".into(),
+            worktree: Some("/w".into()),
+            branch: Some("agt/claude/x".into()),
+            base_branch: Some("main".into()),
+            cwd: "/w".into(),
+            status: AgentStatus::Idle,
+            exit_code: None,
+            ahead: 0,
+            behind: 0,
+            dirty: false,
+            created_at: 0,
+            status_since: 0,
+            prompt: None,
+            check: None,
+            shared: false,
+            tags: vec![],
+            usage: None,
+            overlaps: vec![],
+            landing,
+        };
+        app.upsert(s);
+        let (w, h) = (40u16, 8u16);
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| {
+            let area = f.area();
+            panes::draw_sidebar(f.buffer_mut(), &mut app, area, false);
+        })
+        .unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+    };
+    let bad = render(vec![
+        li("one", LandingState::Landed),
+        li("two", LandingState::WrongBase),
+    ]);
+    assert!(bad.contains("⚠PR沒進main：two"), "{bad}");
+    let ok = render(vec![li("one", LandingState::Landed)]);
+    assert!(ok.contains("✓PR已進main"), "{ok}");
+    // 都還開著：不顯示
+    let open = render(vec![li("one", LandingState::Open)]);
+    assert!(!open.contains("PR"), "{open}");
+}

@@ -10,7 +10,9 @@ mod statusline;
 mod uninstall;
 mod update;
 
-use agt_proto::client::{Client, ClientError, Connected, expect_session, expect_sessions};
+use agt_proto::client::{
+    Client, ClientError, Connected, expect_landings, expect_session, expect_sessions,
+};
 use agt_proto::transport::{self, ENV_SESSION};
 use agt_proto::*;
 use anyhow::{Context, bail};
@@ -71,6 +73,14 @@ enum Cmd {
         /// 只列出有這個標籤的分頁（不分大小寫）
         #[arg(long = "tag", value_name = "標籤")]
         tag: Option<String>,
+    },
+    /// 查看收尾開出的 PR 有沒有進 base（分頁關閉後也查得到）；有 PR 沒進預期的 base 時結束碼是 1
+    Landing {
+        #[arg(long)]
+        json: bool,
+        /// 先立刻重新查一次還沒有結果的 PR（需要 gh 與網路）
+        #[arg(long)]
+        check: bool,
     },
     /// 查看或修改分頁的標籤
     Tag {
@@ -153,6 +163,8 @@ enum Cmd {
     },
     /// 顯示分頁的 diff
     Diff { id: String },
+    /// 把 base 的最新 commit 合併進分頁的 branch（Agent 忙碌或有未 commit 的變更時拒絕）
+    Sync { id: String },
     /// 重新命名任務
     Rename { id: String, task: String },
     /// 在同一個 worktree 重新啟動已結束的 Agent（支援時接續上次的對話）
@@ -485,15 +497,24 @@ fn print_sessions(list: &[SessionInfo]) {
         .iter()
         .map(|s| {
             let git = match &s.branch {
-                Some(b) => format!(
-                    "{b}{}{}",
-                    if s.ahead > 0 {
-                        format!(" +{}", s.ahead)
+                Some(b) => {
+                    format!(
+                        "{b}{}{}",
+                        if s.ahead > 0 {
+                            format!(" +{}", s.ahead)
+                        } else {
+                            String::new()
+                        },
+                        if s.dirty { " ✎" } else { "" }
+                    ) + &(if s.behind > 0 {
+                        format!(" ↓{}", s.behind)
                     } else {
                         String::new()
-                    },
-                    if s.dirty { " ✎" } else { "" }
-                ),
+                    }) + &s
+                        .overlap_label()
+                        .map(|l| format!(" {l}"))
+                        .unwrap_or_default()
+                }
                 None => "無 worktree".into(),
             };
             [
@@ -538,6 +559,41 @@ fn print_sessions(list: &[SessionInfo]) {
     println!("{}", line(head.to_vec()));
     for r in &rows {
         println!("{}", line(r.iter().map(String::as_str).collect()));
+    }
+}
+
+fn print_landings(list: &[LandingInfo]) {
+    if list.is_empty() {
+        println!("（沒有追蹤中的 PR；收尾選 pr 之後才會出現）");
+        return;
+    }
+    for l in list {
+        let (mark, text) = match l.state {
+            LandingState::Open => ("…", format!("等待合併（目標 {}）", l.base)),
+            LandingState::Landed => ("✓", format!("已進 {}", l.base)),
+            LandingState::WrongBase => ("⚠", format!("沒進 {}：{}", l.base, l.detail)),
+            LandingState::Missing => ("⚠", format!("沒進 {}：{}", l.base, l.detail)),
+            LandingState::Closed => ("✗", "PR 已關閉，沒有合併".to_string()),
+        };
+        // 還沒有結果時，detail 可能是上次檢查失敗的原因
+        let mut note = if l.state == LandingState::Open && !l.detail.is_empty() {
+            format!("（{}）", l.detail)
+        } else {
+            String::new()
+        };
+        if l.state == LandingState::Open {
+            match l.ci {
+                CiState::None => {}
+                CiState::Pending => note.push_str("  CI 執行中"),
+                CiState::Success => note.push_str("  CI 通過"),
+                CiState::Failure if l.ci_detail.is_empty() => note.push_str("  CI 失敗"),
+                CiState::Failure => note.push_str(&format!("  CI 失敗：{}", l.ci_detail)),
+            }
+        }
+        println!(
+            "{mark} {} [{}] {}  {}  {text}{note}",
+            l.short_id, l.name, l.task, l.branch
+        );
     }
 }
 
@@ -751,6 +807,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Landing { json, check }) => {
+            let c = ensure_daemon("cli").await?.client;
+            let list = expect_landings(c.request(ClientMsg::ListLandings { check }).await?)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                print_landings(&list);
+            }
+            if list.iter().any(|l| l.state.is_problem()) {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Some(Cmd::Kill { id, cleanup, yes }) => {
             let c = ensure_daemon("cli").await?.client;
             let mut force = false;
@@ -827,6 +896,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let c = ensure_daemon("cli").await?.client;
             if let ReplyBody::Text(t) = c.request(ClientMsg::Diff { id }).await? {
                 // 檔案內容可能含有控制序列（例如改寫剪貼簿的 OSC 52），不能原樣送到終端機
+                println!("{}", agt_proto::text::printable(&t));
+            }
+            Ok(())
+        }
+        Some(Cmd::Sync { id }) => {
+            let c = ensure_daemon("cli").await?.client;
+            if let ReplyBody::Text(t) = c.request(ClientMsg::Sync { id }).await? {
                 println!("{}", agt_proto::text::printable(&t));
             }
             Ok(())
@@ -1418,6 +1494,8 @@ mod tag_tests {
             shared: false,
             tags: v(tags),
             usage: None,
+            overlaps: Vec::new(),
+            landing: Vec::new(),
         }
     }
 

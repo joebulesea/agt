@@ -44,8 +44,10 @@ agt new claude --repo ~/proj --task "登入功能"   # 建立分頁：worktree +
 agt new --template fix --tag urgent    # 套用範本（可省略 Agent）並加標籤
 agt tag <id> [--add 標籤] [--remove 標籤] [--set a,b] [--clear]   # 查看或修改標籤
 agt ls [--tag 標籤] [--json]                    # 列出分頁（可依標籤篩選）
+agt landing [--check] [--json]               # 收尾 pr 開出的 PR 有沒有真的進 base（分頁關閉後也查得到）；有 PR 沒進預期的 base 時 exit 1
 agt attach <id>                        # 開啟 TUI 並切到該分頁
 agt diff <id>
+agt sync <id>                          # 把 base 的最新 commit 合併進分頁的 branch（Agent 忙碌或有未 commit 的變更時拒絕；衝突時還原）
 agt stats [--days 7] [--json]          # 各分頁花在各狀態的時間（忙碌／等待輸入），依 Agent 合計；沒有 token／費用資料
 agt log <id> [--tail N] [--format text|md] [-o 檔案] [--raw --force]   # 匯出終端機紀錄（去掉控制序列；--raw 輸出原始位元組，需搭配 -o）
 agt rename <id> "新任務名稱"
@@ -98,6 +100,13 @@ sel_bg = "darkgray"
 系統通知：分頁變成「等待輸入」、「完成」或「發生錯誤」，且你沒有在看那個分頁時，agt 會發送系統通知。`[general]` 的 `notify = false` 全部關閉，`notify_on` 選擇要通知的狀態：`waiting`、`done`、`error`、`exited`（Agent 行程結束），預設是前三者。Windows 上點擊通知會開新的終端機視窗（優先用 Windows Terminal，沒有則開新的 console）執行 `agt attach <id>` 並切到該分頁；需要 daemon 還在執行，通知進了通知中心後 daemon 若已重新啟動則點了沒反應。
 
 TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`t` 編輯標籤、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`Space` 或 `p` 快速切換器（輸入關鍵字篩選，Enter 跳過去）、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
+
+#### 分頁之間的衝突預警與同步 base
+
+- **PR 有沒有進 base**：收尾選 pr 後，agt 會記下每個 PR（含分組與堆疊的），daemon 每分鐘用 `gh` 查還沒有結果的 PR：合併後確認合併 commit 真的在 `<remote>/<base>`（squash / rebase 合併的 commit 與推出去的不同，所以不是比對 SHA），堆疊 PR 只合進前一組的 branch、沒進 `main` 時標成「進錯 branch」。`agt landing` 列出結果（`--check` 先立刻重查，`--json` 給腳本用，有 PR 沒進預期的 base 時 exit 1）；只有「進錯 branch」與「找不到合併 commit」會發系統通知（沿用 `notify`）。追蹤不綁分頁，分頁關閉、被清掉後仍在，保留 60 天；查詢在你的主 repo 執行 `gh` 與 `git fetch`，不讀分頁的 worktree，沙箱分頁也一樣。需要 `gh` 已登入；查詢失敗（離線、未登入）會退避重試，原因顯示在 `agt landing`。側欄在分頁多一行：沒進預期的 base 時紅字 `⚠ PR 沒進 main：two`，PR 被關閉時黃字 `✗ PR 已關閉：one`，全部進了 base 時綠字 `✓ PR 已進 main`（只顯示 24 小時），堆疊 PR 只進了一部分時灰字 `… PR 已進 main：1/2`；PR 都還開著時不顯示。`agt ls --json` 的 `landing` 有完整資料。PR 還沒合併時也會顯示 CI：失敗紅字 `✗ CI 失敗：clippy, test`（並發系統通知，只通知失敗）、執行中灰字 `… CI 執行中`、全部通過綠字 `✓ CI 通過`；`agt landing` 在還沒合併的 PR 後面列出 CI 狀態。CI 與「有沒有進 base」分開查，查不到時維持上次的狀態。
+- **衝突預警**：同一個 repo 開了好幾個分頁時，daemon 會定期（跟 git 狀態同一個輪詢）比對各分頁動過的檔案——已 commit（`base...HEAD`）、未 commit 的修改、未追蹤的檔案都算，`.agt/` 底下的說明檔不算。兩個分頁動了同一個檔案時，側欄多一行黃字 `⚠ 與 a3f 重疊（3 檔）`（和多個分頁重疊時列出各分頁的短 id），`agt ls` 的 Branch 欄也會加上同樣的標記，`agt ls --json` 的 `overlaps` 有完整的檔案清單（每個分頁最多 20 個）。`--share` 共用同一個 worktree 的分頁不算重疊。提醒的是「可能衝突」，不是真的衝突：只是動到同一個檔案，不一定改到同一行。
+- **落後 base**：分頁的 branch 落後 base 時，側欄的 branch 行在 `+N` 後面多一個 `↓N`（落後幾個 commit；比對的是本機的 base branch，不會自動 fetch）。
+- **同步**：`Ctrl+A` → `s`（或 `agt sync <id>`）把 base 的最新 commit 合併進分頁的 branch（`git merge`，不改寫歷史，branch 已經 push 或開了 PR 也安全）。Agent 正在工作（執行中／思考中，含共用同一個 worktree 的分頁）或 worktree 有未 commit 的變更時拒絕；發生衝突時會 `merge --abort` 還原，worktree 維持原狀，並列出衝突的檔案，讓你先請 Agent 處理或手動合併。
 
 #### diff 視窗
 

@@ -1277,6 +1277,127 @@ fn preview_shows_which_group_a_stacked_group_follows() {
     assert!(p.contains("[one] 加入 one（1 個路徑）"), "{p}");
 }
 
+#[test]
+fn stack_guard_warns_about_merge_order_only_for_stacked_groups() {
+    let (repo, _w, wt, _b) = stacked_worktree();
+    let p = preview(repo.path(), &wt, false, "ask", false);
+    assert!(p.contains("堆疊 PR：請由前往後合併（one → two"), "{p}");
+    // 合併進 base 時不開 PR，不需要這段提醒
+    let m = preview(repo.path(), &wt, true, "merge", false);
+    assert!(!m.contains("堆疊 PR"), "{m}");
+    // 沒有 AFTER 的分組沒有提醒
+    let g = load_groups(&wt).unwrap();
+    let plain: Vec<_> = g
+        .into_iter()
+        .map(|mut g| {
+            g.after = None;
+            g
+        })
+        .collect();
+    assert!(groups::stack_guard_note(&plain, "main").is_none());
+}
+
+#[test]
+fn stacked_pr_body_starts_with_a_banner_and_keeps_the_body() {
+    let b = groups::stacked_pr_body("one", "task-one", "main", Some("做了什麼"));
+    assert!(b.starts_with("> ⚠ **堆疊 PR**"), "{b}");
+    assert!(b.contains("`task-one`") && b.contains("`main`"), "{b}");
+    assert!(b.ends_with("做了什麼"), "{b}");
+    let only = groups::stacked_pr_body("one", "task-one", "main", None);
+    assert!(only.starts_with("> ⚠") && !only.contains("做了什麼"));
+}
+
+// ---- 合併後確認進了 base（landing）----
+
+const OID: &str = "0123456789abcdef0123456789abcdef01234567";
+
+fn landing_of(line: &str, in_base: bool) -> Result<Landing> {
+    classify(line, "main", |_| Ok(in_base))
+}
+
+#[test]
+fn landing_classifies_pr_states() {
+    assert_eq!(landing_of("OPEN main ", false).unwrap(), Landing::Open);
+    assert_eq!(landing_of("CLOSED main ", false).unwrap(), Landing::Closed);
+    // squash / rebase：合併 commit 與推出去的不同，只要它在 base 裡就算進去
+    assert_eq!(
+        landing_of(&format!("MERGED main {OID}"), true).unwrap(),
+        Landing::Landed
+    );
+    assert_eq!(
+        landing_of(&format!("MERGED main {OID}"), false).unwrap(),
+        Landing::Missing
+    );
+    assert_eq!(landing_of("MERGED main ", true).unwrap(), Landing::Missing);
+    // 堆疊 PR 合進前一組的 branch：不是 main，不必再查 git
+    let r = classify(&format!("MERGED agt/t-one {OID}"), "main", |_| {
+        panic!("base 不符時不該查 git")
+    });
+    assert_eq!(r.unwrap(), Landing::WrongBase("agt/t-one".into()));
+}
+
+#[test]
+fn landing_rejects_malformed_gh_output() {
+    for bad in [
+        "",
+        "MERGED",
+        "WEIRD main ",
+        "MERGED main nothex",
+        "MERGED main 0123",
+        "MERGED -x ",
+        "MERGED a..b ",
+        "MERGED ma\u{1b}in ",
+        &format!("MERGED main {OID} extra"),
+    ] {
+        assert!(landing_of(bad, true).is_err(), "{bad:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn output_timeout_kills_a_hung_command_and_returns_normal_output() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+    let mut c = Command::new("sleep");
+    c.arg("30");
+    let t = Instant::now();
+    let e = exec::output_timeout(c, Duration::from_millis(200)).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+    assert!(t.elapsed() < Duration::from_secs(5));
+    // 正常結束：輸出完整（包含大量輸出，不會塞住管線）
+    let mut c = Command::new("sh");
+    c.args(["-c", "yes x | head -c 300000; echo err >&2; exit 3"]);
+    let o = exec::output_timeout(c, Duration::from_secs(10)).unwrap();
+    assert_eq!(o.status.code(), Some(3));
+    assert_eq!(o.stdout.len(), 300000);
+    assert_eq!(String::from_utf8_lossy(&o.stderr).trim(), "err");
+}
+
+#[test]
+fn parse_ci_reads_state_and_sanitizes_failed_names() {
+    let ok = |l: &str| parse_ci(l).unwrap();
+    assert_eq!(ok("none\t").ci, Ci::None);
+    assert_eq!(ok("pending\t").ci, Ci::Pending);
+    assert_eq!(ok("success").ci, Ci::Success); // 沒有 tab 也接受
+    let f = ok("failure\ttest (windows-latest), clippy");
+    assert_eq!(
+        (f.ci, f.failed.as_str()),
+        (Ci::Failure, "test (windows-latest), clippy")
+    );
+    // 名稱不可信：控制字元換成空白、限制長度
+    let f = ok("failure\ta\u{1b}[31m\nb");
+    assert!(
+        !f.failed.contains(|c: char| c.is_control()),
+        "{:?}",
+        f.failed
+    );
+    let long = format!("failure\t{}", "x".repeat(500));
+    assert_eq!(ok(&long).failed.chars().count(), 120);
+    for bad in ["", "weird\t", "FAILURE\t"] {
+        assert!(parse_ci(bad).is_none(), "{bad:?}");
+    }
+}
+
 // ---- 收尾檢查（finish_check）----
 
 #[test]
@@ -1622,4 +1743,93 @@ fn rest_follows_the_snapshot_group_and_refuses_unchained_snapshots() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("都有它們的 SNAPSHOT"), "{e}");
+}
+
+#[test]
+fn changed_files_unions_committed_uncommitted_and_untracked() {
+    let repo = init_repo();
+    let root = repo.path();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("w1");
+    add_worktree(root, &wt, "agt/test/cf-000001", "main").unwrap();
+    assert!(changed_files(root, &wt, "main").unwrap().is_empty());
+
+    std::fs::write(wt.join("committed.txt"), "c\n").unwrap();
+    git(&wt, &["add", "."]).unwrap();
+    git(&wt, &["commit", "-q", "-m", "c"]).unwrap();
+    std::fs::write(wt.join("a.txt"), "changed\n").unwrap(); // 已追蹤、未 commit
+    std::fs::write(wt.join("新增 檔案.txt"), "u\n").unwrap(); // 未追蹤，檔名含中文與空白
+    std::fs::create_dir_all(wt.join(".agt")).unwrap();
+    std::fs::write(wt.join(".agt/COMMIT_MSG"), "x\n").unwrap(); // agt 自己的說明檔不算
+
+    let files: Vec<String> = changed_files(root, &wt, "main")
+        .unwrap()
+        .into_iter()
+        .collect();
+    assert_eq!(files, ["a.txt", "committed.txt", "新增 檔案.txt"]);
+}
+
+#[test]
+fn changed_files_ignores_what_base_changed_after_branching() {
+    let repo = init_repo();
+    let root = repo.path();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("w1");
+    add_worktree(root, &wt, "agt/test/cf-000002", "main").unwrap();
+    // base 之後多了 commit：用 base...HEAD（merge-base），不能把它算成這個分頁改的
+    std::fs::write(root.join("on-main.txt"), "m\n").unwrap();
+    git(root, &["add", "."]).unwrap();
+    git(root, &["commit", "-q", "-m", "m"]).unwrap();
+    assert!(changed_files(root, &wt, "main").unwrap().is_empty());
+}
+
+#[test]
+fn sync_with_base_merges_refuses_dirty_and_aborts_on_conflict() {
+    let repo = init_repo();
+    let root = repo.path();
+    let wts = tempfile::tempdir().unwrap();
+    let wt = wts.path().join("w1");
+    add_worktree(root, &wt, "agt/test/sy-000001", "main").unwrap();
+
+    // 已同步：不動
+    assert!(sync_with_base(root, &wt, "main").unwrap().contains("已經"));
+
+    // base 前進，分頁落後
+    std::fs::write(root.join("on-main.txt"), "m\n").unwrap();
+    git(root, &["add", "."]).unwrap();
+    git(root, &["commit", "-q", "-m", "m"]).unwrap();
+    assert_eq!(status(root, &wt, "main").unwrap().behind, 1);
+
+    // 有未 commit 的變更：拒絕，內容不變
+    std::fs::write(wt.join("a.txt"), "local\n").unwrap();
+    assert!(matches!(
+        sync_with_base(root, &wt, "main"),
+        Err(GitError::Dirty(_))
+    ));
+    assert!(!wt.join("on-main.txt").exists());
+    git(&wt, &["checkout", "--", "a.txt"]).unwrap();
+
+    // 乾淨：合併成功
+    let msg = sync_with_base(root, &wt, "main").unwrap();
+    assert!(msg.contains('1'), "{msg}");
+    assert!(wt.join("on-main.txt").exists());
+    assert_eq!(status(root, &wt, "main").unwrap().behind, 0);
+
+    // 衝突：還原，worktree 乾淨、HEAD 不變
+    std::fs::write(root.join("a.txt"), "main side\n").unwrap();
+    git(root, &["commit", "-q", "-am", "main edit"]).unwrap();
+    std::fs::write(wt.join("a.txt"), "branch side\n").unwrap();
+    git(&wt, &["commit", "-q", "-am", "branch edit"]).unwrap();
+    let head = git(&wt, &["rev-parse", "HEAD"]).unwrap();
+    match sync_with_base(root, &wt, "main") {
+        Err(GitError::Conflict(m)) => assert!(m.contains("a.txt"), "{m}"),
+        other => panic!("應該回報衝突：{other:?}"),
+    }
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert!(!is_dirty_wt(root, &wt, true).unwrap());
+    assert!(
+        !git(&wt, &["status", "--porcelain=v1"])
+            .unwrap()
+            .contains("UU")
+    );
 }
