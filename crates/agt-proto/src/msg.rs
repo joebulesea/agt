@@ -157,7 +157,8 @@ pub enum ReplyBody {
         #[serde(default)]
         config_error: Option<String>,
     },
-    Session(SessionInfo),
+    // 包起來：SessionInfo 比其他變體大很多（clippy::large_enum_variant）；序列化結果不變
+    Session(Box<SessionInfo>),
     Sessions(Vec<SessionInfo>),
     Text(String),
     Found(bool),
@@ -189,7 +190,7 @@ pub enum ServerMsg {
         dirty: bool,
     },
     SessionUpdated {
-        session: SessionInfo,
+        session: Box<SessionInfo>,
     },
     SessionRemoved {
         id: String,

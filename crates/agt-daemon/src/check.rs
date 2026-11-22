@@ -113,7 +113,10 @@ pub fn lint(
         }
         if a.sandboxed()
             && a.check_command.is_empty()
-            && cfg.repos.values().any(|r| r.finish_check.is_some() || r.auto_check.is_some())
+            && cfg
+                .repos
+                .values()
+                .any(|r| r.finish_check.is_some() || r.auto_check.is_some())
         {
             w.push(format!(
                 "agents.{name}：沙箱 Agent 沒有設定 check_command，收尾檢查（finish_check）與自動檢查（auto_check）會略過（agt 不在主機上執行沙箱 Agent 寫的程式碼）"

@@ -315,10 +315,14 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
     match req.msg {
         ClientMsg::Hello { .. } => reply(out, req_id, Ok(ReplyBody::Ok)),
         ClientMsg::CreateSession(c) => {
-            blocking!(|d: &Arc<Daemon>| d.create(c).map(ReplyBody::Session))
+            blocking!(|d: &Arc<Daemon>| d.create(c).map(|s| ReplyBody::Session(Box::new(s))))
         }
         ClientMsg::ListSessions => reply(out, req_id, Ok(ReplyBody::Sessions(d.list()))),
-        ClientMsg::GetSession { id } => reply(out, req_id, d.get(&id).map(ReplyBody::Session)),
+        ClientMsg::GetSession { id } => reply(
+            out,
+            req_id,
+            d.get(&id).map(|s| ReplyBody::Session(Box::new(s))),
+        ),
         ClientMsg::Attach { id } => {
             let r = attach(d, out, st, &id);
             reply(out, req_id, r);
@@ -368,12 +372,18 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
             blocking!(|d: &Arc<Daemon>| d.finish_preview(&id, &action).map(ReplyBody::Text))
         }
         ClientMsg::Diff { id } => blocking!(|d: &Arc<Daemon>| d.diff(&id).map(ReplyBody::Text)),
-        ClientMsg::Rename { id, task } => {
-            reply(out, req_id, d.rename(&id, &task).map(ReplyBody::Session))
-        }
-        ClientMsg::SetTags { id, tags } => {
-            reply(out, req_id, d.set_tags(&id, &tags).map(ReplyBody::Session))
-        }
+        ClientMsg::Rename { id, task } => reply(
+            out,
+            req_id,
+            d.rename(&id, &task)
+                .map(|s| ReplyBody::Session(Box::new(s))),
+        ),
+        ClientMsg::SetTags { id, tags } => reply(
+            out,
+            req_id,
+            d.set_tags(&id, &tags)
+                .map(|s| ReplyBody::Session(Box::new(s))),
+        ),
         ClientMsg::Scroll { id, delta } => {
             let r = d.resolve(&id).map(|id| {
                 if let Some(s) = d.session(&id) {
@@ -390,7 +400,9 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
             reply(out, req_id, r);
         }
         ClientMsg::Restart { id, fresh } => {
-            blocking!(|d: &Arc<Daemon>| d.restart(&id, fresh).map(ReplyBody::Session))
+            blocking!(|d: &Arc<Daemon>| d
+                .restart(&id, fresh)
+                .map(|s| ReplyBody::Session(Box::new(s))))
         }
         ClientMsg::Gc { prune } => blocking!(|d: &Arc<Daemon>| d.gc(prune).map(ReplyBody::Gc)),
         ClientMsg::DaemonStatus => reply(out, req_id, Ok(ReplyBody::Daemon(d.info()))),
