@@ -3,6 +3,7 @@
 use crate::*;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 // 信任邊界：worktree 的內容（含它的 `.git`）是 Agent 可寫、不可信的，尤其是在容器 / 沙箱中執行的 Agent。
 // 對 worktree 執行 git 一律走 `git_wt`：先確認 `.git` 是指向主 repo 登記的 gitdir 的檔案，
@@ -26,6 +27,50 @@ pub(crate) fn command(dir: &Path) -> Command {
         c.creation_flags(0x0800_0000);
     }
     c
+}
+
+/// 在另一個執行緒把管線讀完。
+fn drain<R: std::io::Read + Send + 'static>(p: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = vec![];
+        if let Some(mut p) = p {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+/// 執行指令並等它結束，超過 `limit` 就終止並回傳 `TimedOut`。stdin 接空，stdout / stderr 另開執行緒讀，
+/// 輸出很多時不會因為管線塞滿而卡住。背景輪詢用：`gh` 或 `git fetch` 卡在網路上時不能拖住整個輪詢。
+pub(crate) fn output_timeout(mut c: Command, limit: Duration) -> std::io::Result<Output> {
+    let mut child = c
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // 讀取執行緒在管線關閉後自己結束，不等它
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("超過 {} 秒沒有結束，已終止", limit.as_secs()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
 }
 
 pub(crate) fn run_raw(dir: &Path, args: &[&str]) -> Result<Output> {

@@ -6,7 +6,7 @@ use agt_git::GitError;
 use agt_proto::sync::{MutexExt, RwLockExt};
 use agt_proto::{
     AgentStatus, CheckInfo, CheckState, CreateSession, FinishAction, GcItem, MergeStrategy,
-    ServerMsg, SessionInfo, codes,
+    Overlap, ServerMsg, SessionInfo, codes,
 };
 use agt_store::{LOG_MAX_BYTES, LogWriter, SessionRow, Store};
 use serde_json::json;
@@ -22,6 +22,8 @@ mod close;
 mod create;
 mod finish;
 mod gc;
+mod landing;
+mod overlap;
 mod session;
 mod usage;
 
@@ -140,10 +142,14 @@ pub struct Daemon {
     auto_checking: Mutex<std::collections::HashSet<String>>,
     /// 每個分頁上次輪詢 git 的時間與當時的狀態（見 [`gc::should_poll_git`]）。
     git_polls: Mutex<HashMap<String, (Instant, AgentStatus)>>,
+    /// 每個分頁動過的檔案（輪詢 git 時更新），用來偵測分頁之間的重疊（見 [`overlap`]）。
+    changed_files: Mutex<HashMap<String, std::collections::BTreeSet<String>>>,
     /// 每個分頁上次讀到的 `.agt/usage.json` 修改時間（見 [`usage`]）。
     usage_seen: Mutex<HashMap<String, std::time::SystemTime>>,
     /// 用量達到 80% 的通知紀錄（每個分頁、每個額度時間窗只通知一次）。
     usage_alerts: Mutex<usage::AlertState>,
+    /// 檢查 PR 有沒有進 base 失敗後的重試時間與連續失敗次數（key = repo 路徑、branch）。
+    landing_retry: Mutex<HashMap<(String, String), (Instant, u32)>>,
     pub events: broadcast::Sender<ServerMsg>,
     pub ui_clients: AtomicUsize,
     last_activity: Mutex<Instant>,
@@ -178,6 +184,8 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         shared: r.shared,
         tags: r.tags.clone(),
         usage: None,
+        overlaps: Vec::new(),
+        landing: Vec::new(),
     }
 }
 
@@ -215,6 +223,17 @@ impl Daemon {
                 },
             );
         }
+        // 收尾開出的 PR 有沒有進 base：帶進還開著的分頁（側欄顯示用）
+        match store.landings(false) {
+            Ok(rows) => {
+                for r in rows {
+                    if let Some(e) = entries.get_mut(&r.session_id) {
+                        e.info.landing.push(landing::to_info(r));
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("讀取追蹤中的 PR 失敗：{e}"),
+        }
         // 已關閉分頁的事件與紀錄保留一段時間後清掉（可能含有 Agent 回報的內容）
         match store.prune_closed(agt_store::now() - CLOSED_RETENTION_SECS) {
             Ok(n) if n > 0 => tracing::info!("已清除 {n} 個關閉超過 30 天的分頁紀錄"),
@@ -239,8 +258,10 @@ impl Daemon {
             busy: Mutex::new(Default::default()),
             auto_checking: Mutex::new(Default::default()),
             git_polls: Mutex::new(Default::default()),
+            changed_files: Mutex::new(Default::default()),
             usage_seen: Mutex::new(Default::default()),
             usage_alerts: Mutex::new(Default::default()),
+            landing_retry: Mutex::new(Default::default()),
             events,
             ui_clients: AtomicUsize::new(0),
             last_activity: Mutex::new(Instant::now()),

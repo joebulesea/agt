@@ -63,6 +63,8 @@ crates/agt-tui/src/app/
 - 可以串成一條鏈（a ← b ← c）；不能接在自己、`rest` 後面，也不能形成循環。
 - 那組後來又追加了 commit（例如再次收尾 pr）：這組會多一個 merge commit 把那組的新內容併進來，不改寫歷史、不需要 force push。
 - `AFTER` 指向的組已經處理完（說明檔被刪掉）也可以，只要那組的 branch 還在；branch 不在時收尾會停下並說明。
+- 堆疊 PR 防護：收尾 pr 的預覽與結果會提醒「由前往後合併，每合一個先確認下一個 PR 的 base 已改成 base branch，且 base 真的包含那組的內容」；堆疊的組的 PR 說明最前面會加一段警示橫幅。只提醒，不阻擋收尾。
+- 收尾 pr 後，agt 會追蹤這些 PR 有沒有真的進 base：用 `agt landing` 查，堆疊 PR 只合進前一組的 branch 時會標成「進錯 branch」並通知。
 
 ## 規則
 

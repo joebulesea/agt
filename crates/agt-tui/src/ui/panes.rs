@@ -201,17 +201,52 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
             );
             y += 1;
         }
+        // 收尾開出的 PR 有沒有進 base（異常紅字、完成綠字 24 小時、堆疊進度灰字）
+        if let Some(l) = s.landing_label(now)
+            && y < bottom
+        {
+            let color = match l.level {
+                LandingLevel::Problem => theme().red,
+                LandingLevel::Done => theme().green,
+                LandingLevel::Notice => theme().yellow,
+                LandingLevel::Progress => theme().gray,
+            };
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&l.text, w.saturating_sub(6)),
+                Style::new().fg(color).patch(row_style),
+            );
+            y += 1;
+        }
+        // 與其他分頁動了同一個檔案
+        if let Some(label) = s.overlap_label()
+            && y < bottom
+        {
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&label, w.saturating_sub(6)),
+                Style::new().fg(theme().yellow).patch(row_style),
+            );
+            y += 1;
+        }
         // 第二行：branch +N 或「無 worktree」；有 auto_commit 的 Agent 在行尾加「auto」
         if y < bottom {
             let auto = app.ui.auto_commit_agents.contains(&s.agent);
             let auto_tag = if auto { " auto" } else { "" };
             let detail = match &s.branch {
                 Some(b) => {
-                    let ahead = if s.ahead > 0 {
-                        format!(" +{}", s.ahead)
-                    } else {
-                        String::new()
-                    };
+                    // +N 領先 base；↓N 落後 base（按 s 同步）
+                    let mut ahead = String::new();
+                    if s.ahead > 0 {
+                        ahead.push_str(&format!(" +{}", s.ahead));
+                    }
+                    if s.behind > 0 {
+                        ahead.push_str(&format!(" ↓{}", s.behind));
+                    }
                     let room = w.saturating_sub(6 + ahead.width() + auto_tag.width());
                     format!("{}{ahead}", truncate(b, room))
                 }

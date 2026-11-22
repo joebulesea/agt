@@ -1,6 +1,7 @@
 //! worktree 的狀態與 diff。
 
 use crate::*;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -108,4 +109,25 @@ pub fn diff(repo: &Path, worktree: &Path, base: &str) -> Result<String> {
         out.push_str(&untracked);
     }
     Ok(out)
+}
+
+/// 這個 worktree 動過的檔案（相對 repo 根目錄、以 `/` 分隔）：已 commit（`base...HEAD`）、
+/// 未 commit 的修改與未追蹤的檔案的聯集。用來偵測兩個分頁是否改了同一個檔案。
+/// `.agt/` 底下是 agt 自己的說明檔，不算。
+pub fn changed_files(repo: &Path, worktree: &Path, base: &str) -> Result<BTreeSet<String>> {
+    let range = format!("{base}...HEAD");
+    let mut files = BTreeSet::new();
+    for args in [
+        // -z：檔名不被引號跳脫（中文、空白），以 NUL 分隔
+        &["diff", "--name-only", "-z", "--no-ext-diff", &range][..],
+        &["diff", "--name-only", "-z", "--no-ext-diff", "HEAD"][..],
+        &["ls-files", "--others", "--exclude-standard", "-z"][..],
+    ] {
+        for f in git_wt(repo, worktree, args)?.split('\0') {
+            if !f.is_empty() && !f.starts_with(".agt/") {
+                files.insert(f.to_string());
+            }
+        }
+    }
+    Ok(files)
 }

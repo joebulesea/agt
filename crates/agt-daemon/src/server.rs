@@ -365,6 +365,9 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
             d.notify(&session_id, status, message, tool)
                 .map(|_| ReplyBody::Ok),
         ),
+        ClientMsg::ListLandings { check } => {
+            blocking!(|d: &Arc<Daemon>| d.list_landings(check).map(ReplyBody::Landings))
+        }
         ClientMsg::Finish { id, action, force } => {
             blocking!(|d: &Arc<Daemon>| d.finish(&id, action, force).map(ReplyBody::Text))
         }
@@ -372,6 +375,9 @@ fn handle(d: &Arc<Daemon>, out: &Out, st: &mut ConnState, req: Request) {
             blocking!(|d: &Arc<Daemon>| d.finish_preview(&id, &action).map(ReplyBody::Text))
         }
         ClientMsg::Diff { id } => blocking!(|d: &Arc<Daemon>| d.diff(&id).map(ReplyBody::Text)),
+        ClientMsg::Sync { id } => {
+            blocking!(|d: &Arc<Daemon>| d.sync_base(&id).map(ReplyBody::Text))
+        }
         ClientMsg::Rename { id, task } => reply(
             out,
             req_id,

@@ -210,6 +210,20 @@ async fn serve(d: Arc<Daemon>) -> anyhow::Result<()> {
         });
     }
 
+    // 收尾開出的 PR 有沒有進 base：每分鐘查還沒有結果的（失敗的 PR 自己退避重試）。
+    // gh 與 git fetch 會連網，放在 blocking 執行緒。
+    {
+        let d = d.clone();
+        tokio::spawn(async move {
+            let mut t = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                t.tick().await;
+                let d = d.clone();
+                let _ = tokio::task::spawn_blocking(move || d.poll_landing(false)).await;
+            }
+        });
+    }
+
     // 閒置自動關閉
     {
         let d = d.clone();

@@ -212,6 +212,11 @@ impl Daemon {
                     continue;
                 }
             };
+            // 動過哪些檔案：給分頁之間的重疊預警用；失敗（例如 base 被刪）就當作沒有資料
+            match agt_git::changed_files(Path::new(&repo), Path::new(&wt), &base) {
+                Ok(files) => self.note_changed_files(&id, files),
+                Err(e) => tracing::debug!("{id}：無法列出變更的檔案：{e}"),
+            }
             let changed = {
                 let mut entries = self.entries.lock_or_recover();
                 match entries.get_mut(&id) {
@@ -236,6 +241,7 @@ impl Daemon {
                 });
             }
         }
+        self.refresh_overlaps();
     }
 }
 

@@ -8,6 +8,7 @@ impl Daemon {
         self.run_on_close(id);
         self.entries.lock_or_recover().remove(id);
         self.tamper_warned.lock_or_recover().remove(id);
+        self.changed_files.lock_or_recover().remove(id);
         self.busy.lock_or_recover().leave(id);
         // 分頁關閉後紀錄檔就沒有人會看了（每個最多約 100 MB，且可能含有機密）。
         // Windows 上 Agent 剛被結束時檔案可能還開著，刪不掉就留著，只記錄。
