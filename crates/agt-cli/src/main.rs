@@ -10,7 +10,9 @@ mod statusline;
 mod uninstall;
 mod update;
 
-use agt_proto::client::{Client, ClientError, Connected, expect_session, expect_sessions};
+use agt_proto::client::{
+    Client, ClientError, Connected, expect_landings, expect_session, expect_sessions,
+};
 use agt_proto::transport::{self, ENV_SESSION};
 use agt_proto::*;
 use anyhow::{Context, bail};
@@ -71,6 +73,14 @@ enum Cmd {
         /// 只列出有這個標籤的分頁（不分大小寫）
         #[arg(long = "tag", value_name = "標籤")]
         tag: Option<String>,
+    },
+    /// 查看收尾開出的 PR 有沒有進 base（分頁關閉後也查得到）；有 PR 沒進預期的 base 時結束碼是 1
+    Landing {
+        #[arg(long)]
+        json: bool,
+        /// 先立刻重新查一次還沒有結果的 PR（需要 gh 與網路）
+        #[arg(long)]
+        check: bool,
     },
     /// 查看或修改分頁的標籤
     Tag {
@@ -552,6 +562,32 @@ fn print_sessions(list: &[SessionInfo]) {
     }
 }
 
+fn print_landings(list: &[LandingInfo]) {
+    if list.is_empty() {
+        println!("（沒有追蹤中的 PR；收尾選 pr 之後才會出現）");
+        return;
+    }
+    for l in list {
+        let (mark, text) = match l.state {
+            LandingState::Open => ("…", format!("等待合併（目標 {}）", l.base)),
+            LandingState::Landed => ("✓", format!("已進 {}", l.base)),
+            LandingState::WrongBase => ("⚠", format!("沒進 {}：{}", l.base, l.detail)),
+            LandingState::Missing => ("⚠", format!("沒進 {}：{}", l.base, l.detail)),
+            LandingState::Closed => ("✗", "PR 已關閉，沒有合併".to_string()),
+        };
+        // 還沒有結果時，detail 可能是上次檢查失敗的原因
+        let note = if l.state == LandingState::Open && !l.detail.is_empty() {
+            format!("（{}）", l.detail)
+        } else {
+            String::new()
+        };
+        println!(
+            "{mark} {} [{}] {}  {}  {text}{note}",
+            l.short_id, l.name, l.task, l.branch
+        );
+    }
+}
+
 const NO_GIT: &str = "缺少 git 2.20 以上（建立 worktree 需要），無法開啟 agt。\
 安裝後重新執行 agt（或雙擊 agt.exe）會再檢查一次。";
 
@@ -759,6 +795,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&list)?);
             } else {
                 print_sessions(&list);
+            }
+            Ok(())
+        }
+        Some(Cmd::Landing { json, check }) => {
+            let c = ensure_daemon("cli").await?.client;
+            let list = expect_landings(c.request(ClientMsg::ListLandings { check }).await?)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                print_landings(&list);
+            }
+            if list.iter().any(|l| l.state.is_problem()) {
+                std::process::exit(1);
             }
             Ok(())
         }
@@ -1437,6 +1486,7 @@ mod tag_tests {
             tags: v(tags),
             usage: None,
             overlaps: Vec::new(),
+            landing: Vec::new(),
         }
     }
 

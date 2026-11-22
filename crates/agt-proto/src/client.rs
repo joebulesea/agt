@@ -185,3 +185,10 @@ pub fn expect_sessions(r: ReplyBody) -> Result<Vec<SessionInfo>, ClientError> {
         _ => Err(ClientError::Unexpected),
     }
 }
+
+pub fn expect_landings(r: ReplyBody) -> Result<Vec<LandingInfo>, ClientError> {
+    match r {
+        ReplyBody::Landings(l) => Ok(l),
+        _ => Err(ClientError::Unexpected),
+    }
+}

@@ -147,7 +147,30 @@ pub struct SessionInfo {
     /// 由 daemon 定期比對，只存在記憶體；沒有重疊時是空的。
     #[serde(default)]
     pub overlaps: Vec<Overlap>,
+    /// 這個分頁收尾開出的 PR 有沒有進 base（見 `LandingInfo`；完整清單用 `agt landing`）。
+    /// 由 daemon 從資料庫帶入，分頁關閉後只剩 `agt landing` 查得到。
+    #[serde(default)]
+    pub landing: Vec<LandingInfo>,
 }
+
+/// 側欄顯示 PR 進度的一行（見 [`SessionInfo::landing_label`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandingLabel {
+    pub text: String,
+    pub level: LandingLevel,
+}
+
+/// 顯示的顏色：異常（紅）、完成（綠）、一般提示（黃）、進行中（灰）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LandingLevel {
+    Problem,
+    Done,
+    Notice,
+    Progress,
+}
+
+/// 「已進 base」的提示顯示多久（從查到結果算起）。
+pub const LANDED_SHOW_SECS: i64 = 24 * 3600;
 
 /// 與另一個分頁重疊的檔案。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,6 +204,78 @@ pub struct CheckInfo {
     pub detail: String,
 }
 
+/// 收尾開出的 PR 之後有沒有進 base。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LandingState {
+    /// PR 還開著，或還沒查到結果。
+    Open,
+    /// 已合併，內容在 base 裡。
+    Landed,
+    /// 已合併，但合進的不是預期的 base（例如堆疊 PR 只進了前一組的 branch）。
+    WrongBase,
+    /// PR 被關閉，沒有合併。
+    Closed,
+    /// 已合併到預期的 base，但合併 commit 不在 base 裡。
+    Missing,
+}
+
+impl LandingState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LandingState::Open => "open",
+            LandingState::Landed => "landed",
+            LandingState::WrongBase => "wrongbase",
+            LandingState::Closed => "closed",
+            LandingState::Missing => "missing",
+        }
+    }
+
+    /// 要提醒使用者的異常：內容沒進預期的 base。
+    pub fn is_problem(self) -> bool {
+        matches!(self, LandingState::WrongBase | LandingState::Missing)
+    }
+
+    /// 已有結果，不必再查。
+    pub fn is_final(self) -> bool {
+        self != LandingState::Open
+    }
+}
+
+impl std::str::FromStr for LandingState {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        Ok(match s {
+            "open" => LandingState::Open,
+            "landed" => LandingState::Landed,
+            "wrongbase" => LandingState::WrongBase,
+            "closed" => LandingState::Closed,
+            "missing" => LandingState::Missing,
+            other => return Err(format!("不認得的 landing 狀態：{other}")),
+        })
+    }
+}
+
+/// 追蹤中的一個 PR（`agt landing`）。不綁分頁：分頁關閉後仍在。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LandingInfo {
+    pub short_id: String,
+    pub task: String,
+    pub repo_path: String,
+    /// 組名；沒有分組時是 `pr`。
+    pub name: String,
+    pub branch: String,
+    /// 內容最後應該進到的 branch。
+    pub base: String,
+    pub state: LandingState,
+    /// 說明：進錯的 branch、或上次檢查失敗的原因（已清除控制字元、限制長度）。
+    #[serde(default)]
+    pub detail: String,
+    pub created_at: i64,
+    #[serde(default)]
+    pub checked_at: Option<i64>,
+}
+
 impl SessionInfo {
     /// 狀態和 `before` 不同時，把 `status_since` 更新成現在。
     pub fn note_status_change(&mut self, before: AgentStatus) {
@@ -201,6 +296,61 @@ impl SessionInfo {
 
     pub fn has_worktree(&self) -> bool {
         self.worktree.is_some()
+    }
+
+    /// 側欄的 PR 進度（一行）。異常（沒進預期的 base）一直顯示；全部進了 base 只顯示
+    /// [`LANDED_SHOW_SECS`]；PR 都還開著時不顯示（避免吵）；堆疊的 PR 只進了一部分時顯示進度。
+    pub fn landing_label(&self, now: i64) -> Option<LandingLabel> {
+        let ls = &self.landing;
+        let names = |f: &dyn Fn(&LandingInfo) -> bool| {
+            ls.iter()
+                .filter(|l| f(l))
+                .map(|l| l.name.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        };
+        if let Some(first) = ls.iter().find(|l| l.state.is_problem()) {
+            return Some(LandingLabel {
+                text: format!(
+                    "⚠ PR 沒進 {}：{}",
+                    first.base,
+                    names(&|l| l.state.is_problem())
+                ),
+                level: LandingLevel::Problem,
+            });
+        }
+        if ls.iter().any(|l| l.state == LandingState::Closed) {
+            return Some(LandingLabel {
+                text: format!(
+                    "✗ PR 已關閉：{}",
+                    names(&|l| l.state == LandingState::Closed)
+                ),
+                level: LandingLevel::Notice,
+            });
+        }
+        let landed = ls
+            .iter()
+            .filter(|l| l.state == LandingState::Landed)
+            .count();
+        let recent = ls.iter().any(|l| {
+            l.state == LandingState::Landed
+                && l.checked_at.is_some_and(|t| now - t < LANDED_SHOW_SECS)
+        });
+        if landed == 0 || !recent {
+            return None;
+        }
+        let base = &ls[0].base;
+        Some(if landed == ls.len() {
+            LandingLabel {
+                text: format!("✓ PR 已進 {base}"),
+                level: LandingLevel::Done,
+            }
+        } else {
+            LandingLabel {
+                text: format!("… PR 已進 {base}：{landed}/{}", ls.len()),
+                level: LandingLevel::Progress,
+            }
+        })
     }
 
     /// 與其他分頁重疊時的一行說明（側欄與 `agt ls` 用），例如 `⚠ 與 a3f 重疊（3 檔）`。
@@ -358,4 +508,82 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod landing_label_tests {
+    use super::*;
+
+    fn li(name: &str, state: LandingState, checked: Option<i64>) -> LandingInfo {
+        LandingInfo {
+            short_id: "aaaaaa".into(),
+            task: "t".into(),
+            repo_path: "/r".into(),
+            name: name.into(),
+            branch: format!("agt/t-{name}"),
+            base: "main".into(),
+            state,
+            detail: String::new(),
+            created_at: 0,
+            checked_at: checked,
+        }
+    }
+
+    fn info(landing: Vec<LandingInfo>) -> SessionInfo {
+        let mut s: SessionInfo = serde_json::from_str(
+            r#"{"id":"i","short_id":"s","agent":"a","task":"t","status":"Running"}"#,
+        )
+        .unwrap();
+        s.landing = landing;
+        s
+    }
+
+    #[test]
+    fn label_shows_problems_first_and_hides_pending() {
+        use LandingState::*;
+        let now = 1_000_000;
+        assert!(info(vec![]).landing_label(now).is_none());
+        // 都還開著：不顯示
+        assert!(info(vec![li("a", Open, None)]).landing_label(now).is_none());
+        let l = info(vec![
+            li("a", Landed, Some(now)),
+            li("b", WrongBase, Some(now)),
+        ])
+        .landing_label(now)
+        .unwrap();
+        assert_eq!(
+            (l.text.as_str(), l.level),
+            ("⚠ PR 沒進 main：b", LandingLevel::Problem)
+        );
+        let l = info(vec![li("a", Closed, Some(now))])
+            .landing_label(now)
+            .unwrap();
+        assert_eq!(
+            (l.text.as_str(), l.level),
+            ("✗ PR 已關閉：a", LandingLevel::Notice)
+        );
+    }
+
+    #[test]
+    fn label_shows_progress_and_landed_expires() {
+        use LandingState::*;
+        let now = 1_000_000;
+        let l = info(vec![li("a", Landed, Some(now)), li("b", Landed, Some(now))])
+            .landing_label(now)
+            .unwrap();
+        assert_eq!(
+            (l.text.as_str(), l.level),
+            ("✓ PR 已進 main", LandingLevel::Done)
+        );
+        let l = info(vec![li("a", Landed, Some(now)), li("b", Open, None)])
+            .landing_label(now)
+            .unwrap();
+        assert_eq!(
+            (l.text.as_str(), l.level),
+            ("… PR 已進 main：1/2", LandingLevel::Progress)
+        );
+        // 超過 24 小時後不再顯示
+        let old = info(vec![li("a", Landed, Some(now - LANDED_SHOW_SECS - 1))]);
+        assert!(old.landing_label(now).is_none());
+    }
 }

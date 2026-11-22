@@ -37,6 +37,7 @@ fn session(id: &str) -> SessionInfo {
         tags: vec![],
         usage: None,
         overlaps: Vec::new(),
+        landing: Vec::new(),
     }
 }
 

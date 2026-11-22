@@ -544,7 +544,7 @@ pub fn create_group_prs(
     task: &str,
     groups: Vec<Group>,
     check: Option<GroupCheck>,
-) -> Result<String> {
+) -> Result<(String, Vec<PrTarget>)> {
     let gitdir = trusted_gitdir(repo, worktree)?;
     let groups = with_rest(repo, worktree, base, groups)?;
     let remote = pick_remote(repo, worktree)?;
@@ -564,6 +564,7 @@ pub fn create_group_prs(
         check_groups(repo, worktree, &groups, &built, check)?;
     }
     let mut lines = vec![];
+    let mut targets = vec![];
     for (g, gb) in groups.iter().zip(built) {
         if !gh {
             lines.push(format!(
@@ -603,10 +604,17 @@ pub fn create_group_prs(
             .as_ref()
             .map(|a| format!("（接在 [{a}] 後面，PR base {base_for}）"))
             .unwrap_or_default();
+        let r = r?;
+        // 內容最後要進的是 pr_base，不是堆疊的前一組
+        targets.push(PrTarget {
+            name: g.name.clone(),
+            branch: gb.clone(),
+            base: pr_base.clone(),
+        });
         lines.push(format!(
             "▸ [{}] {title}\n    branch {gb}{stacked}\n    {}",
             g.name,
-            r?.replace('\n', "\n    ")
+            r.replace('\n', "\n    ")
         ));
         if g.name != "rest" {
             let dir = groups_root(worktree).join(&g.name);
@@ -626,7 +634,7 @@ pub fn create_group_prs(
     if let Some(n) = stack_guard_note(&groups, &pr_base) {
         out.push_str(&format!("\n\n{n}"));
     }
-    Ok(out)
+    Ok((out, targets))
 }
 
 /// 堆疊 PR 的合併順序提醒（沒有任何組有 `AFTER` 時回傳 None）。

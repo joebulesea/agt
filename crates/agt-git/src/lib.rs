@@ -17,6 +17,7 @@
 //! | `sensitive` | 收尾前要求確認的敏感路徑 |
 //! | `groups` | `.agt/groups/<名稱>/` 分組收尾：每組獨立 branch、commit 與 PR |
 //! | `guide` | 給 Agent 的收尾規則（`.agt/README.md`）與收尾預覽的提醒 |
+//! | `landing` | PR 合併後確認內容真的進了 base（不是只進堆疊的 branch） |
 //! | `pr` | push 並建立 / 更新 PR（`gh`） |
 
 use thiserror::Error;
@@ -25,6 +26,7 @@ mod exec;
 mod files;
 mod groups;
 mod guide;
+mod landing;
 mod merge;
 mod notes;
 mod pr;
@@ -37,6 +39,7 @@ pub use exec::*;
 pub use files::*;
 pub use groups::*;
 pub use guide::*;
+pub use landing::*;
 pub use merge::*;
 pub use notes::*;
 pub use pr::*;

@@ -138,7 +138,7 @@ impl Daemon {
                 let groups = agt_git::load_groups(Path::new(&wt))?;
                 if !groups.is_empty() {
                     let (check, note) = self.group_check(&info, &repo)?;
-                    let out = agt_git::create_group_prs(
+                    let (out, targets) = agt_git::create_group_prs(
                         Path::new(&repo),
                         Path::new(&wt),
                         &branch,
@@ -153,14 +153,16 @@ impl Daemon {
                         json!({"action": "pr", "groups": true, "check": check.is_some(), "result": out}),
                     );
                     self.store().set_finish_action(&id, "pr")?;
+                    self.track_landings(&info, &repo, &targets);
                     return Ok(with_note(out, note));
                 }
                 // PR 標題：這次 commit 的標題（Agent 寫的 COMMIT_MSG），沒有時用任務名稱
                 let title = subject.unwrap_or_else(|| info.task.clone());
-                let out =
+                let (out, target) =
                     agt_git::create_pr(Path::new(&repo), Path::new(&wt), &branch, &base, &title)?;
                 self.record(&id, "git", json!({"action": "pr", "result": out}));
                 self.store().set_finish_action(&id, "pr")?;
+                self.track_landings(&info, &repo, target.as_slice());
                 Ok(out)
             }
         }

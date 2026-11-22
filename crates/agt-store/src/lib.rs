@@ -74,6 +74,24 @@ ALTER TABLE sessions ADD COLUMN conversation_id TEXT;
     r#"
 ALTER TABLE sessions ADD COLUMN tags TEXT;
 "#,
+    // 5：收尾開出的 PR 之後有沒有進 base（landing）。不綁分頁：分頁關閉、被清掉後仍要能查
+    r#"
+CREATE TABLE landings (
+  id         INTEGER PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  short_id   TEXT NOT NULL,
+  task       TEXT NOT NULL,
+  repo_path  TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  branch     TEXT NOT NULL,
+  base       TEXT NOT NULL,
+  state      TEXT NOT NULL DEFAULT 'open',
+  detail     TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  checked_at INTEGER,
+  UNIQUE (repo_path, branch)
+);
+"#,
 ];
 
 pub fn now() -> i64 {
@@ -105,6 +123,22 @@ pub struct SessionRow {
     /// 目前的對話 ID；NULL = 建立於支援接續對話之前的分頁。
     pub conversation_id: Option<String>,
     pub tags: Vec<String>,
+}
+
+/// 收尾開出的一個 PR，以及它有沒有進 base 的最後檢查結果。`state`：open / landed / wrongbase / closed / missing。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LandingRow {
+    pub session_id: String,
+    pub short_id: String,
+    pub task: String,
+    pub repo_path: String,
+    pub name: String,
+    pub branch: String,
+    pub base: String,
+    pub state: String,
+    pub detail: String,
+    pub created_at: i64,
+    pub checked_at: Option<i64>,
 }
 
 pub struct Store {
@@ -393,6 +427,76 @@ impl Store {
             params![repo_path, setup, now()],
         )?;
         Ok(())
+    }
+
+    /// 記下一個剛開出的 PR 要追蹤。同一個 repo 的同一個 branch 再次收尾時，重設成 open。
+    pub fn upsert_landing(&self, r: &LandingRow) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO landings (session_id, short_id, task, repo_path, name, branch, base, state, detail, created_at, checked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', '', ?8, NULL)
+             ON CONFLICT (repo_path, branch) DO UPDATE SET
+               session_id = ?1, short_id = ?2, task = ?3, name = ?5, base = ?7,
+               state = 'open', detail = '', created_at = ?8, checked_at = NULL",
+            params![
+                r.session_id,
+                r.short_id,
+                r.task,
+                r.repo_path,
+                r.name,
+                r.branch,
+                r.base,
+                r.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 所有追蹤中的 PR，新的在前。`only_open` 為 true 時只列還沒有結果（state = open）的。
+    pub fn landings(&self, only_open: bool) -> Result<Vec<LandingRow>> {
+        let sql = format!(
+            "SELECT session_id, short_id, task, repo_path, name, branch, base, state, detail, created_at, checked_at
+             FROM landings {} ORDER BY created_at DESC, id DESC",
+            if only_open { "WHERE state = 'open'" } else { "" }
+        );
+        let mut st = self.conn.prepare(&sql)?;
+        let rows = st.query_map([], |r| {
+            Ok(LandingRow {
+                session_id: r.get(0)?,
+                short_id: r.get(1)?,
+                task: r.get(2)?,
+                repo_path: r.get(3)?,
+                name: r.get(4)?,
+                branch: r.get(5)?,
+                base: r.get(6)?,
+                state: r.get(7)?,
+                detail: r.get(8)?,
+                created_at: r.get(9)?,
+                checked_at: r.get(10)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// 寫入檢查結果；`detail` 在失敗時是原因（state 維持 open，稍後重試）。
+    pub fn set_landing(
+        &self,
+        repo_path: &str,
+        branch: &str,
+        state: &str,
+        detail: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE landings SET state = ?3, detail = ?4, checked_at = ?5 WHERE repo_path = ?1 AND branch = ?2",
+            params![repo_path, branch, state, detail, now()],
+        )?;
+        Ok(())
+    }
+
+    /// 刪除 `before`（Unix 秒）之前建立的追蹤紀錄。回傳刪除的筆數。
+    pub fn prune_landings(&self, before: i64) -> Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM landings WHERE created_at < ?1", [before])?)
     }
 
     /// 刪除在 `before`（Unix 秒）之前關閉、而且已經沒有 worktree 的分頁，連同它的事件。
@@ -727,6 +831,7 @@ mod tests {
         assert!(MIGRATIONS[0].contains("CREATE TABLE sessions"));
         assert!(MIGRATIONS[1].contains("trusted_setups"));
         assert!(MIGRATIONS[2].contains("conversation_id"));
+        assert!(MIGRATIONS[4].contains("CREATE TABLE landings"));
         assert!(MIGRATIONS.iter().all(|m| !m.trim().is_empty()));
     }
 
@@ -740,6 +845,50 @@ mod tests {
             .unwrap();
         let s = Store::open(&p).unwrap();
         assert_eq!(s.open_sessions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn landings_survive_pruning_the_session_and_reset_on_refinish() {
+        let mut s = Store::open_in_memory().unwrap();
+        let l = |branch: &str, at: i64| LandingRow {
+            session_id: "u1".into(),
+            short_id: "aaaaaa".into(),
+            task: "任務".into(),
+            repo_path: "/r".into(),
+            name: "one".into(),
+            branch: branch.into(),
+            base: "main".into(),
+            created_at: at,
+            ..Default::default()
+        };
+        s.upsert_landing(&l("agt/t-one", 100)).unwrap();
+        s.upsert_landing(&l("agt/t-two", 200)).unwrap();
+        s.set_landing("/r", "agt/t-one", "wrongbase", "合進 agt/t-x")
+            .unwrap();
+        assert_eq!(s.landings(true).unwrap().len(), 1);
+        let all = s.landings(false).unwrap();
+        assert_eq!(all[0].branch, "agt/t-two"); // 新的在前
+        assert_eq!(all[1].state, "wrongbase");
+        assert!(all[1].checked_at.is_some());
+        // 分頁被清掉不影響追蹤紀錄
+        s.insert_session(&row("u1", "aaaaaa")).unwrap();
+        s.end_session("u1", Some("pr")).unwrap();
+        s.prune_closed(i64::MAX).unwrap();
+        assert_eq!(s.landings(false).unwrap().len(), 2);
+        // 再次收尾同一個 branch：重設成 open
+        s.upsert_landing(&l("agt/t-one", 300)).unwrap();
+        let one = s
+            .landings(false)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.branch == "agt/t-one")
+            .unwrap();
+        assert_eq!(
+            (one.state.as_str(), one.detail.as_str(), one.checked_at),
+            ("open", "", None)
+        );
+        assert_eq!(s.prune_landings(250).unwrap(), 1);
+        assert_eq!(s.landings(false).unwrap().len(), 1);
     }
 
     #[test]
