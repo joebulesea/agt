@@ -368,9 +368,9 @@ impl Daemon {
     }
 
     fn publish(&self, info: SessionInfo) {
-        let _ = self
-            .events
-            .send(ServerMsg::SessionUpdated { session: info });
+        let _ = self.events.send(ServerMsg::SessionUpdated {
+            session: Box::new(info),
+        });
     }
 
     /// 所有工作階段結束且沒有 client 連線，經過 `idle_shutdown_secs` 後回傳 true。

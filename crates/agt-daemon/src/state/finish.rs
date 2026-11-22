@@ -258,11 +258,7 @@ impl Daemon {
         let Some(script) = script else {
             return;
         };
-        if !self
-            .auto_checking
-            .lock_or_recover()
-            .insert(info.id.clone())
-        {
+        if !self.auto_checking.lock_or_recover().insert(info.id.clone()) {
             return;
         }
         let running = CheckInfo {
@@ -285,9 +281,7 @@ impl Daemon {
                 Some(r) => r,
                 None => {
                     // 沒有執行（沒有變更、或沙箱 Agent 沒有 check_command）：清掉「執行中」
-                    if let Some(i) =
-                        d.update_if_current(&info.id, generation, |i| i.check = None)
-                    {
+                    if let Some(i) = d.update_if_current(&info.id, generation, |i| i.check = None) {
                         d.publish(i);
                     }
                     return;
@@ -298,7 +292,10 @@ impl Daemon {
                 Err(e) => (false, e.clone()),
             };
             let detail = agt_proto::text::printable_line(
-                text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(""),
+                text.lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or(""),
             )
             .trim()
             .chars()
@@ -325,7 +322,10 @@ impl Daemon {
             if let Some(i) = updated {
                 d.publish(i);
             }
-            let output: String = agt_proto::text::printable(&text).chars().take(8192).collect();
+            let output: String = agt_proto::text::printable(&text)
+                .chars()
+                .take(8192)
+                .collect();
             d.record(
                 &info.id,
                 "check",
@@ -338,7 +338,11 @@ impl Daemon {
                 } else {
                     format!("測試失敗：{detail}")
                 };
-                platform::notify(&format!("agt · {}", info.task), &body, Some(info.id.as_str()));
+                platform::notify(
+                    &format!("agt · {}", info.task),
+                    &body,
+                    Some(info.id.as_str()),
+                );
             }
         });
     }
