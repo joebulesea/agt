@@ -91,6 +91,8 @@ sel_bg = "darkgray"
 
 側欄提問預覽：分頁等待輸入（不是正在看的那個）時，側欄多一行 `? …` 顯示 Agent 在問什麼。分頁很多、想省一行空間時，在 `[general]` 設 `sidebar_prompt = false` 關閉（修改後熱重載）。
 
+自動檢查：使用者設定檔 `[repos."<路徑>"]` 的 `auto_check`（例如 `"cargo test --workspace"`）會在 Agent 完成（狀態變成 Done）後自動在它的 worktree 執行，側欄顯示 `… 測試中`／`✓ 測試通過`／`✗ 測試失敗：<輸出最後一行>` 並發系統通知，完整輸出記在分頁的事件（kind = `check`）。只從使用者設定檔讀取（repo 內 `.agt.toml` 的不會生效）；沙箱 Agent 需要 `check_command`，否則略過；worktree 沒有變更時不執行；Agent 又開始工作時清掉舊結果。
+
 長時間執行提醒：`[general]` 的 `long_running_notify_secs`（預設 0 = 關閉）設為例如 `600`，分頁連續「執行中／思考中」超過 10 分鐘時會通知一次（離開忙碌狀態後重新計時，你正在看的分頁不提醒）。
 
 系統通知：分頁變成「等待輸入」、「完成」或「發生錯誤」，且你沒有在看那個分頁時，agt 會發送系統通知。`[general]` 的 `notify = false` 全部關閉，`notify_on` 選擇要通知的狀態：`waiting`、`done`、`error`、`exited`（Agent 行程結束），預設是前三者。Windows 上點擊通知會開新的終端機視窗（優先用 Windows Terminal，沒有則開新的 console）執行 `agt attach <id>` 並切到該分頁；需要 daemon 還在執行，通知進了通知中心後 daemon 若已重新啟動則點了沒反應。

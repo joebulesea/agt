@@ -176,8 +176,8 @@ impl Daemon {
         info: &SessionInfo,
         repo: &str,
     ) -> OpResult<(Option<CheckFn>, Option<String>)> {
-        let cfg = self.cfg();
-        let script = cfg
+        let script = self
+            .cfg()
             .repo(&self.paths, Path::new(repo))
             .map_err(|e| OpError::new(codes::BAD_REQUEST, e))?
             .finish_check
@@ -185,6 +185,17 @@ impl Daemon {
         let Some(script) = script else {
             return Ok((None, None));
         };
+        self.check_runner(info, script)
+    }
+
+    /// 依 Agent 的執行方式（`check_command`／沙箱／主機 shell）組出執行 `script` 的檢查函式；
+    /// 規則同 [`Self::group_check`]。收尾檢查與自動檢查（`auto_check`）共用。
+    pub(super) fn check_runner(
+        &self,
+        info: &SessionInfo,
+        script: String,
+    ) -> OpResult<(Option<CheckFn>, Option<String>)> {
+        let cfg = self.cfg();
         let agent = cfg.agents.get(&info.agent).cloned().unwrap_or_default();
         let argv: ArgvFn = if !agent.check_command.is_empty() {
             let cmd = agent.check_command.clone();
@@ -224,6 +235,141 @@ impl Daemon {
             r
         };
         Ok((Some(Box::new(check)), None))
+    }
+
+    /// Agent 完成後（狀態變成 Done）自動執行 `[repos] auto_check`：在分頁的 worktree 裡跑，
+    /// 結果寫進 `SessionInfo.check`（側欄顯示）、分頁的 events（kind = "check"），並發系統通知。
+    /// 沒有設定、共用 worktree、沒有任何變更、或已經在執行時什麼都不做。
+    pub(super) fn spawn_auto_check(self: &Arc<Self>, info: &SessionInfo, generation: u64) {
+        let (Some(wt), Some(repo), Some(base)) = (
+            info.worktree.clone(),
+            info.repo_path.clone(),
+            info.base_branch.clone(),
+        ) else {
+            return;
+        };
+        if info.shared {
+            return;
+        }
+        let script = match self.cfg().repo(&self.paths, Path::new(&repo)) {
+            Ok(r) => r.auto_check.filter(|s| !s.trim().is_empty()),
+            Err(_) => None,
+        };
+        let Some(script) = script else {
+            return;
+        };
+        if !self.auto_checking.lock_or_recover().insert(info.id.clone()) {
+            return;
+        }
+        let running = CheckInfo {
+            state: CheckState::Running,
+            detail: String::new(),
+        };
+        match self.update_if_current(&info.id, generation, |i| i.check = Some(running)) {
+            Some(i) => self.publish(i),
+            None => {
+                self.auto_checking.lock_or_recover().remove(&info.id);
+                return;
+            }
+        }
+        let d = self.clone();
+        let info = info.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = d.run_auto_check(&info, &repo, &wt, &base, script);
+            d.auto_checking.lock_or_recover().remove(&info.id);
+            let result = match outcome {
+                Some(r) => r,
+                None => {
+                    // 沒有執行（沒有變更、或沙箱 Agent 沒有 check_command）：清掉「執行中」
+                    if let Some(i) = d.update_if_current(&info.id, generation, |i| i.check = None) {
+                        d.publish(i);
+                    }
+                    return;
+                }
+            };
+            let (ok, text) = match &result {
+                Ok(()) => (true, String::new()),
+                Err(e) => (false, e.clone()),
+            };
+            let detail = agt_proto::text::printable_line(
+                text.lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or(""),
+            )
+            .trim()
+            .chars()
+            .take(120)
+            .collect::<String>();
+            let state = if ok {
+                CheckState::Passed
+            } else {
+                CheckState::Failed
+            };
+            let done = CheckInfo {
+                state,
+                detail: detail.clone(),
+            };
+            // 檢查期間 Agent 又開始工作：結果已過期，不顯示（事件仍照常記錄）
+            let updated = d.update_if_current(&info.id, generation, |i| {
+                if !matches!(
+                    i.status,
+                    AgentStatus::Running | AgentStatus::Thinking | AgentStatus::Starting
+                ) {
+                    i.check = Some(done);
+                }
+            });
+            if let Some(i) = updated {
+                d.publish(i);
+            }
+            let output: String = agt_proto::text::printable(&text)
+                .chars()
+                .take(8192)
+                .collect();
+            d.record(
+                &info.id,
+                "check",
+                json!({"ok": ok, "detail": detail, "output": output}),
+            );
+            let viewers = d.session(&info.id).map_or(0, |s| s.viewers());
+            if d.cfg().general.notify && viewers == 0 {
+                let body = if ok {
+                    "測試通過".to_string()
+                } else {
+                    format!("測試失敗：{detail}")
+                };
+                platform::notify(
+                    &format!("agt · {}", info.task),
+                    &body,
+                    Some(info.id.as_str()),
+                );
+            }
+        });
+    }
+
+    /// 在 worktree 執行自動檢查。沒有變更或不能執行時回傳 None（並記錄原因）。
+    fn run_auto_check(
+        &self,
+        info: &SessionInfo,
+        repo: &str,
+        wt: &str,
+        base: &str,
+        script: String,
+    ) -> Option<Result<(), String>> {
+        let changed = agt_git::status(Path::new(repo), Path::new(wt), base)
+            .map(|s| s.dirty || s.ahead > 0)
+            .unwrap_or(true);
+        if !changed {
+            return None;
+        }
+        match self.check_runner(info, script) {
+            Ok((Some(check), _)) => Some(check("auto", Path::new(wt))),
+            Ok((None, note)) => {
+                self.record(&info.id, "check", json!({"skipped": true, "note": note}));
+                None
+            }
+            Err(e) => Some(Err(e.message)),
+        }
     }
 
     /// Agent 設定了 `auto_commit` 時，收尾前先 commit worktree 中的所有變更

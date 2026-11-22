@@ -113,10 +113,13 @@ pub fn lint(
         }
         if a.sandboxed()
             && a.check_command.is_empty()
-            && cfg.repos.values().any(|r| r.finish_check.is_some())
+            && cfg
+                .repos
+                .values()
+                .any(|r| r.finish_check.is_some() || r.auto_check.is_some())
         {
             w.push(format!(
-                "agents.{name}：沙箱 Agent 沒有設定 check_command，收尾檢查（finish_check）會略過（agt 不在主機上執行沙箱 Agent 寫的程式碼）"
+                "agents.{name}：沙箱 Agent 沒有設定 check_command，收尾檢查（finish_check）與自動檢查（auto_check）會略過（agt 不在主機上執行沙箱 Agent 寫的程式碼）"
             ));
         }
         for (k, v) in &a.env {
@@ -208,10 +211,11 @@ fn collect(
     if let Some(root) = repo {
         let local = root.join(".agt.toml");
         if let Ok(text) = std::fs::read_to_string(&local)
-            && toml::from_str::<RepoConfig>(&text).is_ok_and(|r| r.finish_check.is_some())
+            && toml::from_str::<RepoConfig>(&text)
+                .is_ok_and(|r| r.finish_check.is_some() || r.auto_check.is_some())
         {
             warnings.push(format!(
-                "{}：finish_check 只從使用者設定檔的 [repos.\"<路徑>\"] 讀取，repo 內的 .agt.toml 可能被 Agent 改過，這裡的設定不會生效",
+                "{}：finish_check、auto_check 只從使用者設定檔的 [repos.\"<路徑>\"] 讀取，repo 內的 .agt.toml 可能被 Agent 改過，這裡的設定不會生效",
                 local.display()
             ));
         }

@@ -3,7 +3,7 @@
 use crate::app::{App, CLOSE_ITEMS, Click, ClickHit, Confirm, FINISH_ITEMS, Popup, STRATEGIES};
 use crate::theme::theme;
 use agt_proto::screen::{Color as PColor, Screen, flags};
-use agt_proto::{AgentStatus, SessionInfo};
+use agt_proto::{AgentStatus, CheckState, SessionInfo};
 use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;

@@ -180,6 +180,27 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
             );
             y += 1;
         }
+        // 自動檢查（auto_check）的結果
+        if let Some(c) = &s.check
+            && y < bottom
+        {
+            let (text, color) = match c.state {
+                CheckState::Running => ("… 測試中".to_string(), theme().gray),
+                CheckState::Passed => ("✓ 測試通過".to_string(), theme().green),
+                CheckState::Failed if c.detail.is_empty() => {
+                    ("✗ 測試失敗".to_string(), theme().red)
+                }
+                CheckState::Failed => (format!("✗ 測試失敗：{}", c.detail), theme().red),
+            };
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&text, w.saturating_sub(6)),
+                Style::new().fg(color).patch(row_style),
+            );
+            y += 1;
+        }
         // 第二行：branch +N 或「無 worktree」；有 auto_commit 的 Agent 在行尾加「auto」
         if y < bottom {
             let auto = app.ui.auto_commit_agents.contains(&s.agent);

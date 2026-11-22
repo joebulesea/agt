@@ -81,6 +81,11 @@ pub struct RepoConfig {
     /// 可能被 Agent 改過，不採用（`agt config check` 會提醒）。執行方式見 Agent 的 `check_command`。
     #[serde(default)]
     pub finish_check: Option<String>,
+    /// Agent 完成（狀態變成 Done）後，自動在它的 worktree 執行的檢查，例如 `"cargo test --workspace"`。
+    /// 結果顯示在側欄，並發系統通知。只讀使用者設定檔的 `[repos."<路徑>"]`（理由與 `finish_check` 相同）；
+    /// 執行方式也同 `finish_check`：沙箱 Agent 需要 `check_command`，否則略過。
+    #[serde(default)]
+    pub auto_check: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

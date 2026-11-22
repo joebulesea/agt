@@ -5,7 +5,8 @@ use agt_core::{LaunchCtx, Session, SessionEvent, SessionOptions, StatusSource, p
 use agt_git::GitError;
 use agt_proto::sync::{MutexExt, RwLockExt};
 use agt_proto::{
-    AgentStatus, CreateSession, FinishAction, GcItem, MergeStrategy, ServerMsg, SessionInfo, codes,
+    AgentStatus, CheckInfo, CheckState, CreateSession, FinishAction, GcItem, MergeStrategy,
+    ServerMsg, SessionInfo, codes,
 };
 use agt_store::{LOG_MAX_BYTES, LogWriter, SessionRow, Store};
 use serde_json::json;
@@ -135,6 +136,8 @@ pub struct Daemon {
     tamper_warned: Mutex<std::collections::HashSet<String>>,
     /// 連續忙碌（執行中／思考中）的計時，用來提醒長時間執行的分頁。
     busy: Mutex<busy::BusyTracker>,
+    /// 正在執行自動檢查（`auto_check`）的分頁：同一個 worktree 不同時跑兩次。
+    auto_checking: Mutex<std::collections::HashSet<String>>,
     /// 每個分頁上次輪詢 git 的時間與當時的狀態（見 [`gc::should_poll_git`]）。
     git_polls: Mutex<HashMap<String, (Instant, AgentStatus)>>,
     /// 每個分頁上次讀到的 `.agt/usage.json` 修改時間（見 [`usage`]）。
@@ -171,6 +174,7 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         created_at: r.created_at,
         status_since: agt_store::now(),
         prompt: None,
+        check: None,
         shared: r.shared,
         tags: r.tags.clone(),
         usage: None,
@@ -233,6 +237,7 @@ impl Daemon {
             restart_lock: Mutex::new(()),
             tamper_warned: Mutex::new(Default::default()),
             busy: Mutex::new(Default::default()),
+            auto_checking: Mutex::new(Default::default()),
             git_polls: Mutex::new(Default::default()),
             usage_seen: Mutex::new(Default::default()),
             usage_alerts: Mutex::new(Default::default()),
@@ -588,7 +593,15 @@ mod tests {
         // 等待輸入時記下的提問，離開等待狀態就清掉
         d.update_if_current("s1", 1, |i| i.prompt = Some("Allow?".into()));
         assert_eq!(d.get("s1").unwrap().prompt.as_deref(), Some("Allow?"));
+        d.update_if_current("s1", 1, |i| {
+            i.check = Some(CheckInfo {
+                state: CheckState::Passed,
+                detail: String::new(),
+            })
+        });
         d.update_if_current("s1", 1, |i| i.status = AgentStatus::Running);
         assert_eq!(d.get("s1").unwrap().prompt, None);
+        // Agent 又開始工作：檢查結果過期
+        assert_eq!(d.get("s1").unwrap().check, None);
     }
 }
