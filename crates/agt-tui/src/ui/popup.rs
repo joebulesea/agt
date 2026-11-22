@@ -583,7 +583,10 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
                 ),
             ];
             if matches.is_empty() {
-                lines.push(Line::styled(" 沒有符合的分頁", Style::new().fg(theme().gray)));
+                lines.push(Line::styled(
+                    " 沒有符合的分頁",
+                    Style::new().fg(theme().gray),
+                ));
             }
             for (i, s) in matches.iter().enumerate().skip(offset).take(list_h) {
                 let repo = s.repo_name.as_deref().unwrap_or("");
@@ -625,12 +628,7 @@ pub(super) fn draw_popup(f: &mut Frame, app: &App) -> Vec<ClickHit> {
             let visible = matches.len().saturating_sub(offset).min(list_h);
             for row in 0..visible {
                 hits.push(ClickHit {
-                    rect: Rect::new(
-                        r.x + 1,
-                        r.y + 3 + row as u16,
-                        r.width.saturating_sub(2),
-                        1,
-                    ),
+                    rect: Rect::new(r.x + 1, r.y + 3 + row as u16, r.width.saturating_sub(2), 1),
                     click: Click::Item(offset + row),
                 });
             }
