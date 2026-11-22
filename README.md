@@ -46,6 +46,7 @@ agt tag <id> [--add 標籤] [--remove 標籤] [--set a,b] [--clear]   # 查看�
 agt ls [--tag 標籤] [--json]                    # 列出分頁（可依標籤篩選）
 agt attach <id>                        # 開啟 TUI 並切到該分頁
 agt diff <id>
+agt sync <id>                          # 把 base 的最新 commit 合併進分頁的 branch（Agent 忙碌或有未 commit 的變更時拒絕；衝突時還原）
 agt stats [--days 7] [--json]          # 各分頁花在各狀態的時間（忙碌／等待輸入），依 Agent 合計；沒有 token／費用資料
 agt log <id> [--tail N] [--format text|md] [-o 檔案] [--raw --force]   # 匯出終端機紀錄（去掉控制序列；--raw 輸出原始位元組，需搭配 -o）
 agt rename <id> "新任務名稱"
@@ -98,6 +99,12 @@ sel_bg = "darkgray"
 系統通知：分頁變成「等待輸入」、「完成」或「發生錯誤」，且你沒有在看那個分頁時，agt 會發送系統通知。`[general]` 的 `notify = false` 全部關閉，`notify_on` 選擇要通知的狀態：`waiting`、`done`、`error`、`exited`（Agent 行程結束），預設是前三者。Windows 上點擊通知會開新的終端機視窗（優先用 Windows Terminal，沒有則開新的 console）執行 `agt attach <id>` 並切到該分頁；需要 daemon 還在執行，通知進了通知中心後 daemon 若已重新啟動則點了沒反應。
 
 TUI 快捷鍵：前綴鍵 `Ctrl+A`，之後按 `n` 新增、`t` 編輯標籤、`j/k` 或 `1–9` 切換、`w` 跳到等待輸入的分頁、`Space` 或 `p` 快速切換器（輸入關鍵字篩選，Enter 跳過去）、`d` diff、`m` 收尾、`r` 重新命名、`R` 重新啟動並接續對話、`N` 重新啟動並開新對話、`[` 滾動與 `/` 搜尋、`o` 開啟工作目錄、`x` 關閉（選擇刪除或保留 worktree 副本；保留的副本下次開啟 agt 時會提示清理）、`b` 收合側欄、`?` 說明、`q` detach。
+
+#### 分頁之間的衝突預警與同步 base
+
+- **衝突預警**：同一個 repo 開了好幾個分頁時，daemon 會定期（跟 git 狀態同一個輪詢）比對各分頁動過的檔案——已 commit（`base...HEAD`）、未 commit 的修改、未追蹤的檔案都算，`.agt/` 底下的說明檔不算。兩個分頁動了同一個檔案時，側欄多一行黃字 `⚠ 與 a3f 重疊（3 檔）`（和多個分頁重疊時列出各分頁的短 id），`agt ls` 的 Branch 欄也會加上同樣的標記，`agt ls --json` 的 `overlaps` 有完整的檔案清單（每個分頁最多 20 個）。`--share` 共用同一個 worktree 的分頁不算重疊。提醒的是「可能衝突」，不是真的衝突：只是動到同一個檔案，不一定改到同一行。
+- **落後 base**：分頁的 branch 落後 base 時，側欄的 branch 行在 `+N` 後面多一個 `↓N`（落後幾個 commit；比對的是本機的 base branch，不會自動 fetch）。
+- **同步**：`Ctrl+A` → `s`（或 `agt sync <id>`）把 base 的最新 commit 合併進分頁的 branch（`git merge`，不改寫歷史，branch 已經 push 或開了 PR 也安全）。Agent 正在工作（執行中／思考中，含共用同一個 worktree 的分頁）或 worktree 有未 commit 的變更時拒絕；發生衝突時會 `merge --abort` 還原，worktree 維持原狀，並列出衝突的檔案，讓你先請 Agent 處理或手動合併。
 
 #### diff 視窗
 

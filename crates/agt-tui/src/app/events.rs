@@ -189,6 +189,9 @@ impl App {
                 }
             }
             AppEvent::Diff(Err(e)) => self.set_message(e.to_string(), true),
+            AppEvent::Synced(Ok(text)) => self.set_message(text, false),
+            // 衝突時訊息含檔案清單，單行訊息放不下
+            AppEvent::Synced(Err(e)) => self.show_text("同步失敗", &e.to_string(), false),
             AppEvent::Searched(found) => {
                 if !found {
                     self.set_message("找不到符合的內容", true);

@@ -94,6 +94,47 @@ pub(crate) fn new_gitlinks(repo: &Path, worktree: &Path) -> Result<Vec<String>> 
         .collect())
 }
 
+/// 把 base 的最新內容合併進 worktree 的 branch（`git merge base`），回傳說明文字。
+/// 用 merge 而不是 rebase：不改寫歷史，branch 已經 push 或開了 PR 也安全。
+/// 有未 commit 的變更時拒絕（`GitError::Dirty`）；發生衝突時 `merge --abort` 還原，
+/// 回傳 `GitError::Conflict`（附衝突的檔案），worktree 維持原狀。
+pub fn sync_with_base(repo: &Path, worktree: &Path, base: &str) -> Result<String> {
+    if is_dirty_wt(repo, worktree, false)? {
+        return Err(GitError::Dirty(
+            "worktree 還有未 commit 的變更，請先 commit 再同步".into(),
+        ));
+    }
+    if !ref_exists(repo, base) {
+        return Err(GitError::Refused(format!("找不到 base：{base}")));
+    }
+    let behind = git_wt(
+        repo,
+        worktree,
+        &["rev-list", "--count", &format!("HEAD..{base}")],
+    )?
+    .trim()
+    .parse::<u32>()
+    .unwrap_or(0);
+    if behind == 0 {
+        return Ok(format!("已經和 {base} 同步，沒有需要合併的 commit"));
+    }
+    let msg = format!("Merge {base} into branch");
+    if let Err(e) = git_wt(repo, worktree, &["merge", "--no-edit", "-m", &msg, base]) {
+        let files = conflicted_files_wt(repo, worktree);
+        // 不留下半途的合併，Agent 的 worktree 要維持可繼續工作
+        let _ = git_wt(repo, worktree, &["merge", "--abort"]);
+        if !files.is_empty() {
+            return Err(GitError::Conflict(format!(
+                "合併 {base} 時發生衝突，已還原、worktree 沒有改變。衝突的檔案：\n{files}"
+            )));
+        }
+        return Err(e);
+    }
+    Ok(format!(
+        "已把 {base} 的 {behind} 個 commit 合併進這個 branch"
+    ))
+}
+
 /// 回到主工作目錄將 branch 合併進 base（規格 7.3、7.4）。
 /// 主工作目錄有未 commit 的變更時拒絕；發生衝突時停下來，不自動解決。
 pub fn merge_into_base(

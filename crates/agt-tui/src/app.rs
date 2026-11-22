@@ -23,6 +23,8 @@ pub enum AppEvent {
     CreateFailed(Box<(ClientError, CreateSession)>),
     Finished(FinishAction, Result<String, ClientError>),
     Diff(Result<String, ClientError>),
+    /// 同步 base 的結果（成功的說明，或失敗原因）。
+    Synced(Result<String, ClientError>),
     /// 收尾視窗的預覽（分頁 id, 內容）。
     FinishPreview(String, &'static str, Result<String, ClientError>),
     Searched(bool),

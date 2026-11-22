@@ -498,6 +498,31 @@ async fn full_flow() {
     .await;
     assert!(ok, "應推播 WorktreeChanged");
 
+    // ── 分頁重疊預警：另一個分頁也動了同一個檔案 ──
+    let wb = PathBuf::from(b.worktree.clone().unwrap());
+    std::fs::write(wb.join("untracked.txt"), "y").unwrap();
+    let ok = wait_until(&mut ev, &mut screen, Duration::from_secs(10), |inc, _| {
+        matches!(inc, Incoming::Msg(m) if matches!(&**m, ServerMsg::SessionUpdated { session }
+            if session.id == a.id
+                && session.overlaps.len() == 1
+                && session.overlaps[0].short_id == b.short_id
+                && session.overlaps[0].files == ["untracked.txt"]))
+    })
+    .await;
+    assert!(ok, "兩個分頁動了同一個檔案，應推播 overlaps");
+
+    // ── 同步 base：base 沒有新 commit，只回報已同步 ──
+    let ReplyBody::Text(t) = c
+        .request(ClientMsg::Sync {
+            id: a.short_id.clone(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(t.contains("同步"), "{t}");
+
     // ── diff ──
     let ReplyBody::Text(d) = c
         .request(ClientMsg::Diff {

@@ -440,4 +440,36 @@ impl Daemon {
         let (wt, _, base, repo) = need_worktree(&info)?;
         Ok(agt_git::diff(Path::new(&repo), Path::new(&wt), &base)?)
     }
+
+    /// 把 base 的最新 commit 合併進分頁的 branch。Agent（含共用這個 worktree 的其他分頁）
+    /// 正在工作時拒絕：合併會在它腳下改檔案。
+    pub fn sync_base(&self, id: &str) -> OpResult<String> {
+        let id = self.resolve(id)?;
+        let info = self.get(&id)?;
+        let (wt, _, base, repo) = need_worktree(&info)?;
+        let busy =
+            self.entries.lock_or_recover().values().any(|e| {
+                e.info.status.is_busy() && e.info.worktree.as_deref() == Some(wt.as_str())
+            });
+        if busy {
+            return Err(OpError::new(
+                codes::BAD_REQUEST,
+                "Agent 正在工作中，等它停下來（等待輸入或完成）再同步",
+            ));
+        }
+        let r = agt_git::sync_with_base(Path::new(&repo), Path::new(&wt), &base);
+        match &r {
+            Ok(msg) => self.record(
+                &id,
+                "git",
+                json!({"action": "sync", "ok": true, "result": msg}),
+            ),
+            Err(e) => self.record(
+                &id,
+                "git",
+                json!({"action": "sync", "ok": false, "error": e.to_string()}),
+            ),
+        }
+        Ok(r?)
+    }
 }
