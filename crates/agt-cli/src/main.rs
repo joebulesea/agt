@@ -20,7 +20,11 @@ use std::io::{IsTerminal, Read, Write};
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
-#[command(name = "agt", version, about = "AI Agent 終端機多工器")]
+#[command(
+    name = "agt",
+    version = env!("AGT_LONG_VERSION"),
+    about = "AI Agent 終端機多工器"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -190,6 +194,9 @@ enum Cmd {
         /// 指定版本（例如 0.3.0），預設最新版
         #[arg(long)]
         version: Option<String>,
+        /// 改用測試版（每次 PR 合併到 main 後自動建置的 nightly），不是正式發布版
+        #[arg(long, conflicts_with = "version")]
+        nightly: bool,
         /// 有 Agent 執行中時不詢問，直接結束 daemon
         #[arg(long, short)]
         yes: bool,
@@ -872,8 +879,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             check,
             json,
             version,
+            nightly,
             yes,
-        }) => update::run(check, json, version, yes).await,
+        }) => update::run(check, json, version, nightly, yes).await,
         Some(Cmd::Uninstall {
             yes,
             purge,

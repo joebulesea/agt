@@ -4,7 +4,7 @@
 #
 # 環境變數：
 #   AGT_REPO        GitHub repo（預設 joebulesea/agt）
-#   AGT_VERSION     指定版本（例如 v0.3.0），預設最新版
+#   AGT_VERSION     指定版本（例如 v0.3.0），預設最新版；nightly = main 的最新測試版
 #   AGT_INSTALL_DIR 安裝位置，預設 ~/.local/bin
 #   AGT_NO_SETUP=1  安裝後不執行 agt setup
 set -eu
@@ -32,7 +32,8 @@ if [ -z "$version" ]; then
   version=${url##*/}
 fi
 case $version in [0-9]*) version=v$version ;; esac
-case $version in v[0-9]*) ;; *) die "無法判斷版本：$version" ;; esac
+# nightly = main 的最新測試版（預發行版；/releases/latest 不包含它，所以要明確指定）
+case $version in v[0-9]*|nightly) ;; *) die "無法判斷版本：$version" ;; esac
 
 name="agt-$version-$target"
 base="https://github.com/$REPO/releases/download/$version"

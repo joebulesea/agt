@@ -74,6 +74,80 @@ fn compare(a: &str, b: &str) -> Option<Ordering> {
     Some(na.cmp(&nb).then(pb.cmp(&pa)))
 }
 
+/// 這個執行檔的建置編號（只有測試版有，格式 `nightly.<run>.<sha>`；正式版與本機編譯是 None）。
+const BUILD: Option<&str> = option_env!("AGT_BUILD");
+
+/// 測試版建置編號裡的 run 編號（workflow 的 run number，越大越新）。
+fn build_run(build: Option<&str>) -> Option<u64> {
+    build?
+        .strip_prefix("nightly.")?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Release `nightly` 附的 `nightly.json`：最新測試版的建置編號、版號與 run 編號。
+#[derive(Debug, Clone, PartialEq)]
+struct Nightly {
+    build: String,
+    run: u64,
+    version: String,
+}
+
+fn parse_nightly(json: &str) -> anyhow::Result<Nightly> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).context("nightly.json 不是有效的 JSON")?;
+    let build = v["build"]
+        .as_str()
+        .filter(|s| !s.is_empty() && s.len() <= 64)
+        .context("nightly.json 缺少 build")?
+        .to_string();
+    // 會印在畫面上：只接受英數字與 . -，避免遠端內容夾帶控制字元
+    if !build
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        bail!("nightly.json 的 build 含有不允許的字元");
+    }
+    let run = v["run"].as_u64().context("nightly.json 缺少 run")?;
+    let version = v["version"]
+        .as_str()
+        .filter(|s| parse_version(s).is_some())
+        .context("nightly.json 的 version 不正確")?
+        .to_string();
+    Ok(Nightly {
+        build,
+        run,
+        version,
+    })
+}
+
+fn fetch_nightly(repo: &str) -> anyhow::Result<Nightly> {
+    let out = curl_ok(&[&format!(
+        "https://github.com/{repo}/releases/download/nightly/nightly.json"
+    )])
+    .context("查詢最新測試版失敗（可能還沒有發布過測試版）")?;
+    parse_nightly(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// 目前的執行檔和最新測試版的關係：`up_to_date` | `update_available` | `ahead`。
+/// 目前也是測試版時比 run 編號；正式版或本機編譯的版本無法比編號，
+/// 測試版的版號不比目前版本舊就視為可更新（main 上的內容通常比正式版新）。
+fn nightly_status(current: &str, current_run: Option<u64>, remote: &Nightly) -> &'static str {
+    match current_run {
+        Some(run) => match run.cmp(&remote.run) {
+            Ordering::Equal => "up_to_date",
+            Ordering::Less => "update_available",
+            Ordering::Greater => "ahead",
+        },
+        None => match compare(current, &remote.version) {
+            Some(Ordering::Greater) => "ahead",
+            _ => "update_available",
+        },
+    }
+}
+
 fn curl_ok(args: &[&str]) -> anyhow::Result<std::process::Output> {
     let out = Command::new("curl")
         .args(["-fsSL", "--proto", "=https", "--tlsv1.2"])
@@ -262,9 +336,16 @@ impl Drop for TempDir {
 /// `{current, latest, tag, status, update_available}`（`status`：up_to_date | update_available |
 /// ahead（目前版本比最新發布版新）| downgrade（用 `--version` 指定了較舊的版本））。
 /// 失敗時 stdout 輸出 `{error}`，exit 1。
-fn check_json(version: Option<String>) -> anyhow::Result<()> {
+fn check_json(version: Option<String>, nightly: bool) -> anyhow::Result<()> {
     let result = (|| -> anyhow::Result<serde_json::Value> {
         let repo = repo()?;
+        if nightly {
+            return Ok(nightly_report(
+                env!("CARGO_PKG_VERSION"),
+                BUILD,
+                &fetch_nightly(&repo)?,
+            ));
+        }
         let explicit = version.is_some();
         let tag = match version {
             Some(v) => normalize(&v),
@@ -282,6 +363,21 @@ fn check_json(version: Option<String>) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// `--check --json --nightly` 的內容（不連網，方便測試）。
+fn nightly_report(current: &str, build: Option<&str>, remote: &Nightly) -> serde_json::Value {
+    let status = nightly_status(current, build_run(build), remote);
+    serde_json::json!({
+        "channel": "nightly",
+        "current": current,
+        "current_build": build,
+        "latest": remote.version,
+        "build": remote.build,
+        "tag": "nightly",
+        "status": status,
+        "update_available": status == "update_available",
+    })
 }
 
 /// `--check --json` 的內容（不連網，方便測試）。`explicit`：版本是用 `--version` 指定的。
@@ -308,34 +404,66 @@ pub async fn run(
     check: bool,
     json: bool,
     version: Option<String>,
+    nightly: bool,
     yes: bool,
 ) -> anyhow::Result<()> {
     if check && json {
-        return check_json(version);
+        return check_json(version, nightly);
     }
     let repo = repo()?;
     let (target, ext) = platform()?;
     let current = env!("CARGO_PKG_VERSION");
-    let explicit = version.is_some();
-    let tag = match version {
-        Some(v) => normalize(&v),
-        None => latest_version(&repo)?,
+    let on_nightly = build_run(BUILD).is_some();
+    let me = match BUILD {
+        Some(b) => format!("v{current}（{b}）"),
+        None => format!("v{current}"),
     };
-    if parse_version(&tag).is_none() {
-        bail!("版本格式不正確：{tag}（需要 X.Y.Z）");
-    }
-    println!("目前版本：v{current}，可用版本：{tag}");
-    match compare(current, &tag) {
-        Some(Ordering::Equal) => {
-            println!("已經是這個版本");
-            return Ok(());
+    // tag：Release 的標籤（也決定檔名與下載網址）；label：安裝完成時顯示的名稱
+    let (tag, label) = if nightly {
+        let info = fetch_nightly(&repo)?;
+        println!(
+            "目前版本：{me}，可用測試版：{}（v{}）",
+            info.build, info.version
+        );
+        match nightly_status(current, build_run(BUILD), &info) {
+            "up_to_date" => {
+                println!("已經是這個測試版");
+                return Ok(());
+            }
+            "ahead" => {
+                println!("目前版本比最新測試版新，不需要更新");
+                return Ok(());
+            }
+            _ => {}
         }
-        Some(Ordering::Greater) if !explicit => {
-            println!("目前版本比最新發布版新，不需要更新（要降版請加 --version）");
-            return Ok(());
+        ("nightly".to_string(), info.build)
+    } else {
+        let explicit = version.is_some();
+        let tag = match version {
+            Some(v) => normalize(&v),
+            None => latest_version(&repo)?,
+        };
+        if parse_version(&tag).is_none() {
+            bail!("版本格式不正確：{tag}（需要 X.Y.Z）");
         }
-        _ => {}
-    }
+        println!("目前版本：{me}，可用版本：{tag}");
+        match compare(current, &tag) {
+            Some(Ordering::Equal) if on_nightly => {
+                println!("目前是測試版，改安裝正式版 {tag}");
+            }
+            Some(Ordering::Equal) => {
+                println!("已經是這個版本");
+                return Ok(());
+            }
+            Some(Ordering::Greater) if !explicit => {
+                println!("目前版本比最新發布版新，不需要更新（要降版請加 --version）");
+                return Ok(());
+            }
+            _ => {}
+        }
+        let label = tag.clone();
+        (tag, label)
+    };
     if check {
         println!("執行 `agt update` 更新");
         return Ok(());
@@ -422,7 +550,7 @@ pub async fn run(
     }
     // 舊版有獨立的 agtd：已併入 agt（`agt daemon run`），刪掉不再使用的檔案（使用中就留到下次）
     remove_legacy_agtd(&dir);
-    println!("已更新到 {tag}");
+    println!("已更新到 {label}");
     Ok(())
 }
 
@@ -680,5 +808,93 @@ mod tests {
         assert!(!d.path().join(&name).exists());
         assert!(!d.path().join(format!("{name}.old")).exists());
         assert!(d.path().join("agt").exists());
+    }
+
+    fn nightly(run: u64, version: &str) -> Nightly {
+        Nightly {
+            build: format!("nightly.{run}.abc1234"),
+            run,
+            version: version.into(),
+        }
+    }
+
+    #[test]
+    fn build_run_reads_the_run_number() {
+        assert_eq!(build_run(Some("nightly.412.ab12cd3")), Some(412));
+        assert_eq!(build_run(Some("nightly.7")), Some(7));
+        for bad in [
+            None,
+            Some(""),
+            Some("nightly."),
+            Some("nightly.x.abc"),
+            Some("v1.2.3"),
+        ] {
+            assert_eq!(build_run(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parse_nightly_accepts_the_published_format() {
+        let n = parse_nightly(
+            r#"{"build":"nightly.412.ab12cd3","run":412,"sha":"ab12cd3ef","version":"0.5.0","built_at":"2026-11-22T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            n,
+            Nightly {
+                build: "nightly.412.ab12cd3".into(),
+                run: 412,
+                version: "0.5.0".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_nightly_rejects_bad_input() {
+        for bad in [
+            "",
+            "not json",
+            "{}",
+            r#"{"build":"","run":1,"version":"0.5.0"}"#,
+            r#"{"build":"nightly.1.a","run":"1","version":"0.5.0"}"#,
+            r#"{"build":"nightly.1.a","run":1,"version":"latest"}"#,
+            // 控制字元不能進到畫面上
+            r#"{"build":"nightly.1.\u001b[2J","run":1,"version":"0.5.0"}"#,
+            r#"{"build":"a b","run":1,"version":"0.5.0"}"#,
+        ] {
+            assert!(parse_nightly(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn nightly_status_compares_runs_between_nightlies() {
+        let r = nightly(10, "0.5.0");
+        assert_eq!(nightly_status("0.5.0", Some(9), &r), "update_available");
+        assert_eq!(nightly_status("0.5.0", Some(10), &r), "up_to_date");
+        assert_eq!(nightly_status("0.5.0", Some(11), &r), "ahead");
+    }
+
+    #[test]
+    fn nightly_status_from_a_release_build_compares_versions() {
+        let r = nightly(10, "0.5.0");
+        assert_eq!(nightly_status("0.4.0", None, &r), "update_available");
+        // 版號相同：main 通常比正式版新，視為可更新
+        assert_eq!(nightly_status("0.5.0", None, &r), "update_available");
+        assert_eq!(nightly_status("0.6.0", None, &r), "ahead");
+    }
+
+    #[test]
+    fn nightly_report_json_shape() {
+        let r = nightly(10, "0.5.0");
+        let v = nightly_report("0.4.0", Some("nightly.9.aaaaaaa"), &r);
+        assert_eq!(v["channel"], "nightly");
+        assert_eq!(v["current"], "0.4.0");
+        assert_eq!(v["current_build"], "nightly.9.aaaaaaa");
+        assert_eq!(v["build"], "nightly.10.abc1234");
+        assert_eq!(v["tag"], "nightly");
+        assert_eq!(v["status"], "update_available");
+        assert_eq!(v["update_available"], true);
+        let v = nightly_report("0.4.0", None, &r);
+        assert!(v["current_build"].is_null());
     }
 }
