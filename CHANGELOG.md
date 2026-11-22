@@ -9,8 +9,15 @@
 
 ## 未發布
 
+### 修正
+
+- 狀態改變時，daemon 現在會一併發出完整的 `SessionUpdated`：原本只送 `StatusChanged`（UI 只更新狀態），這次新增的等待時間、提問預覽與自動檢查結果因此到不了側欄
+
 ### 新增
 
+- 自動檢查：使用者設定檔 `[repos."<路徑>"]` 的 `auto_check`（例如 `"cargo test --workspace"`）會在 Agent 完成（狀態變成 Done）後自動在它的 worktree 執行；側欄顯示 `… 測試中`／`✓ 測試通過`／`✗ 測試失敗：<輸出最後一行>`，並發系統通知（沿用 `notify`，正在看的分頁不通知），完整輸出記在分頁的事件（kind = `check`）。只從使用者設定檔讀取，`.agt.toml` 的不會生效（`agt config check` 會提醒）；執行方式同 `finish_check`（沙箱 Agent 要設定 `check_command`，否則略過），worktree 沒有任何變更、或同一分頁已在檢查時不執行，Agent 又開始工作時清掉舊結果。`SessionInfo` 新增 `check`，協定版本不變
+- 側欄預覽提問（`[general] sidebar_prompt = false` 可關閉，預設開啟，熱重載）：分頁在「等待輸入」時（不是目前正在看的那個），側欄多一行黃字 `? …` 顯示 Agent 在問什麼，不必切過去就能決定要不要處理。內容優先用 hook 帶來的訊息（Claude Code，例如「Claude needs your permission to use Bash」），沒有時取畫面最後幾行中最後一個含 `?` 或 `(y/n)` 的行，再沒有就用最後一個非空白行。文字來自 Agent，視為不可信：控制字元換成可見符號、限制 200 字。`SessionInfo` 新增 `prompt`（只在等待輸入時有值，`agt ls --json` 也看得到），只存在記憶體，協定版本不變
+- 側欄顯示等待時間：分頁在「等待輸入」超過 1 分鐘時，第一列尾端（✎ 之前）以黃字顯示已等多久（`3m`、`2h05m`、`1d`），一眼看出哪個分頁卡最久。`SessionInfo` 新增 `status_since`（進入目前狀態的 Unix 秒，`agt ls --json` 也看得到），由 daemon 在狀態改變時更新，所以關掉再開 UI 時間也不會歸零；只存在記憶體，daemon 重啟後從載入時重算。協定版本不變
 - 快速切換器：`Ctrl+A` 後按 `Space` 或 `p` 開啟，輸入關鍵字即時篩選分頁（空白分隔的每個關鍵字都要出現在 Agent、任務、repo、branch、短 id、標籤或狀態其中之一，不分大小寫），`↑↓` / `Tab` / `Ctrl+N` / `Ctrl+P` 選擇，Enter 跳過去，Esc 取消，也可以用滑鼠點選。分頁超過 9 個、`1–9` 不夠用時特別有用
 
 ## 0.4.0 - 2026-11-21

@@ -31,7 +31,7 @@ impl App {
 
     pub(super) fn on_msg(&mut self, m: ServerMsg) {
         match m {
-            ServerMsg::SessionUpdated { session } => self.upsert(session),
+            ServerMsg::SessionUpdated { session } => self.upsert(*session),
             ServerMsg::SessionRemoved { id } => {
                 let order: Vec<String> = self.ordered().iter().map(|s| s.id.clone()).collect();
                 let pos = order.iter().position(|x| *x == id);

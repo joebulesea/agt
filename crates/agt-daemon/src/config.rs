@@ -28,6 +28,8 @@ pub struct General {
     pub osc52: String,
     /// TUI 配色：dark | light | colorblind
     pub theme: String,
+    /// 側欄：等待輸入的分頁多一行預覽 Agent 在問什麼（false = 關閉，省一行空間）
+    pub sidebar_prompt: bool,
     /// 收尾（merge / pr）前要求確認的額外路徑，加在內建清單之外。
     pub sensitive_paths: Vec<String>,
 }
@@ -79,6 +81,11 @@ pub struct RepoConfig {
     /// 可能被 Agent 改過，不採用（`agt config check` 會提醒）。執行方式見 Agent 的 `check_command`。
     #[serde(default)]
     pub finish_check: Option<String>,
+    /// Agent 完成（狀態變成 Done）後，自動在它的 worktree 執行的檢查，例如 `"cargo test --workspace"`。
+    /// 結果顯示在側欄，並發系統通知。只讀使用者設定檔的 `[repos."<路徑>"]`（理由與 `finish_check` 相同）；
+    /// 執行方式也同 `finish_check`：沙箱 Agent 需要 `check_command`，否則略過。
+    #[serde(default)]
+    pub auto_check: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -130,6 +137,7 @@ struct PartialGeneral {
     log_output: Option<bool>,
     osc52: Option<String>,
     theme: Option<String>,
+    sidebar_prompt: Option<bool>,
     sensitive_paths: Option<Vec<String>>,
 }
 
@@ -544,6 +552,7 @@ impl Config {
             merge_strategy: self.general.merge_strategy.clone(),
             osc52: self.general.osc52.clone(),
             theme: self.general.theme.clone(),
+            sidebar_prompt: self.general.sidebar_prompt,
             colors: self.colors.clone(),
             templates: self
                 .templates

@@ -7,6 +7,10 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
     let mut y = area.y;
     let w = area.width as usize;
     let bottom = area.y + area.height;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     if collapsed {
         // 收合時第一列只放一個「+」按鈕
         buf.set_string(area.x, y, pad("", w), Style::new());
@@ -134,9 +138,23 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
         buf.set_string(area.x + 2, y, s.status.symbol(), sym_style.patch(row_style));
         let agent = truncate(&s.agent, 7);
         let mark = if s.dirty { " ✎" } else { "" };
-        let avail = w.saturating_sub(4 + 8 + mark.width());
+        // 等待輸入超過 1 分鐘：在列尾（✎ 之前）顯示等了多久
+        let wait = (s.status == AgentStatus::WaitingInput && s.status_since > 0)
+            .then(|| format_wait(now - s.status_since))
+            .flatten();
+        let wait_w = wait.as_ref().map_or(0, |t| t.width() + 1);
+        let avail = w.saturating_sub(4 + 8 + mark.width() + wait_w);
         let text = format!("{} {}", pad(&agent, 7), truncate(&s.task, avail));
         buf.set_string(area.x + 4, y, &text, row_style);
+        if let Some(t) = &wait {
+            let x = w.saturating_sub(mark.width() + wait_w);
+            buf.set_string(
+                area.x + x as u16,
+                y,
+                t,
+                Style::new().fg(theme().yellow).patch(row_style),
+            );
+        }
         if !mark.is_empty() {
             buf.set_string(
                 area.x + w as u16 - 2,
@@ -146,6 +164,43 @@ pub(super) fn draw_sidebar(buf: &mut Buffer, app: &mut App, area: Rect, collapse
             );
         }
         y += 1;
+        // 等待輸入的分頁（不是正在看的那個）：多一行預覽 Agent 在問什麼
+        if s.status == AgentStatus::WaitingInput
+            && !active
+            && app.ui.sidebar_prompt
+            && let Some(p) = &s.prompt
+            && y < bottom
+        {
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&format!("? {p}"), w.saturating_sub(6)),
+                Style::new().fg(theme().yellow).patch(row_style),
+            );
+            y += 1;
+        }
+        // 自動檢查（auto_check）的結果
+        if let Some(c) = &s.check
+            && y < bottom
+        {
+            let (text, color) = match c.state {
+                CheckState::Running => ("… 測試中".to_string(), theme().gray),
+                CheckState::Passed => ("✓ 測試通過".to_string(), theme().green),
+                CheckState::Failed if c.detail.is_empty() => {
+                    ("✗ 測試失敗".to_string(), theme().red)
+                }
+                CheckState::Failed => (format!("✗ 測試失敗：{}", c.detail), theme().red),
+            };
+            buf.set_string(area.x, y, pad("", w), row_style);
+            buf.set_string(
+                area.x + 6,
+                y,
+                truncate(&text, w.saturating_sub(6)),
+                Style::new().fg(color).patch(row_style),
+            );
+            y += 1;
+        }
         // 第二行：branch +N 或「無 worktree」；有 auto_commit 的 Agent 在行尾加「auto」
         if y < bottom {
             let auto = app.ui.auto_commit_agents.contains(&s.agent);

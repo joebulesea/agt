@@ -122,6 +122,17 @@ pub struct SessionInfo {
     pub dirty: bool,
     #[serde(default)]
     pub created_at: i64,
+    /// 進入目前狀態的時間（Unix 秒）；側欄用它顯示「等待輸入多久了」。
+    /// 只存在記憶體：daemon 重啟後是載入的時間。0 表示未知。
+    #[serde(default)]
+    pub status_since: i64,
+    /// 等待輸入時 Agent 在問什麼（hook 的訊息，或畫面上的提問那一行）；側欄預覽用。
+    /// 只在狀態是 `WaitingInput` 時有值，已清除控制字元並限制長度。只存在記憶體。
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// 自動檢查（`[repos] auto_check`）的狀態與結果；Agent 又開始工作時清除。只存在記憶體。
+    #[serde(default)]
+    pub check: Option<CheckInfo>,
     /// 與其他工作階段共用 worktree（`--share`）。
     #[serde(default)]
     pub shared: bool,
@@ -134,7 +145,41 @@ pub struct SessionInfo {
     pub usage: Option<crate::usage::Usage>,
 }
 
+/// 自動檢查的進度。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckState {
+    Running,
+    Passed,
+    Failed,
+}
+
+/// 自動檢查的狀態；失敗時 `detail` 是輸出的最後一行（已清除控制字元、限制長度）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckInfo {
+    pub state: CheckState,
+    #[serde(default)]
+    pub detail: String,
+}
+
 impl SessionInfo {
+    /// 狀態和 `before` 不同時，把 `status_since` 更新成現在。
+    pub fn note_status_change(&mut self, before: AgentStatus) {
+        if self.status != before {
+            self.status_since = now_secs();
+            if self.status != AgentStatus::WaitingInput {
+                self.prompt = None;
+            }
+            // Agent 又開始工作：之前的檢查結果過期了
+            if matches!(
+                self.status,
+                AgentStatus::Running | AgentStatus::Thinking | AgentStatus::Starting
+            ) {
+                self.check = None;
+            }
+        }
+    }
+
     pub fn has_worktree(&self) -> bool {
         self.worktree.is_some()
     }
@@ -199,6 +244,9 @@ pub struct UiConfig {
     /// 設了 `auto_commit` 的 Agent（`extends` 展開後）。新增分頁時用來提示收尾會自動 commit。
     #[serde(default)]
     pub auto_commit_agents: Vec<String>,
+    /// 側欄：等待輸入的分頁多一行預覽 Agent 在問什麼。
+    #[serde(default = "default_true")]
+    pub sidebar_prompt: bool,
     /// dark | light | colorblind：TUI 的配色
     #[serde(default = "default_theme")]
     pub theme: String,
@@ -225,6 +273,10 @@ pub struct TemplateInfo {
     pub tags: Vec<String>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_theme() -> String {
     "dark".into()
 }
@@ -240,6 +292,7 @@ impl Default for UiConfig {
             sidebar_width: 26,
             merge_strategy: "ask".into(),
             osc52: default_osc52(),
+            sidebar_prompt: true,
             agents: vec![
                 "claude".into(),
                 "antigravity".into(),
@@ -267,4 +320,11 @@ pub struct GcItem {
     pub branch: Option<String>,
     #[serde(default)]
     pub session: Option<String>,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

@@ -174,7 +174,7 @@ impl Client {
 /// 從回應中取出 `SessionInfo`。
 pub fn expect_session(r: ReplyBody) -> Result<SessionInfo, ClientError> {
     match r {
-        ReplyBody::Session(s) => Ok(s),
+        ReplyBody::Session(s) => Ok(*s),
         _ => Err(ClientError::Unexpected),
     }
 }

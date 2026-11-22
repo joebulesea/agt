@@ -5,7 +5,8 @@ use agt_core::{LaunchCtx, Session, SessionEvent, SessionOptions, StatusSource, p
 use agt_git::GitError;
 use agt_proto::sync::{MutexExt, RwLockExt};
 use agt_proto::{
-    AgentStatus, CreateSession, FinishAction, GcItem, MergeStrategy, ServerMsg, SessionInfo, codes,
+    AgentStatus, CheckInfo, CheckState, CreateSession, FinishAction, GcItem, MergeStrategy,
+    ServerMsg, SessionInfo, codes,
 };
 use agt_store::{LOG_MAX_BYTES, LogWriter, SessionRow, Store};
 use serde_json::json;
@@ -135,6 +136,8 @@ pub struct Daemon {
     tamper_warned: Mutex<std::collections::HashSet<String>>,
     /// 連續忙碌（執行中／思考中）的計時，用來提醒長時間執行的分頁。
     busy: Mutex<busy::BusyTracker>,
+    /// 正在執行自動檢查（`auto_check`）的分頁：同一個 worktree 不同時跑兩次。
+    auto_checking: Mutex<std::collections::HashSet<String>>,
     /// 每個分頁上次輪詢 git 的時間與當時的狀態（見 [`gc::should_poll_git`]）。
     git_polls: Mutex<HashMap<String, (Instant, AgentStatus)>>,
     /// 每個分頁上次讀到的 `.agt/usage.json` 修改時間（見 [`usage`]）。
@@ -169,6 +172,9 @@ fn row_to_info(r: &SessionRow) -> SessionInfo {
         behind: 0,
         dirty: false,
         created_at: r.created_at,
+        status_since: agt_store::now(),
+        prompt: None,
+        check: None,
         shared: r.shared,
         tags: r.tags.clone(),
         usage: None,
@@ -231,6 +237,7 @@ impl Daemon {
             restart_lock: Mutex::new(()),
             tamper_warned: Mutex::new(Default::default()),
             busy: Mutex::new(Default::default()),
+            auto_checking: Mutex::new(Default::default()),
             git_polls: Mutex::new(Default::default()),
             usage_seen: Mutex::new(Default::default()),
             usage_alerts: Mutex::new(Default::default()),
@@ -338,7 +345,9 @@ impl Daemon {
     fn update_info(&self, id: &str, f: impl FnOnce(&mut SessionInfo)) -> Option<SessionInfo> {
         let mut entries = self.entries.lock_or_recover();
         let e = entries.get_mut(id)?;
+        let before = e.info.status;
         f(&mut e.info);
+        e.info.note_status_change(before);
         Some(e.info.clone())
     }
 
@@ -352,14 +361,16 @@ impl Daemon {
     ) -> Option<SessionInfo> {
         let mut entries = self.entries.lock_or_recover();
         let e = entries.get_mut(id).filter(|e| e.generation == generation)?;
+        let before = e.info.status;
         f(&mut e.info);
+        e.info.note_status_change(before);
         Some(e.info.clone())
     }
 
     fn publish(&self, info: SessionInfo) {
-        let _ = self
-            .events
-            .send(ServerMsg::SessionUpdated { session: info });
+        let _ = self.events.send(ServerMsg::SessionUpdated {
+            session: Box::new(info),
+        });
     }
 
     /// 所有工作階段結束且沒有 client 連線，經過 `idle_shutdown_secs` 後回傳 true。
@@ -544,5 +555,53 @@ mod tests {
         assert_eq!(d.get("s1").unwrap().status, AgentStatus::Done);
         // 分頁已移除
         assert!(d.update_if_current("nope", 2, |_| {}).is_none());
+    }
+
+    #[test]
+    fn status_since_changes_only_when_status_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            config_file: dir.path().join("config.toml"),
+            data_dir: dir.path().join("data"),
+            home: dir.path().to_path_buf(),
+            logs_dir: None,
+        };
+        let d = Daemon::new(paths, "test".into(), "agt".into(), Config::defaults(), None).unwrap();
+        let mut info = row_to_info(&SessionRow {
+            id: "s1".into(),
+            short_id: "aaaaaa".into(),
+            status: "running".into(),
+            ..Default::default()
+        });
+        info.status_since = 1;
+        d.entries.lock_or_recover().insert(
+            "s1".into(),
+            Entry {
+                info,
+                session: None,
+                conversation: None,
+                generation: 1,
+                resume_attempt: None,
+            },
+        );
+        // 狀態沒變：維持原值
+        d.update_if_current("s1", 1, |i| i.exit_code = Some(0));
+        assert_eq!(d.get("s1").unwrap().status_since, 1);
+        // 狀態改變：更新成現在
+        d.update_if_current("s1", 1, |i| i.status = AgentStatus::WaitingInput);
+        assert!(d.get("s1").unwrap().status_since > 1);
+        // 等待輸入時記下的提問，離開等待狀態就清掉
+        d.update_if_current("s1", 1, |i| i.prompt = Some("Allow?".into()));
+        assert_eq!(d.get("s1").unwrap().prompt.as_deref(), Some("Allow?"));
+        d.update_if_current("s1", 1, |i| {
+            i.check = Some(CheckInfo {
+                state: CheckState::Passed,
+                detail: String::new(),
+            })
+        });
+        d.update_if_current("s1", 1, |i| i.status = AgentStatus::Running);
+        assert_eq!(d.get("s1").unwrap().prompt, None);
+        // Agent 又開始工作：檢查結果過期
+        assert_eq!(d.get("s1").unwrap().check, None);
     }
 }

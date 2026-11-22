@@ -58,6 +58,9 @@ impl Daemon {
             behind: 0,
             dirty: false,
             created_at: agt_store::now(),
+            status_since: agt_store::now(),
+            prompt: None,
+            check: None,
             shared: false,
             tags: agt_proto::tags::normalize(&req.tags)
                 .map_err(|e| OpError::new(codes::BAD_REQUEST, e))?,
