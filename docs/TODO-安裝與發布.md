@@ -75,6 +75,7 @@ agt update                                    # 之後自我更新
 
 ## 5. 之後再做
 
+- [x] Windows 執行檔嵌入版本資訊與 manifest（`crates/agt-cli/build.rs`），發布檔附 build attestation（免費；不等於簽章，防毒仍可能誤判）
 - [ ] 程式碼簽章（避免 Windows Defender / SmartScreen 警告；例如 Azure Trusted Signing，約 $10/月）
 - [ ] Scoop：自己的 bucket repo（一個 JSON 檔，難度低）
 - [ ] winget：向 microsoft/winget-pkgs 送 PR（最好先有簽章）
