@@ -164,7 +164,8 @@ impl App {
                 match self.popup.as_mut() {
                     Some(Popup::Finish { selected, .. })
                     | Some(Popup::Strategy { selected })
-                    | Some(Popup::Close { selected, .. }) => *selected = i,
+                    | Some(Popup::Close { selected, .. })
+                    | Some(Popup::Switch { selected, .. }) => *selected = i,
                     // 目錄瀏覽器：點一下等於選到該項後按 Enter（進入目錄 / 使用這個目錄）
                     Some(Popup::New(NewForm {
                         browser: Some(b), ..

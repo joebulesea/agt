@@ -185,6 +185,49 @@ impl App {
                 }
                 _ => true,
             },
+            Popup::Switch { input, selected } => {
+                let n = self.switch_matches(input).len();
+                let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                match k.code {
+                    KeyCode::Esc => false,
+                    KeyCode::Enter => {
+                        let id = self
+                            .switch_matches(input)
+                            .get((*selected).min(n.saturating_sub(1)))
+                            .map(|s| s.id.clone());
+                        match id {
+                            Some(id) => {
+                                self.select(Some(id));
+                                false
+                            }
+                            None => true,
+                        }
+                    }
+                    KeyCode::Up | KeyCode::BackTab => {
+                        *selected = (*selected).min(n.saturating_sub(1));
+                        *selected = (*selected + n.max(1) - 1) % n.max(1);
+                        true
+                    }
+                    KeyCode::Char('p') if ctrl => {
+                        *selected = (*selected).min(n.saturating_sub(1));
+                        *selected = (*selected + n.max(1) - 1) % n.max(1);
+                        true
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        *selected = (*selected + 1) % n.max(1);
+                        true
+                    }
+                    KeyCode::Char('n') if ctrl => {
+                        *selected = (*selected + 1) % n.max(1);
+                        true
+                    }
+                    _ => {
+                        edit_text(input, &k);
+                        *selected = 0;
+                        true
+                    }
+                }
+            }
             Popup::Tags { input } => match k.code {
                 KeyCode::Esc => false,
                 KeyCode::Enter => {
