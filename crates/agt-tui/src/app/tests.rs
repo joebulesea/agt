@@ -473,3 +473,90 @@ fn status_bar_usage_shows_active_context_and_latest_quota() {
     app.sessions.iter_mut().for_each(|s| s.usage = None);
     assert_eq!(text(&app), "");
 }
+
+fn switch_app() -> App {
+    let (mut app, _sent) = test_app("ask");
+    let mut a = session("aaaa");
+    a.agent = "claude".into();
+    a.task = "登入功能".into();
+    a.repo_name = Some("web".into());
+    a.tags = vec!["urgent".into()];
+    let mut b = session("bbbb");
+    b.task = "Fix Parser".into();
+    b.repo_name = Some("core".into());
+    let mut c = session("cccc");
+    c.task = "文件".into();
+    c.repo_name = Some("web".into());
+    app.upsert(a);
+    app.upsert(b);
+    app.upsert(c);
+    app.select(Some("aaaa".into()));
+    app
+}
+
+fn typed(app: &mut App, s: &str) {
+    for c in s.chars() {
+        app.on_event(key(c));
+    }
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    app.on_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+}
+
+fn ids(app: &App, q: &str) -> Vec<String> {
+    app.switch_matches(q).iter().map(|s| s.id.clone()).collect()
+}
+
+#[test]
+fn switch_matches_all_terms_case_insensitively() {
+    let app = switch_app();
+    assert_eq!(ids(&app, "").len(), 3);
+    assert_eq!(ids(&app, "PARSER"), ["bbbb"]);
+    assert_eq!(ids(&app, "web"), ["aaaa", "cccc"]);
+    assert_eq!(ids(&app, "web urgent"), ["aaaa"]);
+    assert_eq!(ids(&app, "claude 登入"), ["aaaa"]);
+    assert!(ids(&app, "nope").is_empty());
+}
+
+#[test]
+fn switch_popup_filters_and_enter_jumps() {
+    let mut app = switch_app();
+    app.on_event(ctrl('a'));
+    app.on_event(key(' '));
+    assert!(matches!(app.popup, Some(Popup::Switch { .. })));
+    typed(&mut app, "parser");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.popup.is_none());
+    assert_eq!(app.active.as_deref(), Some("bbbb"));
+}
+
+#[test]
+fn switch_popup_arrows_wrap_and_reset_on_typing() {
+    let mut app = switch_app();
+    app.on_event(ctrl('a'));
+    app.on_event(key('p'));
+    press(&mut app, KeyCode::Up); // 從第一個往上：回到最後一個
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.active.as_deref(), Some("cccc"));
+
+    app.on_event(ctrl('a'));
+    app.on_event(key('p'));
+    press(&mut app, KeyCode::Down);
+    typed(&mut app, "web"); // 輸入後選擇回到第一個
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.active.as_deref(), Some("aaaa"));
+}
+
+#[test]
+fn switch_popup_enter_without_match_stays_open_and_escape_cancels() {
+    let mut app = switch_app();
+    app.on_event(ctrl('a'));
+    app.on_event(key(' '));
+    typed(&mut app, "zzz");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.popup, Some(Popup::Switch { .. })));
+    assert_eq!(app.active.as_deref(), Some("aaaa"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.popup.is_none());
+}

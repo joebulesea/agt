@@ -91,6 +91,12 @@ impl App {
                 }
             }
             KeyCode::Char('w') => self.next_waiting(),
+            KeyCode::Char(' ') | KeyCode::Char('p') => {
+                self.popup = Some(Popup::Switch {
+                    input: String::new(),
+                    selected: 0,
+                });
+            }
             KeyCode::Char('d') => {
                 if let Some(id) = self.active.clone() {
                     let c = self.client.clone();
