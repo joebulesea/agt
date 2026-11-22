@@ -501,7 +501,12 @@ async fn full_flow() {
     // ── 分頁重疊預警：另一個分頁也動了同一個檔案 ──
     let wb = PathBuf::from(b.worktree.clone().unwrap());
     std::fs::write(wb.join("untracked.txt"), "y").unwrap();
-    let ok = wait_until(&mut ev, &mut screen, Duration::from_secs(10), |inc, _| {
+    // 沒人看、狀態也沒變的分頁每 30 秒才輪詢一次 git；attach 之後每一輪（3 秒）都查，
+    // 否則這個等待要看輪詢的時間點，會隨機逾時。
+    c.request(ClientMsg::Attach { id: b.id.clone() })
+        .await
+        .unwrap();
+    let ok = wait_until(&mut ev, &mut screen, Duration::from_secs(30), |inc, _| {
         matches!(inc, Incoming::Msg(m) if matches!(&**m, ServerMsg::SessionUpdated { session }
             if session.id == a.id
                 && session.overlaps.len() == 1
