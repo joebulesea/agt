@@ -138,7 +138,7 @@ impl Daemon {
                 let groups = agt_git::load_groups(Path::new(&wt))?;
                 if !groups.is_empty() {
                     let (check, note) = self.group_check(&info, &repo)?;
-                    let out = agt_git::create_group_prs(
+                    let (out, targets) = agt_git::create_group_prs(
                         Path::new(&repo),
                         Path::new(&wt),
                         &branch,
@@ -153,14 +153,16 @@ impl Daemon {
                         json!({"action": "pr", "groups": true, "check": check.is_some(), "result": out}),
                     );
                     self.store().set_finish_action(&id, "pr")?;
+                    self.track_landings(&info, &repo, &targets);
                     return Ok(with_note(out, note));
                 }
                 // PR 標題：這次 commit 的標題（Agent 寫的 COMMIT_MSG），沒有時用任務名稱
                 let title = subject.unwrap_or_else(|| info.task.clone());
-                let out =
+                let (out, target) =
                     agt_git::create_pr(Path::new(&repo), Path::new(&wt), &branch, &base, &title)?;
                 self.record(&id, "git", json!({"action": "pr", "result": out}));
                 self.store().set_finish_action(&id, "pr")?;
+                self.track_landings(&info, &repo, target.as_slice());
                 Ok(out)
             }
         }
@@ -415,9 +417,24 @@ impl Daemon {
             &strategy,
             auto_commit,
         )?;
+        // 沒設定 finish_check、而且看得出是 Rust 專案：提示可以設定（只提示，不執行）
+        let hint = {
+            let configured = self
+                .cfg()
+                .repo(&self.paths, Path::new(&repo))
+                .ok()
+                .and_then(|r| r.finish_check)
+                .is_some_and(|s| !s.trim().is_empty());
+            (!configured && crate::check::finish_check_suggestion(Path::new(&repo)).is_some())
+                .then(|| crate::check::finish_check_hint(Path::new(&repo)))
+        };
+        let with_hint = |out: String| match &hint {
+            Some(h) => format!("{out}\n\n{h}"),
+            None => out,
+        };
         // 有分組時才會執行收尾檢查
         if agt_git::load_groups(Path::new(&wt))?.is_empty() {
-            return Ok(out);
+            return Ok(with_hint(out));
         }
         let (check, note) = self.group_check(&info, &repo)?;
         let script = self
@@ -431,7 +448,7 @@ impl Daemon {
                 "{out}\n收尾前會在每組 branch 執行檢查：{script}（任何一組失敗就不 push、不合併）"
             ),
             (None, Some(n)) => format!("{out}\n{n}"),
-            (None, None) => out,
+            (None, None) => with_hint(out),
         })
     }
 
@@ -439,5 +456,37 @@ impl Daemon {
         let info = self.get(id)?;
         let (wt, _, base, repo) = need_worktree(&info)?;
         Ok(agt_git::diff(Path::new(&repo), Path::new(&wt), &base)?)
+    }
+
+    /// 把 base 的最新 commit 合併進分頁的 branch。Agent（含共用這個 worktree 的其他分頁）
+    /// 正在工作時拒絕：合併會在它腳下改檔案。
+    pub fn sync_base(&self, id: &str) -> OpResult<String> {
+        let id = self.resolve(id)?;
+        let info = self.get(&id)?;
+        let (wt, _, base, repo) = need_worktree(&info)?;
+        let busy =
+            self.entries.lock_or_recover().values().any(|e| {
+                e.info.status.is_busy() && e.info.worktree.as_deref() == Some(wt.as_str())
+            });
+        if busy {
+            return Err(OpError::new(
+                codes::BAD_REQUEST,
+                "Agent 正在工作中，等它停下來（等待輸入或完成）再同步",
+            ));
+        }
+        let r = agt_git::sync_with_base(Path::new(&repo), Path::new(&wt), &base);
+        match &r {
+            Ok(msg) => self.record(
+                &id,
+                "git",
+                json!({"action": "sync", "ok": true, "result": msg}),
+            ),
+            Err(e) => self.record(
+                &id,
+                "git",
+                json!({"action": "sync", "ok": false, "error": e.to_string()}),
+            ),
+        }
+        Ok(r?)
     }
 }
