@@ -351,7 +351,7 @@ fn check_json(version: Option<String>, nightly: bool) -> anyhow::Result<()> {
             Some(v) => normalize(&v),
             None => latest_version(&repo)?,
         };
-        check_report(env!("CARGO_PKG_VERSION"), &tag, explicit)
+        check_report_for(env!("CARGO_PKG_VERSION"), BUILD, &tag, explicit)
     })();
     match result {
         Ok(v) => {
@@ -378,6 +378,24 @@ fn nightly_report(current: &str, build: Option<&str>, remote: &Nightly) -> serde
         "status": status,
         "update_available": status == "update_available",
     })
+}
+
+/// `check_report` 加上目前的建置編號（`current_build`，正式版是 null）。
+/// 測試版（nightly）和同版號的正式版是不同的建置：`agt update` 在測試版上會改裝正式版，
+/// 所以版號相同時回報 `update_available`，和互動式的行為一致。
+fn check_report_for(
+    current: &str,
+    build: Option<&str>,
+    tag: &str,
+    explicit: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let mut v = check_report(current, tag, explicit)?;
+    if build_run(build).is_some() && v["status"] == "up_to_date" {
+        v["status"] = "update_available".into();
+        v["update_available"] = true.into();
+    }
+    v["current_build"] = serde_json::json!(build);
+    Ok(v)
 }
 
 /// `--check --json` 的內容（不連網，方便測試）。`explicit`：版本是用 `--version` 指定的。
@@ -896,5 +914,40 @@ mod tests {
         assert_eq!(v["update_available"], true);
         let v = nightly_report("0.4.0", None, &r);
         assert!(v["current_build"].is_null());
+    }
+
+    #[test]
+    fn check_report_for_release_build_matches_check_report() {
+        for (cur, tag, explicit) in [
+            ("0.3.0", "v0.3.0", false),
+            ("0.2.1", "v0.3.0", false),
+            ("0.4.0", "v0.3.0", false),
+            ("0.4.0", "v0.3.0", true),
+        ] {
+            let a = check_report(cur, tag, explicit).unwrap();
+            let b = check_report_for(cur, None, tag, explicit).unwrap();
+            assert_eq!(a["status"], b["status"], "{cur} {tag}");
+            assert_eq!(a["update_available"], b["update_available"], "{cur} {tag}");
+            assert!(b["current_build"].is_null());
+        }
+    }
+
+    #[test]
+    fn check_report_for_nightly_build_offers_the_same_version_release() {
+        let nightly = Some("nightly.9.abc1234");
+        // 版號相同：agt update 會改裝正式版，所以算可更新（含用 --version 指定）
+        for explicit in [false, true] {
+            let v = check_report_for("0.4.0", nightly, "v0.4.0", explicit).unwrap();
+            assert_eq!(v["status"], "update_available", "explicit={explicit}");
+            assert_eq!(v["update_available"], true);
+            assert_eq!(v["current_build"], "nightly.9.abc1234");
+        }
+        // 其他情況不變
+        let st = |cur, tag, explicit| {
+            check_report_for(cur, nightly, tag, explicit).unwrap()["status"].clone()
+        };
+        assert_eq!(st("0.5.0", "v0.4.0", false), "ahead");
+        assert_eq!(st("0.5.0", "v0.4.0", true), "downgrade");
+        assert_eq!(st("0.3.0", "v0.4.0", false), "update_available");
     }
 }

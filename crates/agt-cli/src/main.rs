@@ -188,7 +188,7 @@ enum Cmd {
         /// 只檢查有沒有新版，不下載
         #[arg(long)]
         check: bool,
-        /// 搭配 --check：以 JSON 輸出 `{current, latest, tag, status, update_available}`
+        /// 搭配 --check：以 JSON 輸出 `{current, current_build, latest, tag, status, update_available}`
         #[arg(long, requires = "check")]
         json: bool,
         /// 指定版本（例如 0.3.0），預設最新版
