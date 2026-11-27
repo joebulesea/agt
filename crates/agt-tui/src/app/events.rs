@@ -75,12 +75,18 @@ impl App {
                 // 只接受目前分頁的複製要求，背景分頁不能偷偷改剪貼簿
                 if self.active.as_deref() == Some(id.as_str()) {
                     let n = text.chars().count();
+                    let trusted = self.clipboard_trusted.contains(&id);
                     match self.ui.osc52.as_str() {
                         "on" => {
                             self.clipboard_out = Some(text);
                             self.set_message(format!("已複製到剪貼簿（{n} 字）"), false);
                         }
                         "off" => {}
+                        // 使用者已選過「本次一律允許」
+                        _ if trusted => {
+                            self.clipboard_out = Some(text);
+                            self.set_message(format!("已複製到剪貼簿（{n} 字）"), false);
+                        }
                         // ask：顯示內容讓使用者確認。內容可能是 Agent 想讓你貼到終端機的指令
                         _ if self.popup.is_none() => {
                             const PREVIEW: usize = 400;
@@ -97,7 +103,7 @@ impl App {
                             };
                             self.popup = Some(Popup::Confirm {
                                 text: format!(
-                                    "分頁要求把以下內容複製到剪貼簿（{n} 字）：\n\n{}{more}\n{warn}\n要複製嗎？",
+                                    "分頁要求把以下內容複製到剪貼簿（{n} 字）：\n\n{}{more}\n{warn}\n要複製嗎？（y 複製、a 本次一律允許此分頁、n 拒絕）",
                                     agt_proto::text::printable(&shown)
                                 ),
                                 action: Confirm::Clipboard(text),

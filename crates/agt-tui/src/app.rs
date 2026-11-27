@@ -296,6 +296,8 @@ pub struct App {
     pub last_click: Option<(u16, u16, Instant)>,
     /// 等待寫給外層終端機的剪貼簿內容（OSC 52），由主迴圈送出。
     pub clipboard_out: Option<String>,
+    /// 使用者在確認框按過 a（本次一律允許）的分頁；只在這次 TUI 執行期間有效。
+    pub clipboard_trusted: std::collections::HashSet<String>,
     pub sent_size: Option<(String, u16, u16)>,
     pub quit: bool,
     pub dirty: bool,
@@ -333,6 +335,7 @@ impl App {
             click_hits: vec![],
             last_click: None,
             clipboard_out: None,
+            clipboard_trusted: Default::default(),
             sent_size: None,
             quit: false,
             dirty: true,

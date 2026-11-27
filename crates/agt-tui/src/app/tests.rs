@@ -589,3 +589,20 @@ async fn sync_key_sends_request_only_for_worktree_sessions() {
     // 請求在背景工作執行，這裡只確認有進入「同步中」
     assert!(app.message.as_ref().is_some_and(|m| m.0.contains("同步中")));
 }
+
+#[test]
+fn osc52_ask_always_allow_skips_later_prompts() {
+    let (mut app, _sent) = with_active("ask");
+    app.on_incoming(clipboard("aaaa", "one"));
+    app.on_event(key('a'));
+    assert!(app.popup.is_none());
+    assert_eq!(app.clipboard_out.take().as_deref(), Some("one"));
+    app.on_incoming(clipboard("aaaa", "two"));
+    assert!(app.popup.is_none());
+    assert_eq!(app.clipboard_out.as_deref(), Some("two"));
+    // 其他分頁不受影響
+    app.clipboard_out = None;
+    app.select(Some("bbbb".into()));
+    app.on_incoming(clipboard("bbbb", "three"));
+    assert!(app.popup.is_some() && app.clipboard_out.is_none());
+}
