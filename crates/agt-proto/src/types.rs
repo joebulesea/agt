@@ -532,7 +532,7 @@ fn default_theme() -> String {
 }
 
 fn default_osc52() -> String {
-    "ask".into()
+    "on".into()
 }
 
 impl Default for UiConfig {

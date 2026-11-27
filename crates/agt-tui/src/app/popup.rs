@@ -160,6 +160,25 @@ impl App {
                 }
                 _ => true,
             },
+            Popup::Confirm {
+                action: Confirm::Clipboard(_),
+                ..
+            } if matches!(k.code, KeyCode::Char('a') | KeyCode::Char('A')) => {
+                if let (
+                    Popup::Confirm {
+                        action: Confirm::Clipboard(text),
+                        ..
+                    },
+                    Some(id),
+                ) = (popup, self.active.clone())
+                {
+                    let n = text.chars().count();
+                    self.clipboard_out = Some(text);
+                    self.clipboard_trusted.insert(id);
+                    self.set_message(format!("已複製（{n} 字），此分頁之後不再詢問"), false);
+                }
+                return;
+            }
             Popup::Confirm { .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if let Popup::Confirm { action, .. } = popup {

@@ -16,6 +16,7 @@
 
 ### 新增
 
+- ⚠ 不相容：`general.osc52` 預設由 `ask` 改為 `on`：分頁以 OSC 52 要求複製（例如 Claude Code 選取文字）時直接寫入剪貼簿，不再每次跳確認框。沙箱裡的 Agent 也能送出 OSC 52，想保留確認請設 `osc52 = "ask"`（確認框也新增 `a` = 該分頁本次一律允許）
 - 測試版自動建置：`main` 的 CI 通過後（PR 合併或直接推送），新的 `.github/workflows/nightly.yml` 建置 Linux 與 Windows 版，更新固定的預發行版 `nightly`（tag 移到最新的 commit，附 `SHA256SUMS` 與 `nightly.json`）。一次只發布一個，不是 `main` 最新 commit 的建置會略過。新增 `agt update --nightly`（含 `--check --json --nightly`，輸出多了 `channel`、`current_build`、`build`）：比對 run 編號，核對 SHA256 後沿用原本的更新流程；安裝腳本支援 `AGT_VERSION=nightly`；`agt --version` 顯示建置編號（`AGT_BUILD`，格式 `nightly.<run>.<sha>`，正式版沒有）。一般的 `agt update` 與安裝腳本不受影響（`/releases/latest` 不含預發行版）；在測試版上執行 `agt update` 會改裝最新正式版
 - 自動檢查：使用者設定檔 `[repos."<路徑>"]` 的 `auto_check`（例如 `"cargo test --workspace"`）會在 Agent 完成（狀態變成 Done）後自動在它的 worktree 執行；側欄顯示 `… 測試中`／`✓ 測試通過`／`✗ 測試失敗：<輸出最後一行>`，並發系統通知（沿用 `notify`，正在看的分頁不通知），完整輸出記在分頁的事件（kind = `check`）。只從使用者設定檔讀取，`.agt.toml` 的不會生效（`agt config check` 會提醒）；執行方式同 `finish_check`（沙箱 Agent 要設定 `check_command`，否則略過），worktree 沒有任何變更、或同一分頁已在檢查時不執行，Agent 又開始工作時清掉舊結果。`SessionInfo` 新增 `check`，協定版本不變
 - 側欄預覽提問（`[general] sidebar_prompt = false` 可關閉，預設開啟，熱重載）：分頁在「等待輸入」時（不是目前正在看的那個），側欄多一行黃字 `? …` 顯示 Agent 在問什麼，不必切過去就能決定要不要處理。內容優先用 hook 帶來的訊息（Claude Code，例如「Claude needs your permission to use Bash」），沒有時取畫面最後幾行中最後一個含 `?` 或 `(y/n)` 的行，再沒有就用最後一個非空白行。文字來自 Agent，視為不可信：控制字元換成可見符號、限制 200 字。`SessionInfo` 新增 `prompt`（只在等待輸入時有值，`agt ls --json` 也看得到），只存在記憶體，協定版本不變

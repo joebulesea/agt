@@ -20,9 +20,9 @@ idle_shutdown_secs = 600
 scrollback_lines = 10000
 merge_strategy = "ask"           # ask | merge | squash | rebase
 log_output = true                # 終端機紀錄檔
-# 分頁中的程式以 OSC 52 寫入剪貼簿時：ask = 先詢問、on = 直接寫入、off = 一律拒絕。
+# 分頁中的程式以 OSC 52 寫入剪貼簿時：on = 直接寫入（預設）、ask = 先詢問、off = 一律拒絕。
 # 沙箱裡的 Agent 也能送出 OSC 52，例如把剪貼簿換成惡意指令，等你貼到終端機。
-osc52 = "ask"
+osc52 = "on"
 # 收尾（merge / pr）時，分頁若改了合併後會自動執行的檔案（.claude/、.agt.toml、CI workflow 等）會先要求確認。
 # 這裡可以追加：以 / 結尾 = 整個目錄、含 / = 從 repo 根目錄起算的路徑、其他 = 任何目錄下同名的檔案。
 # 例如 ["package.json", "Makefile", "scripts/"]（這些檔案常被主機上的指令執行，但也很常修改，預設不列入）。
