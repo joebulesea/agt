@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// 兩個按鍵事件間隔短於這個時間，視為貼上而不是手動輸入。
+const PASTE_GAP: Duration = Duration::from_millis(10);
+
 impl App {
     // ───────────────────────── 輸入 ─────────────────────────
 
@@ -57,6 +60,19 @@ impl App {
             .screen
             .as_ref()
             .is_some_and(|s| s.has_mode(modes::APP_CURSOR));
+        // 沒有 bracketed paste 的終端機（例如 Windows 主控台）貼上多行文字時，換行會變成
+        // 一串緊接著字元的 Enter；人不可能在 PASTE_GAP 內連按兩個鍵，所以當成換行（LF）
+        // 而不是送出（CR），避免貼上到一半就把訊息送出。
+        let now = Instant::now();
+        let burst = self
+            .last_key_at
+            .is_some_and(|t| now.duration_since(t) < PASTE_GAP);
+        self.last_key_at = Some(now);
+        let k = if burst && k.code == KeyCode::Enter && k.modifiers.is_empty() {
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)
+        } else {
+            k
+        };
         if let Some(b) = encode_key(&k, app_cursor) {
             self.input(&b);
         }
