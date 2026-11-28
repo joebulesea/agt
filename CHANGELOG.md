@@ -11,6 +11,7 @@
 
 ### 修正
 
+- 在沒有 bracketed paste 的終端機（例如 Windows 主控台）貼上多行文字會在第一個換行就送出：現在緊接在按鍵後（10 毫秒內）的 Enter 當成換行（LF）轉送，不再當成送出
 - 狀態改變時，daemon 現在會一併發出完整的 `SessionUpdated`：原本只送 `StatusChanged`（UI 只更新狀態），這次新增的等待時間、提問預覽與自動檢查結果因此到不了側欄
 - `agt update --check --json` 在測試版（nightly）上，版號與最新正式版相同時回報 `up_to_date`，但 `agt update` 實際會改裝正式版；現在改為 `update_available`，和互動式的行為一致。輸出新增 `current_build`（正式版與本機編譯是 null）
 

@@ -296,6 +296,9 @@ pub struct App {
     pub last_click: Option<(u16, u16, Instant)>,
     /// 等待寫給外層終端機的剪貼簿內容（OSC 52），由主迴圈送出。
     pub clipboard_out: Option<String>,
+    /// 上一次轉送給分頁的一般按鍵時間：Windows 主控台沒有 bracketed paste，
+    /// 貼上的多行文字會變成連續的按鍵事件，靠它辨識「緊接在按鍵後的 Enter」。
+    pub last_key_at: Option<Instant>,
     /// 使用者在確認框按過 a（本次一律允許）的分頁；只在這次 TUI 執行期間有效。
     pub clipboard_trusted: std::collections::HashSet<String>,
     pub sent_size: Option<(String, u16, u16)>,
@@ -335,6 +338,7 @@ impl App {
             click_hits: vec![],
             last_click: None,
             clipboard_out: None,
+            last_key_at: None,
             clipboard_trusted: Default::default(),
             sent_size: None,
             quit: false,

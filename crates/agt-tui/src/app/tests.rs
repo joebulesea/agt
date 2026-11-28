@@ -606,3 +606,28 @@ fn osc52_ask_always_allow_skips_later_prompts() {
     app.on_incoming(clipboard("bbbb", "three"));
     assert!(app.popup.is_some() && app.clipboard_out.is_none());
 }
+
+fn enter_frame(app: &mut App, sent: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<u8> {
+    while sent.try_recv().is_ok() {}
+    app.on_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    sent.try_recv().expect("應送出輸入封包")
+}
+
+#[test]
+fn enter_right_after_a_key_is_newline_not_submit() {
+    // 沒有 bracketed paste 的終端機：貼上的多行文字是一串緊接著的按鍵事件
+    let (mut app, mut sent) = with_active("ask");
+    let typed = {
+        app.last_key_at = None;
+        enter_frame(&mut app, &mut sent)
+    };
+    app.on_event(key('a'));
+    let pasted = enter_frame(&mut app, &mut sent);
+    assert_ne!(typed, pasted, "緊接在按鍵後的 Enter 不能當成送出");
+    // 間隔夠久的 Enter 仍是送出
+    app.last_key_at = Some(Instant::now() - Duration::from_millis(200));
+    assert_eq!(enter_frame(&mut app, &mut sent), typed);
+}
